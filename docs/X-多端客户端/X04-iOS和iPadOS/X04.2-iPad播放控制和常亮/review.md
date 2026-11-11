@@ -1,0 +1,23 @@
+# X04.2 合并审查
+
+2026-10-23；分支 ai/V02.21；自查：Codex；交叉审查：无。
+
+| 项 | 结果与边界 |
+|---|---|
+| 任务书与根因 | 按 README 范围实现，新增 4 条回归；改前失败日志 sc-ipad-before.log、wake-before.log |
+| 范围与隐私 | 仅任务范围及登记文档；测试截图 helper 只在显式环境变量下启用；没有真实账号、凭据或设备地址 |
+| 规则 | 沿用 live_ui；翻译两键补全 15 个目录键集，zh/en/zh_Hant 本地化，其余英文回退；旧设置键不变；测试不连平台 |
+| 完整门禁 | 推送前必跑，最终同提交回执由 PR 和本机报告提供；本文件不是预填通过证明 |
+| 真机 | 未进行，按 verify.md 停在待真机；Apple 云构建不代替 iPad 验收 |
+| 文档 | 任务书、记录、登记表与生成索引同步 |
+| 合并发布 | 本轮只提交 PR；未发布前保留 issue 开放，#14/#15 不标为修复 |
+
+实现可供审查，物理设备验收和发版尚未完成。
+
+
+2026-10-23 原生构建：Apple run 39964303651 在 Swift 编译失败，PlayerDeviceControls.swift 两处把 FlutterPluginRegistrar.viewController 写成函数调用。Xcode 明确将其导入为 UIViewController? 属性；已改为 registrar.viewController 的属性访问，不改通道行为。修正后的原生构建与启动必须重验，旧失败日志保存在本机；推送前完整门禁照常重新执行。
+
+
+## 5.4.9 发布
+
+PR #27 合并 37a5f703901022cd7fcb88c0907cd3c84cd4ea68，实际构建与标签提交 a0fad683c0562e5856f0eddeec7f2df2efd030b9，随 [5.4.9](https://github.com/wzgrx/PureLive/releases/tag/v5.4.9) 发布。完整门禁、十包哈希及各端启动核验通过，详见 Y01.20；反馈者 iPad、Sony 电视、真实付费 SC 和各端完整交互未全部覆盖，保留待真机，不据此宣称所有硬件验收。

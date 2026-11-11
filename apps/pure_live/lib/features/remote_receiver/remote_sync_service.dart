@@ -1,0 +1,633 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:live_store/live_store.dart';
+import 'package:pure_live/features/remote_receiver/mdns_peers.dart';
+import 'package:pure_live/features/remote_receiver/remote_sync_protocol.dart';
+import 'package:pure_live/features/version/app_version.dart';
+import 'package:pure_live/i18n/i18n.dart';
+import 'package:pure_live/platform/platform_services.dart';
+import 'package:pure_live/platform/system_access.dart';
+import 'package:pure_live/routes/app_navigator.dart';
+import 'package:pure_live/shared/backup/sync_parts.dart';
+import 'package:pure_live/shared/net/lan_address.dart';
+
+/// Another device on the network, from its announcement.
+@immutable
+final class RemoteSyncDevice {
+  /// Creates the device.
+  const new({
+    required this.id,
+    required this.name,
+    required this.platform,
+    required this.ip,
+    required this.port,
+    required this.lastSeen,
+    this.version = '',
+    this.viaMdns = false,
+  });
+
+  /// Found over mDNS only (a 3.x device; v4 devices also answer the UDP
+  /// announcement).
+  final bool viaMdns;
+
+  /// Device id.
+  final String id;
+
+  /// Shown name.
+  final String name;
+
+  /// Operating system.
+  final String platform;
+
+  /// App version.
+  final String version;
+
+  /// IPv4 address.
+  final String ip;
+
+  /// Sync port.
+  final int port;
+
+  /// When it was last heard.
+  final DateTime lastSeen;
+
+  /// `ip:port`.
+  String get address => '$ip:$port';
+}
+
+/// Asks the user whether [remoteAddress] may read (`export`) or replace
+/// (`import`) this device's settings.
+typedef RemoteSyncConfirm = Future<bool> Function(String action, String remoteAddress);
+
+/// Asks the user which parts of the [settings] [remoteAddress] sends to
+/// apply here; null refuses them all.
+typedef RemoteSyncChooseImport = Future<Set<SyncPart>?> Function(String remoteAddress, Map<String, Object?> settings);
+
+/// The device-sync server and client (3.x `RemoteSyncService`), alive while
+/// the page is open.
+///
+/// - Serves 3.x's endpoints on the first free port from 39888; every
+///   settings request needs the pairing code shown here and the user's
+///   consent ([confirm]); after [maxWrongCodes] wrong codes the code changes.
+/// - Sends this device's settings to another device, or takes its settings,
+///   in 3.x's backup layout ([BackupService]); account cookies only with
+///   [includeAccounts]. The user may pick parts ([SyncPart]): a send leaves
+///   the others out only for a device that [takesParts] (3.x resets what a
+///   packet lacks), and a receive or an incoming import applies only the
+///   parts picked here.
+/// - Announces itself and lists other devices over UDP broadcast (port
+///   39889, v4 devices) and over mDNS (`_purelive-sync._tcp` with 3.x's TXT
+///   record, so 3.x and v4 devices find each other); Android holds the Wi-Fi
+///   multicast lock meanwhile.
+class RemoteSyncService extends ChangeNotifier {
+  /// Creates the service over [store]; [mdns] and [_bindDiscoverySocket]
+  /// replace native discovery transports in tests.
+  new(
+    this.store, {
+    List<String>? Function()? localIps,
+    this.requestTimeout = const Duration(minutes: 2),
+    MdnsPeers? mdns,
+    MulticastLock? multicastLock,
+    this._bindDiscoverySocket,
+  }) : _listIps = localIps,
+       _mdns = mdns ?? BonsoirPeers(),
+       _multicast = multicastLock ?? MulticastLock();
+
+  /// Settings and backups.
+  final LiveStore store;
+
+  /// How long a send or receive waits (the other device asks its user first).
+  final Duration requestTimeout;
+
+  final List<String>? Function()? _listIps;
+  final Future<RawDatagramSocket> Function()? _bindDiscoverySocket;
+  final MdnsPeers _mdns;
+  final MulticastLock _multicast;
+  bool _mdnsRunning = false;
+
+  /// Wrong pairing codes before the code changes.
+  static const int maxWrongCodes = 10;
+
+  /// Asks the user about an incoming request; refused without it (and
+  /// without [chooseImport] for an import).
+  RemoteSyncConfirm? confirm;
+
+  /// Asks the user which parts of incoming settings to apply; when set it
+  /// answers imports instead of [confirm].
+  RemoteSyncChooseImport? chooseImport;
+
+  HttpServer? _server;
+  RawDatagramSocket? _discovery;
+  Timer? _announceTimer;
+  bool _disposed = false;
+  bool _starting = false;
+  int _wrongCodes = 0;
+
+  /// This device's IPv4 address on the network, or empty.
+  String localIp = '';
+
+  /// The server's port.
+  int port = RemoteSyncProtocol.defaultHttpPort;
+
+  /// The code another device must give; empty while stopped.
+  String pairingCode = '';
+
+  /// Whether account cookies travel (off by default, 3.x).
+  bool includeAccounts = false;
+
+  /// Whether a send, receive or incoming import runs.
+  bool syncing = false;
+
+  /// Devices heard on the network, newest first.
+  final Map<String, RemoteSyncDevice> _devices = {};
+
+  /// Devices heard in the last two minutes.
+  List<RemoteSyncDevice> get devices => _devices.values.toList(growable: false);
+
+  /// Whether the server runs.
+  bool get running => _server != null;
+
+  /// `ip:port`, or empty.
+  String get address => localIp.isEmpty ? '' : '$localIp:$port';
+
+  /// The QR code content, or empty.
+  String get qrData => localIp.isEmpty || pairingCode.isEmpty
+      ? ''
+      : RemoteSyncProtocol.createQrUri(ip: localIp, port: port, code: pairingCode).toString();
+
+  /// This device's sync id (3.x's, kept in the settings).
+  String get deviceId {
+    // Kept here too: the new id is saved asynchronously, and a second read
+    // before that lands must not make another one (the UDP and the mDNS
+    // announcements would carry different ids).
+    if (_deviceId case final id?) return id;
+    final settings = store.settings;
+    final existing = settings.get(Settings.remoteSyncDeviceId);
+    if (existing.isNotEmpty) return _deviceId = existing;
+    final id = _deviceId = '${Platform.operatingSystem}-${DateTime.now().microsecondsSinceEpoch}';
+    unawaited(settings.set(Settings.remoteSyncDeviceId, id));
+    return id;
+  }
+
+  String? _deviceId;
+
+  /// This device's name for the others (3.x).
+  static String get deviceName => switch (Platform.operatingSystem) {
+    'android' => 'PureLive Android',
+    'ios' => 'PureLive iPhone',
+    'windows' => 'PureLive Windows',
+    'macos' => 'PureLive macOS',
+    'linux' => 'PureLive Linux',
+    _ => 'PureLive',
+  };
+
+  void _changed() {
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Starts serving and announcing; does nothing while running.
+  Future<void> start() async {
+    if (_disposed || _starting || running) return;
+    _starting = true;
+    try {
+      // Android 17 blocks local-network sockets without the permission (3.x).
+      if (!await SystemAccess.requestLocalNetwork()) {
+        AppNavigator.toast(i18n('local_network_permission_denied'));
+        return;
+      }
+      localIp = await _pickLocalIp();
+      HttpServer? server;
+      for (
+        var candidate = RemoteSyncProtocol.defaultHttpPort;
+        candidate < RemoteSyncProtocol.defaultHttpPort + 100;
+        candidate++
+      ) {
+        try {
+          server = await HttpServer.bind(InternetAddress.anyIPv4, candidate);
+          port = candidate;
+          break;
+        } on SocketException {
+          continue;
+        }
+      }
+      if (server == null) return;
+      if (_disposed) {
+        await server.close(force: true);
+        return;
+      }
+      _server = server;
+      pairingCode = RemoteSyncProtocol.newPairingCode();
+      _wrongCodes = 0;
+      server.listen((request) => unawaited(handleRequest(request)), onError: (Object _) => unawaited(stop()));
+      await _startDiscovery();
+    } finally {
+      _starting = false;
+      _changed();
+    }
+  }
+
+  /// Stops serving and announcing; [start] resumes.
+  Future<void> stop() async {
+    final server = _server;
+    _server = null;
+    pairingCode = '';
+    _announceTimer?.cancel();
+    _announceTimer = null;
+    _discovery?.close();
+    _discovery = null;
+    _devices.clear();
+    _changed();
+    await server?.close(force: true);
+    if (_mdnsRunning) {
+      _mdnsRunning = false;
+      await _mdns.stop();
+      await _multicast.release();
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    unawaited(stop());
+    super.dispose();
+  }
+
+  /// The best IPv4 address of this device ([bestLanAddress], 3.x).
+  Future<String> _pickLocalIp() async => bestLanAddress(_listIps?.call() ?? await localIpv4Addresses());
+
+  // ---- server ----
+
+  /// Answers one request (public for tests).
+  @visibleForTesting
+  Future<void> handleRequest(HttpRequest request) async {
+    final response = request.response;
+    // No CORS headers: a web page on the network must not read the settings.
+    response.headers.contentType = ContentType('application', 'json', charset: 'utf-8');
+    try {
+      switch (request.uri.path) {
+        case RemoteSyncProtocol.apiStatus:
+          if (request.method != 'GET') return await _reply(response, 405, 'Method Not Allowed');
+          return await _reply(response, 200, 'ok', {
+            'id': deviceId,
+            'name': deviceName,
+            'platform': Platform.operatingSystem,
+            'version': appVersion,
+            'ip': localIp,
+            'port': port,
+            // Senders leave parts out only for a device that says this.
+            RemoteSyncProtocol.partsKey: [for (final part in SyncPart.values) part.name],
+          });
+        case RemoteSyncProtocol.apiSettings:
+          return await _settings(request);
+        default:
+          return await _reply(response, 404, 'Not Found');
+      }
+    } on Object {
+      try {
+        await _reply(response, 500, 'Internal Server Error');
+      } on Object {
+        // Already answered.
+      }
+    }
+  }
+
+  Future<void> _settings(HttpRequest request) async {
+    final response = request.response;
+    if (!RemoteSyncProtocol.pairingCodesMatch(pairingCode, request.headers.value(RemoteSyncProtocol.pairingHeader))) {
+      // Guessing a 6-digit code takes many tries: a new code stops it.
+      if (++_wrongCodes >= maxWrongCodes) {
+        _wrongCodes = 0;
+        pairingCode = RemoteSyncProtocol.newPairingCode();
+        _changed();
+      }
+      return await _reply(response, 403, 'Pairing code required');
+    }
+    final action = switch (request.method) {
+      'GET' => 'export',
+      'POST' => 'import',
+      _ => null,
+    };
+    if (action == null) return await _reply(response, 405, 'Method Not Allowed');
+    // Read the body before asking: a bad packet is refused without a prompt.
+    Map<String, Object?>? settings;
+    if (action == 'import') {
+      final body = await utf8.decoder.bind(request).join();
+      final packet = body.trim().isEmpty ? null : jsonDecode(body);
+      if (packet is! Map || packet['type'] != RemoteSyncProtocol.syncType || packet['settings'] is! Map) {
+        return await _reply(response, 400, 'Invalid sync packet');
+      }
+      // Only the sections the sender lists; all of them without a list (3.x,
+      // older v4, a whole send).
+      settings = withinSyncSections(
+        (packet['settings']! as Map).cast<String, Object?>(),
+        RemoteSyncProtocol.sectionsOf(packet),
+      );
+      try {
+        LegacySnapshot.fromBackup(settings);
+      } on FormatException {
+        return await _reply(response, 400, 'Invalid sync packet');
+      }
+    }
+    final ask = confirm;
+    final choose = chooseImport;
+    final remote = request.connectionInfo?.remoteAddress.address ?? '';
+    var allowed = false;
+    // The parts the user keeps; null applies everything the packet has.
+    Set<SyncPart>? parts;
+    try {
+      if (settings != null && choose != null) {
+        parts = _disposed ? null : await choose(remote, settings);
+        allowed = parts != null && parts.isNotEmpty;
+      } else {
+        allowed = ask != null && !_disposed && await ask(action, remote);
+      }
+    } on Object {
+      allowed = false;
+    }
+    if (!allowed) return await _reply(response, 403, 'Rejected on the device');
+    if (settings == null) {
+      final exported = await BackupService(store).exportAll(includeSensitiveData: includeAccounts);
+      return await _reply(response, 200, 'ok', exported);
+    }
+    syncing = true;
+    _changed();
+    try {
+      await BackupService(store).restoreAll(onlySyncParts(settings, parts));
+      return await _reply(response, 200, 'ok', true);
+    } on Object {
+      return await _reply(response, 500, 'apply settings failed');
+    } finally {
+      syncing = false;
+      _changed();
+    }
+  }
+
+  static Future<void> _reply(HttpResponse response, int status, String message, [Object? data = false]) async {
+    response
+      ..statusCode = status
+      ..write(jsonEncode({'code': status, 'msg': message, 'data': data}));
+    await response.close();
+  }
+
+  // ---- client ----
+
+  /// What a send carries: this device's settings in 3.x's backup layout,
+  /// with account cookies and WebDAV servers only with [includeAccounts].
+  Future<Map<String, Object?>> outgoing() => BackupService(store).exportAll(includeSensitiveData: includeAccounts);
+
+  /// Whether the device at `ip:port` takes parts on their own (its status
+  /// says [RemoteSyncProtocol.partsKey]); false for 3.x, upstream pure_live
+  /// and older v4 devices, and when it does not answer: they get whole
+  /// sends. Needs no code and asks nothing on the other device.
+  Future<bool> takesParts(String ip, int port) => _busy(() async {
+    final answer = await _request(
+      'GET',
+      ip,
+      port,
+      null,
+      null,
+      path: RemoteSyncProtocol.apiStatus,
+    ).timeout(const Duration(seconds: 5));
+    return answer is Map && RemoteSyncProtocol.takesParts(answer['data']);
+  });
+
+  /// Sends this device's settings to `ip:port` with [code]; true when the
+  /// other device applied them (3.x `syncToAddress`). With [parts] that
+  /// leave something out, only those parts travel and the packet lists its
+  /// sections; send them only to a device that [takesParts].
+  Future<bool> send(String ip, int port, String code, {Set<SyncPart>? parts}) => _busy(() async {
+    final settings = await outgoing();
+    final packet = syncPartsLeaveOut(settings, parts)
+        ? _partialPacket(pickSyncParts(settings, parts!))
+        : RemoteSyncProtocol.settingsPacket(settings: settings);
+    final answer = await _request('POST', ip, port, code, packet);
+    return answer is Map && answer['data'] == true;
+  });
+
+  static Map<String, Object?> _partialPacket(Map<String, Object?> settings) =>
+      RemoteSyncProtocol.settingsPacket(settings: settings, sections: syncSectionsOf(settings));
+
+  /// Takes the settings of `ip:port` with [code] and applies them here;
+  /// true on success (3.x `getRemoteSettings` + import).
+  Future<bool> receive(String ip, int port, String code) async {
+    final settings = await fetch(ip, port, code);
+    return settings != null && await apply(settings);
+  }
+
+  /// Reads the settings of `ip:port` with [code] without applying them (the
+  /// page previews what they change first, docs/A-界面设计/A12-账号和数据界面/A12.6-设备同步 S1); null
+  /// when the other device refused or did not answer.
+  Future<Map<String, Object?>?> fetch(String ip, int port, String code) async {
+    Map<String, Object?>? settings;
+    await _busy(() async {
+      final answer = await _request('GET', ip, port, code, null);
+      if (answer is! Map || answer['code'] != 200 || answer['data'] is! Map) return false;
+      settings = (answer['data']! as Map).cast<String, Object?>();
+      return true;
+    });
+    return settings;
+  }
+
+  /// Applies settings [fetch] read, only [parts] of them when given (the
+  /// rest stays as it is); true on success.
+  Future<bool> apply(Map<String, Object?> settings, {Set<SyncPart>? parts}) => _busy(() async {
+    await BackupService(store).restoreAll(onlySyncParts(settings, parts));
+    return true;
+  });
+
+  /// Lists [device] as heard on the network (tests).
+  @visibleForTesting
+  void heard(RemoteSyncDevice device) {
+    _devices[device.id] = device;
+    _changed();
+  }
+
+  /// The name of the device at [ip] when it was heard on the network.
+  String? nameOf(String ip) {
+    for (final device in _devices.values) {
+      if (device.ip == ip) return device.name;
+    }
+    return null;
+  }
+
+  Future<bool> _busy(Future<bool> Function() work) async {
+    if (_disposed || syncing) return false;
+    syncing = true;
+    _changed();
+    try {
+      return await work().timeout(requestTimeout);
+    } on Object {
+      return false;
+    } finally {
+      syncing = false;
+      _changed();
+    }
+  }
+
+  Future<Object?> _request(
+    String method,
+    String ip,
+    int port,
+    String? code,
+    Object? body, {
+    String path = RemoteSyncProtocol.apiSettings,
+  }) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final request = await client.openUrl(method, Uri(scheme: 'http', host: ip, port: port, path: path));
+      if (code != null) {
+        request.headers.set(RemoteSyncProtocol.pairingHeader, RemoteSyncProtocol.normalizePairingCode(code));
+      }
+      if (body != null) {
+        request.headers.contentType = ContentType('application', 'json', charset: 'utf-8');
+        request.write(jsonEncode(body));
+      }
+      final response = await request.close();
+      final text = await utf8.decoder.bind(response).join();
+      if (response.statusCode != HttpStatus.ok) return null;
+      return jsonDecode(text);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  // ---- discovery ----
+
+  Future<void> _startDiscovery() async {
+    if (localIp.isEmpty) return;
+    try {
+      final socket =
+          await (_bindDiscoverySocket?.call() ??
+              RawDatagramSocket.bind(InternetAddress.anyIPv4, RemoteSyncProtocol.discoveryPort));
+      if (_disposed || !running) {
+        socket.close();
+        return;
+      }
+      socket.broadcastEnabled = true;
+      _discovery = socket;
+      socket.listen(
+        (event) {
+          if (event != RawSocketEvent.read) return;
+          final datagram = socket.receive();
+          if (datagram != null) _heard(datagram);
+        },
+        onError: (Object _) {
+          // Local UDP failures can arrive asynchronously, after send returns.
+          // Discovery is optional; HTTP and mDNS must remain usable.
+        },
+      );
+      _announce();
+      _announceTimer = Timer.periodic(const Duration(seconds: 5), (_) => _announce());
+    } on Object {
+      // Discovery is optional: the QR code and the address still work.
+    }
+    await _startMdns();
+  }
+
+  /// 3.x's mDNS announce and discovery (its service name `PureLive-<last 6
+  /// of the id>` and TXT record).
+  Future<void> _startMdns() async {
+    if (_disposed || !running || _mdnsRunning) return;
+    _mdnsRunning = true;
+    await _multicast.acquire();
+    final id = deviceId;
+    try {
+      await _mdns.start(
+        name: 'PureLive-${id.length > 6 ? id.substring(id.length - 6) : id}',
+        port: port,
+        attributes: {
+          'id': id,
+          'name': deviceName,
+          'platform': Platform.operatingSystem,
+          'version': appVersion,
+          'ip': localIp,
+        },
+        found: _foundOverMdns,
+        lost: (id) {
+          final device = _devices[id];
+          if (device != null && device.viaMdns) {
+            _devices.remove(id);
+            _changed();
+          }
+        },
+      );
+    } on Object {
+      // mDNS is optional like the broadcast.
+    }
+  }
+
+  void _foundOverMdns(MdnsPeer peer) {
+    if (_disposed || peer.id == deviceId || !isIpv4(peer.ip)) return;
+    final known = _devices[peer.id];
+    // 3.x answers on its fixed port; a service not resolved yet has port 0.
+    final port = peer.port > 0 && peer.port <= 65535 ? peer.port : RemoteSyncProtocol.defaultHttpPort;
+    _devices[peer.id] = RemoteSyncDevice(
+      id: peer.id,
+      name: peer.name.isEmpty ? 'PureLive' : peer.name,
+      platform: peer.platform,
+      version: peer.version,
+      ip: peer.ip,
+      port: port,
+      lastSeen: DateTime.now(),
+      viaMdns: known == null || known.viaMdns,
+    );
+    _changed();
+  }
+
+  void _announce() {
+    final socket = _discovery;
+    if (socket == null) return;
+    final packet = utf8.encode(
+      jsonEncode(
+        RemoteSyncProtocol.discoveryPacket(
+          id: deviceId,
+          name: deviceName,
+          ip: localIp,
+          port: port,
+          platform: Platform.operatingSystem,
+          version: appVersion,
+        ),
+      ),
+    );
+    try {
+      socket.send(packet, InternetAddress('255.255.255.255'), RemoteSyncProtocol.discoveryPort);
+    } on Object {
+      // A network without broadcast.
+    }
+    // Devices not heard for two minutes are gone (3.x); mDNS reports its
+    // devices' departure itself.
+    final now = DateTime.now();
+    final before = _devices.length;
+    _devices.removeWhere(
+      (_, device) => !device.viaMdns && now.difference(device.lastSeen) > const Duration(minutes: 2),
+    );
+    if (_devices.length != before) _changed();
+  }
+
+  void _heard(Datagram datagram) {
+    try {
+      final packet = jsonDecode(utf8.decode(datagram.data));
+      if (packet is! Map || packet['type'] != RemoteSyncProtocol.discoveryType) return;
+      final id = packet['id']?.toString() ?? '';
+      if (id.isEmpty || id == deviceId) return;
+      final ip = packet['ip']?.toString() ?? datagram.address.address;
+      final port = int.tryParse('${packet['port']}') ?? RemoteSyncProtocol.defaultHttpPort;
+      if (!isIpv4(ip) || port < 1 || port > 65535) return;
+      _devices[id] = RemoteSyncDevice(
+        id: id,
+        name: packet['name']?.toString() ?? 'PureLive',
+        platform: packet['platform']?.toString() ?? '',
+        version: packet['version']?.toString() ?? '',
+        ip: ip,
+        port: port,
+        lastSeen: DateTime.now(),
+      );
+      _changed();
+    } on Object {
+      // Not ours.
+    }
+  }
+}

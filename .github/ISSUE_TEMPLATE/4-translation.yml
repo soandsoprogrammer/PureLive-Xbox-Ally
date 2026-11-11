@@ -1,0 +1,68 @@
+name: 翻译和文字 / Translation
+description: 界面文字的错别字、翻译不准、说法别扭、文字被截断。Wrong or awkward interface text in any language.
+title: "[文字] "
+labels: ["翻译", "待分类"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        除中文外，其他语言的界面由 AI 翻译，没有母语者校对，非常欢迎指正。You can write in English or your own language.
+
+        一个 issue 可以列同一种语言的多处文字，用下面的表格格式写清每一处。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认 / Before you submit
+      options:
+        - label: 我已经搜索过，没有相同的反馈 / I searched existing issues
+          required: true
+        - label: 我用的是最新版本 / I am on the latest version
+          required: true
+  - type: dropdown
+    id: language
+    attributes:
+      label: 界面语言 / Interface language
+      options:
+        - 简体中文
+        - 繁體中文
+        - English
+        - 日本語
+        - 한국어
+        - Español
+        - Français
+        - Deutsch
+        - Português
+        - Русский
+        - Italiano
+        - Tiếng Việt
+        - ไทย
+        - Bahasa Indonesia
+        - Türkçe
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本 / App version
+      description: 设置 → 关于 / Settings → About
+      placeholder: 5.4.4（5108）
+    validations:
+      required: true
+  - type: textarea
+    id: items
+    attributes:
+      label: 要改的文字 / Text to fix
+      description: 每一处写：在哪个页面、现在的文字、建议的文字、原因。Where it appears, current text, suggested text, why.
+      value: |
+        | 页面 / Where | 现在 / Current | 建议 / Suggested | 原因 / Why |
+        |---|---|---|---|
+        | 设置 → 视频 → 小窗 |  |  |  |
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图 / Screenshots
+      description: 文字被截断、重叠时请一定附截图。
+    validations:
+      required: false

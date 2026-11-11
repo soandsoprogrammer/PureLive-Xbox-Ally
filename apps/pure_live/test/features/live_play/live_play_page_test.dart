@@ -1,0 +1,1098 @@
+import 'package:flutter/gestures.dart'
+    show PointerDeviceKind, kDoubleTapTimeout, kLongPressTimeout, kMiddleMouseButton, kSecondaryMouseButton;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:live_core/live_core.dart';
+import 'package:live_danmaku/live_danmaku.dart';
+import 'package:live_player/live_player.dart';
+import 'package:live_store/live_store.dart';
+import 'package:live_ui/live_ui.dart';
+import 'package:pure_live/app/desktop/desktop_window.dart';
+import 'package:pure_live/app/desktop/title_bar.dart';
+import 'package:pure_live/app/services.dart';
+import 'package:pure_live/features/live_play/live_play_page.dart';
+import 'package:pure_live/features/live_play/logic/background_playback.dart';
+import 'package:pure_live/features/live_play/logic/room_layout.dart';
+import 'package:pure_live/features/live_play/player/player_view.dart';
+import 'package:pure_live/routes/app_navigator.dart';
+import 'package:pure_live/routes/route_args.dart';
+import 'package:pure_live/routes/route_path.dart';
+import 'package:pure_live/shared/danmaku/danmaku_overlay.dart';
+import 'package:pure_live/shared/danmaku/emotes.dart';
+import 'package:pure_live/shared/rooms/room_gain.dart';
+
+import '../../support.dart';
+import 'live_play_support.dart';
+
+Future<AppServices> _pump(
+  WidgetTester tester, {
+  required FakeSite site,
+  required FakeDanmaku danmaku,
+  double width = 400,
+  LiveRoom? room,
+  bool desktopFrame = false,
+  EmoteLibrary? emotes,
+}) async {
+  tester.view
+    ..physicalSize = Size(width, 900)
+    ..devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  final services = (await tester.runAsync(testServices))!;
+  await tester.runAsync(loadStrings);
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        appServicesProvider.overrideWithValue(services),
+        if (emotes != null) emoteLibraryProvider.overrideWithValue(emotes),
+        sitesProvider.overrideWithValue(SiteRegistry({SiteIds.bilibili: () => site})),
+        danmakuProvider.overrideWithValue(DanmakuRegistry({SiteIds.bilibili: () => danmaku})),
+        playbackSessionFactoryProvider.overrideWithValue(({config}) => fakeSession(FakeEngine())),
+      ],
+      child: MaterialApp(
+        theme: const LiveTheme().light,
+        builder: desktopFrame ? (_, child) => DesktopFrame(enabled: true, child: child!) : null,
+        home: LivePlayPage(
+          route: RouteArgs(
+            RoutePath.kLivePlay,
+            arguments: room ?? LiveRoom(platform: SiteIds.bilibili, roomId: '6', nick: '主播'),
+          ),
+        ),
+      ),
+    ),
+  );
+  for (var i = 0; i < 5; i++) {
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await tester.pump();
+  }
+  return services;
+}
+
+/// Lets a setting reach the widgets.
+Future<void> _settle(WidgetTester tester) async {
+  for (var i = 0; i < 3; i++) {
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await tester.pump();
+  }
+}
+
+Future<void> _close(WidgetTester tester, AppServices services) async {
+  await tester.pumpWidget(const SizedBox.shrink());
+  await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+  await tester.pump(const Duration(seconds: 5));
+  await tester.runAsync(services.close);
+}
+
+Future<void> _pictureClick(WidgetTester tester, {int buttons = kMiddleMouseButton}) async {
+  await tester.tapAt(tester.getCenter(find.byType(RoomPlayer)), buttons: buttons, kind: PointerDeviceKind.mouse);
+  await _settle(tester);
+}
+
+void main() {
+  testWidgets('issue123 M restores the same volume across keyboard and toolbar mute', (tester) async {
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+    final controller = tester.widget<RoomPlayer>(find.byType(RoomPlayer)).controller;
+    await controller.setVolume(0.65, save: true);
+    await _settle(tester);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyM);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyM);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyM);
+    await _settle(tester);
+    expect(controller.volume, 0, reason: 'a held mute key toggles only once');
+    final button = find.byTooltip('取消静音');
+    await tester.tap(button);
+    await _settle(tester);
+    expect(controller.volume, closeTo(0.65, 0.001), reason: 'toolbar and key share the pre-mute volume');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyM);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await _settle(tester);
+    expect(controller.volume, closeTo(0.65, 0.001));
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+    await _settle(tester);
+    final field = find.byKey(const ValueKey('local-composer-input'));
+    await tester.enterText(field, 'typing m');
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyM);
+    await _settle(tester);
+    expect(controller.volume, closeTo(0.65, 0.001), reason: 'M in an editor belongs to text input');
+    expect(tester.widget<TextField>(field).controller!.text, 'typing m');
+    await _close(tester, services);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+  testWidgets('issue108 player bar directly opens persistent signed gain without changing volume', (tester) async {
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+    final controller = tester.widget<RoomPlayer>(find.byType(RoomPlayer)).controller;
+    await controller.setVolume(0.65);
+    final gain = find.byKey(const ValueKey('live-play-gain'));
+    expect(gain, findsOneWidget);
+    await tester.tap(gain);
+    await tester.pumpAndSettle();
+    final slider = tester.widget<Slider>(find.byKey(const ValueKey('room-gain-slider')));
+    expect((slider.min, slider.max), (-12, 12));
+    slider.onChanged!(-6);
+    slider.onChangeEnd!(-6);
+    await _settle(tester);
+    expect(RoomGain.effective(services.store.settings, controller.room), -6);
+    expect(controller.volume, closeTo(0.65, 0.001));
+    await tester.tap(find.byKey(const ValueKey('room-gain-reset')));
+    await _settle(tester);
+    expect(RoomGain.overrideOf(services.store.settings, controller.room), isNull);
+    await tester.tap(find.text('关闭').last);
+    await tester.pumpAndSettle();
+    expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).controller, same(controller));
+    await _close(tester, services);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+  testWidgets('phone: header, room strip, qualities, chat and flying danmaku; follow and unfollow', (tester) async {
+    final danmaku = FakeDanmaku();
+    final emotes = EmoteLibrary(bundle: FileAssetBundle());
+    await tester.runAsync(() => emotes.load(SiteIds.bilibili));
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku, emotes: emotes);
+    AppNavigator.toast = (_) {};
+
+    expect(find.byKey(const ValueKey('live-play-portrait-stack')), findsOneWidget);
+    expect(find.text('主播'), findsWidgets);
+    // U.2a change 1: "平台 · 分区" under the name (3.x wrote "平台 / 分区").
+    expect(find.text('哔哩哔哩 · 英雄联盟'), findsOneWidget);
+    expect(find.text('今晚开黑'), findsWidgets);
+    // U.2a change 7: the figure is an icon and the number; its name is the
+    // tooltip (3.x wrote "热度 12.0万").
+    expect(find.text('12.0万'), findsOneWidget);
+    expect(find.byTooltip('热度'), findsOneWidget);
+    expect(find.text('原画'), findsOneWidget);
+    expect(find.text('线路1'), findsOneWidget);
+    expect(find.text('弹幕列表'), findsOneWidget);
+    expect(danmaku.connects, ['args-6']);
+
+    danmaku.chat('第一条弹幕');
+    await tester.pump();
+    expect(find.textContaining('第一条弹幕', findRichText: true), findsOneWidget);
+    final overlay = tester.state<DanmakuOverlayState>(find.byType(DanmakuOverlay));
+    expect(overlay.flyingCount, 1);
+
+    // M13.16: the platform's bundled emoticons are pictures in the chat list.
+    expect(emotes.tableOf(SiteIds.bilibili).codes, contains('[dog]'));
+    danmaku.chat('好[dog]');
+    await tester.pump();
+    final pictures = tester.widgetList<Image>(
+      find.descendant(of: find.byKey(const ValueKey('live-play-chat')), matching: find.byType(Image)),
+    );
+    expect(
+      [for (final picture in pictures) ((picture.image as ResizeImage).imageProvider as AssetImage).assetName],
+      ['assets/emo/images/bilibili/dog.png'],
+    );
+
+    await tester.tap(find.byKey(const ValueKey('live-play-follow')));
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    expect((await tester.runAsync(services.store.follows.all))!.single.title, '今晚开黑');
+    // U.2a change 12: "✓ 已关注" instead of 3.x's filled heart.
+    expect(find.descendant(of: find.byKey(const ValueKey('live-play-follow')), matching: find.text('已关注')), findsOne);
+    expect(find.byIcon(AppIcons.followed), findsOneWidget);
+
+    // U.2n c8 (B-15): a small menu under the button says who and offers
+    // "取消关注" in red; no centred dialog.
+    await tester.tap(find.byKey(const ValueKey('live-play-follow')));
+    await tester.pumpAndSettle();
+    expect(find.byType(Dialog), findsNothing);
+    expect(find.text('主播 · 哔哩哔哩'), findsOneWidget);
+    final confirm = find.byKey(const ValueKey('unfollow-confirm'));
+    expect(find.descendant(of: confirm, matching: find.text('取消关注')), findsOneWidget);
+    final scheme = Theme.of(tester.element(confirm)).colorScheme;
+    expect(tester.widget<Text>(find.descendant(of: confirm, matching: find.text('取消关注'))).style?.color, scheme.error);
+    expect(
+      tester.getRect(confirm).top,
+      greaterThan(tester.getRect(find.byKey(const ValueKey('live-play-follow'))).bottom),
+      reason: 'under the button',
+    );
+    await tester.tap(confirm);
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(await tester.runAsync(services.store.follows.all), isEmpty);
+    // Then a toast with "撤销", which puts the room back.
+    expect(find.text('已取消关注 主播'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('app-toast-action')));
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pumpAndSettle();
+    expect((await tester.runAsync(services.store.follows.all))!.single.title, '今晚开黑');
+
+    await _close(tester, services);
+  });
+
+  testWidgets('room details show the announcement and the time on air', (tester) async {
+    final started = DateTime.now().subtract(const Duration(minutes: 30));
+    final services = await _pump(
+      tester,
+      site: FakeSite(liveRoom(startedAt: started)),
+      danmaku: FakeDanmaku(),
+    );
+    // U.2a change 7: the time on air on the strip (was "已开播 30 分钟"); B09
+    // c5 (audit B-16): in words, not "0:30".
+    expect(find.text('30 分钟'), findsOneWidget);
+
+    // U.2a: the details open over the chat instead of the old bottom sheet.
+    await tester.tap(find.byKey(const ValueKey('live-play-info')));
+    await tester.pumpAndSettle();
+    expect(find.text('公告'), findsOneWidget);
+    expect(find.text('每晚八点开播'), findsOneWidget);
+    expect(find.textContaining('已播 30 分钟'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-play-details')), findsNothing);
+    await _close(tester, services);
+  });
+
+  testWidgets('block list: a word added in the tab is stored', (tester) async {
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku());
+    AppNavigator.toast = (_) {};
+    await tester.tap(find.text('屏蔽管理'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('live-play-block-input')), '剧透');
+    await tester.tap(find.byKey(const ValueKey('live-play-block-add')));
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    expect(await tester.runAsync(() => services.store.blockLists.list(BlockKind.keyword)), ['剧透']);
+    await _close(tester, services);
+  });
+
+  testWidgets('offline and failed rooms say why; wide windows put the chat beside the video', (tester) async {
+    final site = FakeSite(liveRoom(status: LiveStatus.offline));
+    var services = await _pump(tester, site: site, danmaku: FakeDanmaku(), width: 1200);
+    expect(find.byKey(const ValueKey('live-play-desktop-split')), findsOneWidget);
+    expect(find.text('当前主播未开播或已下播'), findsOneWidget);
+    await _close(tester, services);
+
+    final failing = FakeSite(liveRoom())..detailError = const NotFound(SiteIds.bilibili);
+    services = await _pump(tester, site: failing, danmaku: FakeDanmaku());
+    expect(find.text('直播间不存在或已被删除'), findsOneWidget);
+    // U.2g c10: a room that does not exist offers another room, not a retry.
+    expect(find.text('切换直播间'), findsOneWidget);
+    expect(find.text('重试'), findsNothing);
+    await _close(tester, services);
+  });
+
+  testWidgets('M13.16: back from picture-in-picture the controls hide again and answer; shaded bars', (tester) async {
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku());
+    final player = tester.state(find.byType(RoomPlayer));
+    // The bars sit on a dark shade reaching past them: U.2a change 3 makes
+    // it 60 % black at the edge (M13.16 had 70 %), fading into the picture.
+    final shade = tester.widget<DecoratedBox>(find.byKey(const ValueKey('live-play-bottom-shade')));
+    expect(((shade.decoration as BoxDecoration).gradient! as LinearGradient).colors.first, OnVideoColors.scrim);
+
+    PictureInPicture.active.value = true;
+    await tester.pump();
+    expect(find.byKey(const ValueKey('live-play-fullscreen')), findsNothing, reason: 'only the picture');
+    expect(tester.state(find.byType(RoomPlayer)), same(player), reason: 'one player across the layouts');
+    await tester.pump(const Duration(seconds: 5));
+
+    PictureInPicture.active.value = false;
+    await tester.pump();
+    expect(tester.state(find.byType(RoomPlayer)), same(player));
+    Finder controls() =>
+        find.ancestor(of: find.byKey(const ValueKey('live-play-fullscreen')), matching: find.byType(AnimatedOpacity));
+    expect(tester.widget<AnimatedOpacity>(controls()).opacity, 1);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    expect(tester.widget<AnimatedOpacity>(controls()).opacity, 0, reason: 'hidden again after 4 s');
+
+    // A tap shows them; the fullscreen button works.
+    await tester.tap(find.byType(LiveVideoView));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.byKey(const ValueKey('live-play-fullscreen')));
+    await tester.pump();
+    expect(find.text('弹幕列表'), findsNothing);
+    expect(find.byKey(const ValueKey('live-play-top-shade')), findsOneWidget);
+    expect(tester.state(find.byType(RoomPlayer)), same(player));
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(find.text('弹幕列表'), findsOneWidget);
+    await _close(tester, services);
+  });
+
+  testWidgets('fullscreen hides the chat; back leaves fullscreen first', (tester) async {
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku());
+    await tester.tap(find.byKey(const ValueKey('live-play-fullscreen')));
+    await tester.pump();
+    expect(find.text('弹幕列表'), findsNothing);
+    expect(find.text('今晚开黑'), findsOneWidget);
+
+    final popped = await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(popped, isTrue);
+    expect(find.text('弹幕列表'), findsOneWidget);
+    await _close(tester, services);
+  });
+
+  group('F.2b: a tap or long press on a flying danmaku', () {
+    /// Three danmaku in, the third (lane 3, below the top bar) a second in.
+    Future<(DanmakuOverlayState, Offset)> fly(WidgetTester tester, FakeDanmaku danmaku, {String user = '路人'}) async {
+      danmaku
+        ..chat('第一条')
+        ..chat('第二条')
+        ..chat('点这一条弹幕', user: user);
+      await tester.pump();
+      for (var i = 0; i < 60; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      final overlay = tester.state<DanmakuOverlayState>(find.byType(DanmakuOverlay));
+      final (_, rect) = overlay.debugFlying.firstWhere((item) => item.$1.message == '点这一条弹幕');
+      final box = tester.renderObject<RenderBox>(find.byType(DanmakuOverlay));
+      return (overlay, box.localToGlobal(rect.center));
+    }
+
+    DanmakuOverlay overlay(WidgetTester tester) => tester.widget(find.byType(DanmakuOverlay));
+
+    /// Where the danmaku [fly] aimed at is now.
+    Offset now(WidgetTester tester, DanmakuOverlayState state) {
+      final (_, rect) = state.debugFlying.firstWhere((item) => item.$1.message == '点这一条弹幕');
+      return tester.renderObject<RenderBox>(find.byType(DanmakuOverlay)).localToGlobal(rect.center);
+    }
+
+    double shown(WidgetTester tester) => tester
+        .widget<AnimatedOpacity>(
+          find.ancestor(of: find.byKey(const ValueKey('live-play-fullscreen')), matching: find.byType(AnimatedOpacity)),
+        )
+        .opacity;
+
+    testWidgets('desktop secondary click on a flying message opens actions before fullscreen', (tester) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku, width: 1280);
+      final (_, at) = await fly(tester, danmaku);
+      await tester.tapAt(at, buttons: kSecondaryMouseButton, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsOneWidget);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      await tester.tap(find.byKey(const ValueKey('room-panel-close')));
+      await tester.pump(const Duration(seconds: 1));
+      await _close(tester, services);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    testWidgets('desktop secondary press keeps its message target while the message moves', (tester) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku, width: 1280);
+      await tester.runAsync(() => services.store.settings.set(Settings.holdDanmakuOnPress, false));
+      await _settle(tester);
+      final (_, at) = await fly(tester, danmaku);
+      final pointer = await tester.createGesture(buttons: kSecondaryMouseButton, kind: PointerDeviceKind.mouse);
+      await pointer.down(at);
+      for (var i = 0; i < 240; i++) {
+        await tester.pump(const Duration(milliseconds: 17));
+      }
+      await pointer.up();
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsOneWidget);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      await tester.tap(find.byKey(const ValueKey('room-panel-close')));
+      await tester.pump(const Duration(seconds: 1));
+      await _close(tester, services);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    for (final fullscreen in [false, true]) {
+      testWidgets('issue 75: middle press on a moving message does not toggle (fullscreen=$fullscreen)', (
+        tester,
+      ) async {
+        final danmaku = FakeDanmaku();
+        final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku, width: 1280);
+        await tester.runAsync(() => services.store.settings.set(Settings.holdDanmakuOnPress, false));
+        await _settle(tester);
+        if (fullscreen) {
+          await tester.tap(find.byKey(const ValueKey('live-play-fullscreen')));
+          await _settle(tester);
+        }
+        final (_, at) = await fly(tester, danmaku);
+        final pointer = await tester.startGesture(at, buttons: kMiddleMouseButton, kind: PointerDeviceKind.mouse);
+        await tester.pump(const Duration(seconds: 2));
+        await pointer.up();
+        await _settle(tester);
+        expect(
+          tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display,
+          fullscreen ? RoomDisplay.fullscreen : RoomDisplay.inline,
+        );
+        expect(DesktopWindow.fullScreen.value, fullscreen);
+        expect(find.byKey(const ValueKey('live-play-message-sheet')), findsNothing);
+        await _close(tester, services);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+    }
+
+    testWidgets('opens the long-press sheet; the danmaku stand until it closes', (tester) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+      AppNavigator.toast = (_) {};
+      final (state, at) = await fly(tester, danmaku);
+      await tester.tapAt(at);
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsOneWidget);
+      expect(find.byKey(const ValueKey('live-play-copy-message')), findsOneWidget);
+      expect(find.byKey(const ValueKey('live-play-block-user')), findsOneWidget);
+      expect(find.byKey(const ValueKey('live-play-block-keyword')), findsOneWidget);
+      expect(overlay(tester).held, isTrue);
+      final rect = state.debugFlying.last.$2;
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(state.debugFlying.last.$2, rect, reason: 'held');
+
+      await tester.tap(find.byKey(const ValueKey('room-panel-close')));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsNothing);
+      expect(overlay(tester).held, isFalse);
+
+      // The long press opens the same sheet.
+      final (_, again) = await fly(tester, danmaku);
+      await tester.longPressAt(again);
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('room-panel-close')));
+      await tester.pump(const Duration(milliseconds: 400));
+      await _close(tester, services);
+    });
+
+    testWidgets('long press off: a held press is not a tap and opens nothing', (tester) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+      AppNavigator.toast = (_) {};
+      await tester.runAsync(() => services.store.settings.set(Settings.enableDanmakuLongPressInteraction, false));
+      await _settle(tester);
+      final (_, at) = await fly(tester, danmaku);
+      // No long-press recognizer competes: the tap recognizer still calls
+      // onTap when the finger lifts, so a 2 s hold used to open the sheet
+      // through the tap switch.
+      final press = await tester.startGesture(at);
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1));
+      await press.up();
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsNothing);
+      await _close(tester, services);
+    });
+
+    testWidgets('A07.14: a tap opens the actions once a double tap is ruled out; a double tap only toggles', (
+      tester,
+    ) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+      AppNavigator.toast = (_) {};
+      final sheet = find.byKey(const ValueKey('live-play-message-sheet'));
+      final (_, at) = await fly(tester, danmaku);
+      await tester.tapAt(at);
+      await tester.pump();
+      expect(sheet, findsNothing, reason: 'a second tap may still come');
+      expect(overlay(tester).held, isFalse);
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pump(const Duration(seconds: 1));
+      expect(sheet, findsOneWidget, reason: 'the message the tap went down on');
+      expect(overlay(tester).held, isTrue);
+      await tester.tap(find.byKey(const ValueKey('room-panel-close')));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // The double tap: not a frame of the sheet, the danmaku never stand.
+      final (_, again) = await fly(tester, danmaku);
+      await tester.tapAt(again);
+      await tester.pump();
+      expect(sheet, findsNothing);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(sheet, findsNothing);
+      expect(overlay(tester).held, isFalse);
+      await tester.tapAt(again);
+      await tester.pump();
+      expect(sheet, findsNothing);
+      expect(overlay(tester).held, isFalse);
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(sheet, findsNothing);
+        expect(overlay(tester).held, isFalse);
+      }
+      expect(find.byType(AppBar), findsNothing, reason: 'fullscreen');
+      await _close(tester, services);
+    });
+
+    testWidgets('A08.9 (D-038): controls hidden, a tap on a danmaku only brings them; shown, it opens the sheet', (
+      tester,
+    ) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+      AppNavigator.toast = (_) {};
+      await tester.pump(const Duration(seconds: 5));
+      expect(shown(tester), 0, reason: 'the controls hid');
+      final (state, at) = await fly(tester, danmaku);
+      await tester.tapAt(at);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsNothing);
+      expect(overlay(tester).held, isFalse);
+      expect(shown(tester), 1, reason: 'the tap brought the controls');
+
+      await tester.tapAt(now(tester, state));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsOneWidget, reason: 'the controls showed');
+      expect(overlay(tester).held, isTrue);
+      await tester.tap(find.byKey(const ValueKey('room-panel-close')));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      await _close(tester, services);
+    });
+
+    testWidgets('A08.9 (A07.10): paused, a tap on a standing danmaku only hides or shows the controls', (tester) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+      AppNavigator.toast = (_) {};
+      final (state, _) = await fly(tester, danmaku);
+      final session = tester.widget<RoomPlayer>(find.byType(RoomPlayer)).controller.session;
+      await tester.runAsync(session.togglePlayPause);
+      await tester.pump();
+      expect(session.state.status, PlaybackStatus.paused);
+      await tester.pump(const Duration(seconds: 5));
+      expect(shown(tester), 1, reason: 'paused, the controls stay');
+      final at = now(tester, state);
+      await tester.tapAt(at);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsNothing);
+      expect(shown(tester), 0);
+      await tester.tapAt(at);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsNothing);
+      expect(shown(tester), 1);
+      await _close(tester, services);
+    });
+
+    testWidgets('D03.4 (V01.3): turned off, a finger on a flying danmaku does not stop it (3.x)', (tester) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+      expect(services.store.settings.get(Settings.holdDanmakuOnPress), isTrue, reason: 'on by default (D-039)');
+      await tester.runAsync(() => services.store.settings.set(Settings.holdDanmakuOnPress, false));
+      await _settle(tester);
+      final (state, at) = await fly(tester, danmaku);
+      final gesture = await tester.startGesture(at);
+      for (var i = 0; i < 18; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      expect(state.pinnedMessage, isNull);
+      expect(now(tester, state).dx, lessThan(at.dx - 20), reason: 'it flew on under the finger');
+      await gesture.cancel();
+      await tester.pump(const Duration(seconds: 1));
+      await _close(tester, services);
+    });
+
+    testWidgets('D03.4 (V01.3): on, a pressed danmaku stands while the others fly; let go, it flies on', (
+      tester,
+    ) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+      AppNavigator.toast = (_) {};
+      await tester.runAsync(() => services.store.settings.set(Settings.holdDanmakuOnPress, true));
+      await _settle(tester);
+      final sheet = find.byKey(const ValueKey('live-play-message-sheet'));
+      Rect rectOf(DanmakuOverlayState state, String text) =>
+          state.debugFlying.firstWhere((item) => item.$1.message == text).$2;
+
+      // Pressed: that one stands, the first one flies on.
+      var (state, at) = await fly(tester, danmaku, user: '按住1');
+      final first = rectOf(state, '第一条');
+      final gesture = await tester.startGesture(at);
+      await tester.pump();
+      expect(state.pinnedMessage?.message, '点这一条弹幕');
+      for (var i = 0; i < 18; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      expect(now(tester, state), at, reason: 'it stands under the finger');
+      expect(rectOf(state, '第一条').left, lessThan(first.left - 20), reason: 'the others fly on');
+      expect(overlay(tester).held, isFalse);
+      // Let go: it flies on from there; the tap still opens its actions
+      // once a double tap is ruled out (A07.14, D-038: the controls show).
+      await gesture.up();
+      await tester.pump();
+      expect(state.pinnedMessage, isNull);
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pump(const Duration(seconds: 1));
+      expect(sheet, findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('room-panel-close')));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(now(tester, state).dx, lessThan(at.dx - 20), reason: 'flying again');
+
+      // A long press opens the pinned one's actions; everything stands.
+      (state, at) = await fly(tester, danmaku, user: '按住2');
+      final press = await tester.startGesture(at);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(sheet, findsOneWidget);
+      expect(overlay(tester).held, isTrue);
+      await press.up();
+      await tester.pump();
+      expect(state.pinnedMessage, isNull);
+      await tester.tap(find.byKey(const ValueKey('room-panel-close')));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(overlay(tester).held, isFalse);
+
+      // A drag from it (volume, brightness) lets it go.
+      (state, at) = await fly(tester, danmaku, user: '按住3');
+      final drag = await tester.startGesture(at);
+      await tester.pump();
+      expect(state.pinnedMessage, isNotNull);
+      await drag.moveBy(const Offset(0, 40));
+      await tester.pump();
+      expect(state.pinnedMessage, isNull);
+      await drag.up();
+      await tester.pump(const Duration(seconds: 2));
+
+      // A double tap on it still only toggles the fullscreen.
+      (state, at) = await fly(tester, danmaku, user: '按住4');
+      await tester.tapAt(at);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(at);
+      await tester.pump();
+      expect(state.pinnedMessage, isNull);
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(sheet, findsNothing);
+      }
+      expect(find.byType(AppBar), findsNothing, reason: 'fullscreen');
+      await _close(tester, services);
+    });
+
+    testWidgets('B01 c1: a masked sender (观***) has no "屏蔽此用户" in the sheet', (tester) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+      AppNavigator.toast = (_) {};
+      final (_, at) = await fly(tester, danmaku, user: '观***');
+      await tester.tapAt(at);
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsOneWidget);
+      expect(find.byKey(const ValueKey('live-play-block-user')), findsNothing);
+      expect(find.byKey(const ValueKey('live-play-block-keyword')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('room-panel-close')));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      await _close(tester, services);
+    });
+
+    testWidgets('with the tap switch off, a tap only shows or hides the controls; never on the bars', (tester) async {
+      final danmaku = FakeDanmaku();
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+      await tester.runAsync(() => services.store.settings.set(Settings.enableDanmakuTapInteraction, false));
+      await _settle(tester);
+      final (_, at) = await fly(tester, danmaku);
+      await tester.tapAt(at);
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('live-play-message-sheet')), findsNothing);
+      await _close(tester, services);
+
+      expect(
+        danmakuTapAllowed(
+          local: const Offset(10, 40),
+          size: const Size(400, 225),
+          controlsVisible: true,
+          top: 52,
+          bottom: 52,
+        ),
+        isFalse,
+      );
+      expect(
+        danmakuTapAllowed(
+          local: const Offset(10, 200),
+          size: const Size(400, 225),
+          controlsVisible: true,
+          top: 52,
+          bottom: 52,
+        ),
+        isFalse,
+      );
+      expect(
+        danmakuTapAllowed(
+          local: const Offset(10, 100),
+          size: const Size(400, 225),
+          controlsVisible: true,
+          top: 52,
+          bottom: 52,
+        ),
+        isTrue,
+      );
+      expect(
+        danmakuTapAllowed(
+          local: const Offset(10, 40),
+          size: const Size(400, 225),
+          controlsVisible: false,
+          top: 52,
+          bottom: 52,
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  testWidgets('F.2a, U.2h c10: the room passes the frame rate, the font and text-only; a paused video stops them', (
+    tester,
+  ) async {
+    final danmaku = FakeDanmaku();
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+    await tester.runAsync(() async {
+      await services.store.settings.set(Settings.danmakuAutoFps, false);
+      await services.store.settings.set(Settings.danmakuFps, 30);
+      await services.store.settings.set(Settings.danmakuFontFamilyName, 'LXGWWenKai');
+      await services.store.settings.set(Settings.noEmojiMode, true);
+    });
+    await _settle(tester);
+    var overlay = tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay));
+    expect(overlay.maxVisible, 48, reason: 'D05.2: "同屏最大弹幕条数" is 3.x\'s 48 by default');
+    expect(overlay.fps, 30);
+    expect(overlay.look.fontFamily, 'LXGWWenKai');
+    expect(overlay.look.textOnly, isTrue);
+    expect(overlay.running, isTrue);
+
+    final room = tester.widget<RoomPlayer>(find.byType(RoomPlayer)).controller;
+    await tester.runAsync(room.session.togglePlayPause);
+    await tester.pump();
+    overlay = tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay));
+    expect(overlay.running, isFalse);
+    danmaku.chat('暂停时不飞');
+    await tester.pump();
+    expect(tester.state<DanmakuOverlayState>(find.byType(DanmakuOverlay)).flyingCount, 0);
+
+    // B02 c3: "暂停时的弹幕 · 继续飘过" lets them fly on while paused.
+    await tester.runAsync(() => services.store.settings.set(Settings.danmakuPausedBehavior, 'continue'));
+    await tester.pump();
+    expect(tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay)).running, isTrue);
+    danmaku.chat('暂停时照飞');
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.state<DanmakuOverlayState>(find.byType(DanmakuOverlay)).flyingCount, 1);
+    await tester.runAsync(() => services.store.settings.set(Settings.danmakuPausedBehavior, 'pause'));
+    await tester.pump();
+    expect(tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay)).running, isFalse);
+    await _close(tester, services);
+  });
+
+  testWidgets('D05.2: "同屏最大弹幕条数" applies to the room\'s picture at once', (tester) async {
+    final danmaku = FakeDanmaku();
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: danmaku);
+    await tester.runAsync(() => services.store.settings.set(Settings.danmakuMaxVisibleCount, 10));
+    await _settle(tester);
+    expect(tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay)).maxVisible, 10);
+    await tester.runAsync(() => services.store.settings.set(Settings.danmakuMaxVisibleCount, 120));
+    await _settle(tester);
+    expect(tester.widget<DanmakuOverlay>(find.byType(DanmakuOverlay)).maxVisible, 120);
+    await _close(tester, services);
+  });
+
+  testWidgets('F.1a: "屏幕常亮" off, the room does not keep the screen on; on again, at once', (tester) async {
+    final applied = <bool>[];
+    ScreenWake.reset();
+    ScreenWake.apply = ({required enabled}) async => applied.add(enabled);
+    addTearDown(ScreenWake.reset);
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku());
+    expect(applied, [true], reason: 'on by default (3.x), while it plays');
+    await tester.runAsync(() => services.store.settings.set(Settings.enableScreenKeepOn, false));
+    await _settle(tester);
+    expect(applied, [true, false]);
+    await tester.runAsync(() => services.store.settings.set(Settings.enableScreenKeepOn, true));
+    await _settle(tester);
+    expect(applied, [true, false, true]);
+    await _close(tester, services);
+    expect(applied.last, isFalse, reason: 'released when the room goes');
+  });
+  group('issue 75: Windows fullscreen mouse shortcuts', () {
+    setUp(() {
+      DesktopWindow.fullScreen.value = false;
+      DesktopWindow.maximized.value = false;
+    });
+    tearDown(() {
+      DesktopWindow.fullScreen.value = false;
+      DesktopWindow.maximized.value = false;
+    });
+
+    for (final maximized in [false, true]) {
+      testWidgets('middle toggles system fullscreen, preserving the player (maximized=$maximized)', (tester) async {
+        DesktopWindow.maximized.value = maximized;
+        final services = await _pump(
+          tester,
+          site: FakeSite(liveRoom()),
+          danmaku: FakeDanmaku(),
+          width: 1280,
+          desktopFrame: true,
+        );
+        final player = tester.state(find.byType(RoomPlayer));
+        final controller = tester.widget<RoomPlayer>(find.byType(RoomPlayer)).controller;
+        expect(find.byType(DesktopTitleBar), findsOneWidget);
+        for (var i = 0; i < 3; i++) {
+          await _pictureClick(tester);
+          expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+          expect(DesktopWindow.fullScreen.value, isTrue);
+          expect(find.byType(DesktopTitleBar), findsNothing);
+          await _pictureClick(tester);
+          expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+          expect(DesktopWindow.fullScreen.value, isFalse);
+          expect(find.byType(DesktopTitleBar), findsOneWidget);
+          expect(tester.state(find.byType(RoomPlayer)), same(player));
+          expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).controller, same(controller));
+          // This checks Dart state only, not the native window's geometry.
+          expect(DesktopWindow.maximized.value, maximized);
+        }
+        await _close(tester, services);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+    }
+
+    testWidgets('middle enters system fullscreen from in-window; right remains independent', (tester) async {
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+      await _pictureClick(tester, buttons: kSecondaryMouseButton);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.windowFullscreen);
+      expect(DesktopWindow.fullScreen.value, isFalse);
+      await _pictureClick(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      expect(DesktopWindow.fullScreen.value, isTrue);
+      await _pictureClick(tester, buttons: kSecondaryMouseButton);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      expect(DesktopWindow.fullScreen.value, isTrue, reason: 'right does not change native fullscreen');
+      await _pictureClick(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      expect(DesktopWindow.fullScreen.value, isFalse);
+      await _pictureClick(tester, buttons: kSecondaryMouseButton);
+      await _pictureClick(tester, buttons: kSecondaryMouseButton);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      expect(DesktopWindow.fullScreen.value, isFalse);
+      await _close(tester, services);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    testWidgets('F, double tap, Esc and native exit keep their existing contracts', (tester) async {
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+      await _pictureClick(tester, buttons: kSecondaryMouseButton);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      expect(DesktopWindow.fullScreen.value, isFalse, reason: 'F leaves in-window fullscreen as before');
+      await _pictureClick(tester, buttons: kSecondaryMouseButton);
+      await tester.tapAt(tester.getCenter(find.byType(RoomPlayer)));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(tester.getCenter(find.byType(RoomPlayer)));
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      expect(DesktopWindow.fullScreen.value, isFalse, reason: 'double tap leaves in-window fullscreen as before');
+      await _pictureClick(tester);
+      await tester.tap(find.byKey(const ValueKey('live-play-menu')), kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('panel-menu')), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('panel-menu')), findsNothing);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      expect(DesktopWindow.fullScreen.value, isTrue, reason: 'Esc closes the panel before fullscreen');
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      expect(DesktopWindow.fullScreen.value, isFalse);
+      await _pictureClick(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      expect(DesktopWindow.fullScreen.value, isFalse);
+      await _pictureClick(tester);
+      DesktopWindow.fullScreen.value = false;
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      await _pictureClick(tester);
+      await _close(tester, services);
+      expect(DesktopWindow.fullScreen.value, isFalse, reason: 'closing the room also leaves native fullscreen');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    testWidgets('middle leaves visible controls, text input and panels to their handlers', (tester) async {
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+      final top = tester.getTopLeft(find.byType(RoomPlayer)) + const Offset(100, 15);
+      await tester.tapAt(top, buttons: kMiddleMouseButton, kind: PointerDeviceKind.mouse);
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      await _pictureClick(tester);
+      final field = find.byKey(const ValueKey('local-composer-input'));
+      await tester.enterText(field, '保留输入内容');
+      final text = tester.widget<TextField>(field).controller!
+        ..selection = const TextSelection(baseOffset: 0, extentOffset: 2);
+      await tester.pump();
+      await tester.tap(field, buttons: kMiddleMouseButton, kind: PointerDeviceKind.mouse);
+      await _settle(tester);
+      expect(text.text, '保留输入内容');
+      expect(text.selection, const TextSelection(baseOffset: 0, extentOffset: 2));
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      await tester.tap(find.byKey(const ValueKey('live-play-menu')));
+      // Build the new panel before advancing its entrance animation.
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      final panel = find.byKey(const ValueKey('panel-menu'));
+      expect(panel, findsOneWidget);
+      expect(tester.getRect(panel).right, closeTo(1280, 1), reason: 'the actual panel has finished sliding on screen');
+      final close = find.byKey(const ValueKey('room-panel-close'));
+      expect(close.hitTestable(), findsOneWidget);
+      await tester.tap(close, buttons: kMiddleMouseButton, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(seconds: 1));
+      expect(panel, findsOneWidget);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      await tester.tap(close, kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byKey(const ValueKey('panel-menu')), findsNothing);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      expect(DesktopWindow.fullScreen.value, isTrue, reason: 'the panel control does not toggle fullscreen');
+      await _close(tester, services);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    testWidgets('cancelled, dragged and combined-button clicks do not toggle', (tester) async {
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+      final at = tester.getCenter(find.byType(RoomPlayer));
+      final cancelled = await tester.startGesture(at, buttons: kMiddleMouseButton, kind: PointerDeviceKind.mouse);
+      await cancelled.cancel();
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      final dragged = await tester.startGesture(at, buttons: kMiddleMouseButton, kind: PointerDeviceKind.mouse);
+      await dragged.moveBy(const Offset(80, 0));
+      await dragged.up();
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      await _pictureClick(tester, buttons: kMiddleMouseButton | kSecondaryMouseButton);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      final changed = TestPointer(41, PointerDeviceKind.mouse, 0, kMiddleMouseButton);
+      await tester.sendEventToBinding(changed.down(at));
+      await tester.sendEventToBinding(changed.move(at, buttons: kMiddleMouseButton | kSecondaryMouseButton));
+      await tester.sendEventToBinding(changed.up());
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      await tester.tapAt(at, buttons: kMiddleMouseButton);
+      await _settle(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      expect(DesktopWindow.fullScreen.value, isFalse);
+      await _pictureClick(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      await _close(tester, services);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    testWidgets('a modal dialog owns middle clicks until it closes', (tester) async {
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+      await tester.tap(find.byKey(const ValueKey('live-play-fullscreen')));
+      await _settle(tester);
+      final context = tester.element(find.byType(RoomPlayer));
+      final navigator = Navigator.of(context, rootNavigator: true);
+      showDialog<void>(
+        context: context,
+        builder: (_) => const AlertDialog(content: SizedBox(width: 240, height: 160, child: Text('保留弹窗'))),
+      ).ignore();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.tap(find.byType(AlertDialog), buttons: kMiddleMouseButton, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byType(AlertDialog), findsOneWidget);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      expect(DesktopWindow.fullScreen.value, isTrue);
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+      await _pictureClick(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      expect(DesktopWindow.fullScreen.value, isFalse);
+      await _close(tester, services);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    testWidgets('middle cannot exit a locked fullscreen', (tester) async {
+      final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+      await _pictureClick(tester);
+      await tester.tap(find.byKey(const ValueKey('live-play-lock')));
+      await tester.pump(const Duration(seconds: 1));
+      await _pictureClick(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      expect(DesktopWindow.fullScreen.value, isTrue);
+      await tester.tap(find.byKey(const ValueKey('live-play-unlock')));
+      await tester.pump(const Duration(seconds: 1));
+      await _pictureClick(tester);
+      expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+      expect(DesktopWindow.fullScreen.value, isFalse);
+      await _close(tester, services);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    testWidgets('middle matches the fullscreen button after editing and interacting with a panel', (tester) async {
+      final outcomes = <({RoomDisplay display, bool systemFullscreen, bool panelOpen})>[];
+      for (final middle in [false, true]) {
+        final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+        if (middle) {
+          await _pictureClick(tester);
+        } else {
+          await tester.tap(find.byKey(const ValueKey('live-play-fullscreen')));
+          await _settle(tester);
+        }
+        expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+        final field = find.byKey(const ValueKey('local-composer-input'));
+        await tester.enterText(field, '保留输入内容');
+        final text = tester.widget<TextField>(field).controller!
+          ..selection = const TextSelection(baseOffset: 0, extentOffset: 2);
+        await tester.pump();
+        await tester.tap(field, buttons: kMiddleMouseButton, kind: PointerDeviceKind.mouse);
+        await _settle(tester);
+        expect(text.text, '保留输入内容');
+        expect(text.selection, const TextSelection(baseOffset: 0, extentOffset: 2));
+        await tester.tap(find.byKey(const ValueKey('live-play-menu')));
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        final panel = find.byKey(const ValueKey('panel-menu'));
+        expect(panel, findsOneWidget);
+        expect(tester.getRect(panel).right, closeTo(1280, 1));
+        await tester.tap(panel, buttons: kMiddleMouseButton, kind: PointerDeviceKind.mouse);
+        await tester.pump(const Duration(seconds: 1));
+        expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        outcomes.add((
+          display: tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display,
+          systemFullscreen: DesktopWindow.fullScreen.value,
+          panelOpen: panel.evaluate().isNotEmpty,
+        ));
+        await _close(tester, services);
+      }
+      // Compare entry paths without prescribing how editing changes focus
+      // or requiring an unrelated Escape policy to stay as it is today.
+      expect(outcomes.last, outcomes.first, reason: 'middle entry preserves the existing fullscreen button behavior');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+  });
+
+  testWidgets('issue 65: middle click remains unmapped outside Windows', (tester) async {
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+    await tester.tapAt(
+      tester.getCenter(find.byType(RoomPlayer)),
+      buttons: kMiddleMouseButton,
+      kind: PointerDeviceKind.mouse,
+    );
+    await _settle(tester);
+    expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+    await _close(tester, services);
+  }, variant: const TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.android}));
+
+  testWidgets('desktop picture secondary click toggles only in-window fullscreen', (tester) async {
+    final services = await _pump(tester, site: FakeSite(liveRoom()), danmaku: FakeDanmaku(), width: 1280);
+    expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+    await tester.tapAt(
+      tester.getCenter(find.byType(RoomPlayer)),
+      buttons: kSecondaryMouseButton,
+      kind: PointerDeviceKind.mouse,
+    );
+    await _settle(tester);
+    expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.windowFullscreen);
+    await tester.tapAt(
+      tester.getCenter(find.byType(RoomPlayer)),
+      buttons: kSecondaryMouseButton,
+      kind: PointerDeviceKind.mouse,
+    );
+    await _settle(tester);
+    expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.inline);
+    final top = tester.getTopLeft(find.byType(RoomPlayer)) + const Offset(100, 15);
+    await tester.tapAt(top, buttons: kSecondaryMouseButton, kind: PointerDeviceKind.mouse);
+    await _settle(tester);
+    expect(
+      tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display,
+      RoomDisplay.inline,
+      reason: 'a secondary click over the controls does not toggle the picture',
+    );
+    await _close(tester, services);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+}

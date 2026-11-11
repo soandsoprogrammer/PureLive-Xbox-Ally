@@ -1,0 +1,13 @@
+# The recorder's native FFmpeg (ffmpeg_kit_extended_flutter 1.0.0's build
+# hook, native API FFmpegKit 0.11.2): our FFmpeg 9.0.2 builds, release
+# native-ffmpeg-9.0.2-b2 (tools/ffmpeg_kit/rebuild/ and the FFmpegKit Apple
+# workflow; Z01.2). A bundle built for another native API crashes the app.
+# fetch.sh / fetch.ps1 keep them in a cache outside the repository and link
+# them into .ffmpeg_kit/, where `ffmpeg_kit_extended_config` in the root
+# pubspec.yaml points. Change a bundle here and in that block together.
+# file	sha256	url
+bundle-base-shared-lgpl-release.aar	b4809b1b6d5cca73f13c7fe1640642a0dd6507a64e82264d83eeba8992b848b6	https://github.com/wzgrx/PureLive/releases/download/native-ffmpeg-9.0.2-b2/bundle-base-shared-lgpl-release.aar
+bundle-base-linux-x86_64-shared-lgpl.zip	085274273b71f6918635e59e136e8e8aac174406664f4387100aef50a3fa6114	https://github.com/wzgrx/PureLive/releases/download/native-ffmpeg-9.0.2-b2/bundle-base-linux-x86_64-shared-lgpl.zip
+bundle-base-windows-x86_64-shared-lgpl.zip	459402752decbf68069a354e2f86bf2697cd929190ad633d88d9f2a6dcb195d2	https://github.com/wzgrx/PureLive/releases/download/native-ffmpeg-9.0.2-b2/bundle-base-windows-x86_64-shared-lgpl.zip
+bundle-base-ios-universal-lgpl.xcframework.zip	2a51d8f9427f407c3c795836c7987141470834e2ffdcf4f167b0c34b67a1ac86	https://github.com/wzgrx/PureLive/releases/download/native-ffmpeg-9.0.2-b2/bundle-base-ios-universal-lgpl.xcframework.zip
+bundle-base-macos-universal-lgpl.xcframework.zip	d9b3494035965382477036776d42762526e820422b0568c5a696ac088947a6da	https://github.com/wzgrx/PureLive/releases/download/native-ffmpeg-9.0.2-b2/bundle-base-macos-universal-lgpl.xcframework.zip

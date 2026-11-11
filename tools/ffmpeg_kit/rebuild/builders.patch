@@ -1,0 +1,82 @@
+diff --git a/docker/Dockerfile b/docker/Dockerfile
+index 3a155d6..7383a54 100755
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -4,7 +4,9 @@ FROM quay.io/pypa/manylinux_2_28_x86_64
+ 
+ # 1. Setup Environment & Repositories
+ # Install EPEL (Extra Packages for Enterprise Linux) for tools like Ragel/Wine dependencies
+-RUN dnf install -y epel-release && \
++RUN sed -i -e 's|^mirrorlist=|#mirrorlist=|' -e 's|^# *baseurl=https://repo.almalinux.org|baseurl=https://mirrors.aliyun.com|' /etc/yum.repos.d/almalinux*.repo && \
++    dnf install -y epel-release && \
++    sed -i -e 's|^metalink=|#metalink=|' -e 's|^#baseurl=https\?://download.example/pub/epel|baseurl=https://mirrors.aliyun.com/epel|' -e 's|^#baseurl=https\?://download.fedoraproject.org/pub/epel|baseurl=https://mirrors.aliyun.com/epel|' /etc/yum.repos.d/epel*.repo && \
+     dnf config-manager --set-enabled powertools && \
+     dnf update -y
+ 
+@@ -102,9 +104,6 @@ RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
+     zip \
+     zlib-devel
+ 
+-RUN dnf install 'dnf-command(config-manager)' && \
+-    dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo && \
+-    dnf install -y gh
+ 
+ # override installed older tools with bundled existing newer tools
+ RUN for tool in autoconf automake aclocal autoheader autoreconf autom4te; do \
+@@ -119,7 +118,7 @@ RUN ln -sf /usr/local/bin/aclocal /usr/bin/aclocal-1.18 \
+ ENV PATH="/opt/python/cp312-cp312/bin:${PATH}"
+ 
+ RUN python3 --version && pip3 --version && \
+-    pip3 install numpy Cython setuptools && \
++    pip3 install -i https://mirrors.aliyun.com/pypi/simple numpy Cython setuptools && \
+     sudo ln -sf /opt/python/cp312-cp312/bin/cython /bin/cython
+ 
+ # 3. Create 'vscode' user
+diff --git a/scripts/function.sh b/scripts/function.sh
+index 8175494..8338d91 100755
+--- a/scripts/function.sh
++++ b/scripts/function.sh
+@@ -2744,12 +2744,16 @@ retry_git_or_die() { # originally from https://stackoverflow.com/a/76012343/3245
+ 	local repo_url="$1"
+ 	local to_dir="$2"
+ 	local desired_branch="$3"
+-  # shellcheck disable=2248,2207
+-  local valid_remote=($(get_valid_remote "$repo_url" "$desired_branch"))
+-  local remote_type="${valid_remote[0]}"
+-  local remote_name="${valid_remote[*]:1}"
+-  local git_command="$(get_git_command "$repo_url" "$remote_name" "$to_dir.tmp" "$remote_type")"
++  local valid_remote=() remote_type="" remote_name="" git_command=""
+ 	for i in $(seq 1 "$RETRIES_NO"); do
++    # PureLive: resolve the ref on every try; a failed ls-remote left it empty for all 50.
++    if [[ -z $git_command ]]; then
++      # shellcheck disable=2248,2207
++      valid_remote=($(get_valid_remote "$repo_url" "$desired_branch"))
++      remote_type="${valid_remote[0]:-}"
++      remote_name="${valid_remote[*]:1}"
++      [[ -n $remote_type ]] && git_command="$(get_git_command "$repo_url" "$remote_name" "$to_dir.tmp" "$remote_type")"
++    fi
+     if [[ -n $git_command ]]; then
+       echo -e "INFO: Downloading (via git clone) branch, tag, or commit: $desired_branch to $to_dir from $repo_url" >>"$LOG_FILE"
+       remove_path -rf "$to_dir.tmp" # just in case it was interrupted previously...not sure if necessary...
+@@ -2761,8 +2765,6 @@ retry_git_or_die() { # originally from https://stackoverflow.com/a/76012343/3245
+       else
+         exit_message 1 "could not determine git command $git_command"
+       fi
+-    else
+-      exit_message 1 "retry_git_or_die: Could not generate git command for $repo_url $remote_type $remote_name $to_dir"
+     fi
+ 		#git clone --depth 1 -b "$desired_branch" "$repo_url" "$to_dir.tmp" --recurse-submodules --single-branch && break
+ 		# get here -> failure
+diff --git a/scripts/variable.sh b/scripts/variable.sh
+index 4741c27..1cbd128 100755
+--- a/scripts/variable.sh
++++ b/scripts/variable.sh
+@@ -45,7 +45,7 @@ export create_bundle=y
+ export git_get_latest=n
+ export prefer_stable=y # Only for x264 and x265.
+ export build_amd_amf=y
+-export ffmpeg_git_checkout_version="release/9.0"
++export ffmpeg_git_checkout_version="n9.0.2"
+ export build_ismindex=n
+ export build_gpl=n
+ export build_nonfree=n

@@ -1,0 +1,521 @@
+{
+  "device": {
+    "os": "android",
+    "osVersion": "CP2A.260605.016",
+    "displayRefreshRate": 120.00000762939453,
+    "budgetRefreshRate": 120.00000762939453,
+    "logicalSize": "400x869",
+    "devicePixelRatio": 3.0,
+    "totalMemoryMiB": 15086,
+    "imageCacheMaxCount": 320,
+    "imageCacheMaxMiB": 128,
+    "quick": false
+  },
+  "scenarios": {
+    "hot_scroll": {
+      "scenario": "hot_scroll",
+      "refreshRate": 120.0,
+      "periodMs": 8.33,
+      "frames": 2526,
+      "buildMs": {
+        "p50": 0.6,
+        "p90": 2.38,
+        "p99": 5.28,
+        "max": 13.35,
+        "mean": 0.98
+      },
+      "rasterMs": {
+        "p50": 1.77,
+        "p90": 1.94,
+        "p99": 2.2,
+        "max": 8.19,
+        "mean": 1.67
+      },
+      "totalMs": {
+        "p50": 2.83,
+        "p90": 4.91,
+        "p99": 8.01,
+        "max": 19.36,
+        "mean": 3.18
+      },
+      "jank": {
+        "frames": 10,
+        "rate": 0.004,
+        "buildOverBudget": 10,
+        "rasterOverBudget": 0,
+        "longestRun": 1
+      },
+      "limits": {
+        "buildP90Ms": 8.33,
+        "rasterP90Ms": 8.33,
+        "p99Ms": 12.5,
+        "jankRate": 0.01
+      },
+      "checks": {
+        "buildP90": true,
+        "rasterP90": true,
+        "buildP99": true,
+        "rasterP99": true,
+        "jankRate": true,
+        "noJankPairs": true
+      },
+      "passed": true,
+      "extra": {
+        "roomsServed": 330,
+        "idleFramesLeftOut": 406
+      }
+    },
+    "danmaku_50": {
+      "scenario": "danmaku_50",
+      "refreshRate": 120.0,
+      "periodMs": 8.33,
+      "frames": 1196,
+      "buildMs": {
+        "p50": 0.48,
+        "p90": 2.64,
+        "p99": 3.96,
+        "max": 6.75,
+        "mean": 1.28
+      },
+      "rasterMs": {
+        "p50": 1.72,
+        "p90": 2.25,
+        "p99": 4.31,
+        "max": 7.34,
+        "mean": 1.87
+      },
+      "totalMs": {
+        "p50": 2.91,
+        "p90": 5.16,
+        "p99": 7.68,
+        "max": 11.46,
+        "mean": 3.61
+      },
+      "jank": {
+        "frames": 0,
+        "rate": 0.0,
+        "buildOverBudget": 0,
+        "rasterOverBudget": 0,
+        "longestRun": 0
+      },
+      "limits": {
+        "buildP90Ms": 8.33,
+        "rasterP90Ms": 5.0,
+        "p99Ms": 12.5,
+        "jankRate": 0.01
+      },
+      "checks": {
+        "buildP90": true,
+        "rasterP90": true,
+        "buildP99": true,
+        "rasterP99": true,
+        "jankRate": true,
+        "noJankPairs": true
+      },
+      "passed": true,
+      "extra": {
+        "perSecond": 50,
+        "sent": 500,
+        "idleFramesLeftOut": 3
+      }
+    },
+    "danmaku_200": {
+      "scenario": "danmaku_200",
+      "refreshRate": 120.0,
+      "periodMs": 8.33,
+      "frames": 1102,
+      "buildMs": {
+        "p50": 0.53,
+        "p90": 4.59,
+        "p99": 5.99,
+        "max": 6.98,
+        "mean": 2.03
+      },
+      "rasterMs": {
+        "p50": 1.72,
+        "p90": 2.06,
+        "p99": 2.28,
+        "max": 3.69,
+        "mean": 1.75
+      },
+      "totalMs": {
+        "p50": 2.89,
+        "p90": 7.01,
+        "p99": 8.49,
+        "max": 9.33,
+        "mean": 4.24
+      },
+      "jank": {
+        "frames": 0,
+        "rate": 0.0,
+        "buildOverBudget": 0,
+        "rasterOverBudget": 0,
+        "longestRun": 0
+      },
+      "limits": {
+        "buildP90Ms": 3.0,
+        "rasterP90Ms": 5.0,
+        "p99Ms": 12.5,
+        "jankRate": 0.01
+      },
+      "checks": {
+        "buildP90": false,
+        "rasterP90": true,
+        "buildP99": true,
+        "rasterP99": true,
+        "jankRate": true,
+        "noJankPairs": true
+      },
+      "passed": false,
+      "extra": {
+        "perSecond": 200,
+        "sent": 2000,
+        "idleFramesLeftOut": 3
+      }
+    },
+    "multiview_4": {
+      "scenario": "multiview_4",
+      "refreshRate": 120.0,
+      "periodMs": 8.33,
+      "frames": 1197,
+      "buildMs": {
+        "p50": 1.45,
+        "p90": 1.64,
+        "p99": 2.94,
+        "max": 4.7,
+        "mean": 1.49
+      },
+      "rasterMs": {
+        "p50": 2.04,
+        "p90": 2.11,
+        "p99": 2.21,
+        "max": 2.4,
+        "mean": 2.02
+      },
+      "totalMs": {
+        "p50": 3.98,
+        "p90": 4.31,
+        "p99": 5.77,
+        "max": 7.56,
+        "mean": 4.02
+      },
+      "jank": {
+        "frames": 0,
+        "rate": 0.0,
+        "buildOverBudget": 0,
+        "rasterOverBudget": 0,
+        "longestRun": 0
+      },
+      "limits": {
+        "buildP90Ms": 8.33,
+        "rasterP90Ms": 5.0,
+        "p99Ms": 12.5,
+        "jankRate": 0.01
+      },
+      "checks": {
+        "buildP90": true,
+        "rasterP90": true,
+        "buildP99": true,
+        "rasterP99": true,
+        "jankRate": true,
+        "noJankPairs": true
+      },
+      "passed": true,
+      "extra": {
+        "cellsWithRooms": 4,
+        "perSecond": 50,
+        "sent": 500,
+        "idleFramesLeftOut": 3
+      }
+    },
+    "settings_scroll": {
+      "scenario": "settings_scroll",
+      "refreshRate": 120.0,
+      "periodMs": 8.33,
+      "frames": 108,
+      "buildMs": {
+        "p50": 0.21,
+        "p90": 0.29,
+        "p99": 0.52,
+        "max": 0.69,
+        "mean": 0.23
+      },
+      "rasterMs": {
+        "p50": 1.29,
+        "p90": 1.35,
+        "p99": 1.43,
+        "max": 1.46,
+        "mean": 1.28
+      },
+      "totalMs": {
+        "p50": 1.98,
+        "p90": 2.68,
+        "p99": 7.45,
+        "max": 8.43,
+        "mean": 2.33
+      },
+      "jank": {
+        "frames": 0,
+        "rate": 0.0,
+        "buildOverBudget": 0,
+        "rasterOverBudget": 0,
+        "longestRun": 0
+      },
+      "limits": {
+        "buildP90Ms": 8.33,
+        "rasterP90Ms": 8.33,
+        "p99Ms": 12.5,
+        "jankRate": 0.01
+      },
+      "checks": {
+        "buildP90": true,
+        "rasterP90": true,
+        "buildP99": true,
+        "rasterP99": true,
+        "jankRate": true,
+        "noJankPairs": true
+      },
+      "passed": true,
+      "extra": {
+        "idleFramesLeftOut": 1399
+      }
+    },
+    "room_enter_exit_20": {
+      "scenario": "room_enter_exit_20",
+      "refreshRate": 120.0,
+      "periodMs": 8.33,
+      "frames": 2153,
+      "buildMs": {
+        "p50": 0.35,
+        "p90": 0.49,
+        "p99": 8.53,
+        "max": 11.7,
+        "mean": 0.61
+      },
+      "rasterMs": {
+        "p50": 2.46,
+        "p90": 4.36,
+        "p99": 9.15,
+        "max": 14.1,
+        "mean": 2.64
+      },
+      "totalMs": {
+        "p50": 3.25,
+        "p90": 6.7,
+        "p99": 16.91,
+        "max": 27.27,
+        "mean": 3.89
+      },
+      "jank": {
+        "frames": 59,
+        "rate": 0.0274,
+        "buildOverBudget": 22,
+        "rasterOverBudget": 37,
+        "longestRun": 3
+      },
+      "limits": {
+        "buildP90Ms": 8.33,
+        "rasterP90Ms": 8.33,
+        "p99Ms": 12.5,
+        "jankRate": 0.01
+      },
+      "checks": {
+        "buildP90": true,
+        "rasterP90": true,
+        "buildP99": true,
+        "rasterP99": true,
+        "jankRate": false,
+        "noJankPairs": false
+      },
+      "passed": false,
+      "extra": {
+        "visits": 20,
+        "residentMiB": {
+          "start": 477,
+          "end": 474,
+          "max": 494,
+          "samples": [
+            477,
+            476,
+            477,
+            477,
+            479,
+            480,
+            482,
+            482,
+            483,
+            484,
+            485,
+            484,
+            486,
+            487,
+            490,
+            490,
+            491,
+            494,
+            430,
+            472,
+            474
+          ]
+        },
+        "idleFramesLeftOut": 4780
+      }
+    },
+    "cover_corners_clipOverFade": {
+      "scenario": "cover_corners_clipOverFade",
+      "refreshRate": 120.0,
+      "periodMs": 8.33,
+      "frames": 1489,
+      "buildMs": {
+        "p50": 0.37,
+        "p90": 1.45,
+        "p99": 2.16,
+        "max": 3.59,
+        "mean": 0.54
+      },
+      "rasterMs": {
+        "p50": 0.99,
+        "p90": 1.07,
+        "p99": 1.15,
+        "max": 1.2,
+        "mean": 0.98
+      },
+      "totalMs": {
+        "p50": 1.86,
+        "p90": 2.89,
+        "p99": 3.7,
+        "max": 5.48,
+        "mean": 1.99
+      },
+      "jank": {
+        "frames": 0,
+        "rate": 0.0,
+        "buildOverBudget": 0,
+        "rasterOverBudget": 0,
+        "longestRun": 0
+      },
+      "limits": {
+        "buildP90Ms": 8.33,
+        "rasterP90Ms": 8.33,
+        "p99Ms": 12.5,
+        "jankRate": 0.01
+      },
+      "checks": {
+        "buildP90": true,
+        "rasterP90": true,
+        "buildP99": true,
+        "rasterP99": true,
+        "jankRate": true,
+        "noJankPairs": true
+      },
+      "passed": true,
+      "extra": {
+        "idleFramesLeftOut": 9
+      }
+    },
+    "cover_corners_clip": {
+      "scenario": "cover_corners_clip",
+      "refreshRate": 120.0,
+      "periodMs": 8.33,
+      "frames": 1490,
+      "buildMs": {
+        "p50": 0.35,
+        "p90": 1.24,
+        "p99": 2.08,
+        "max": 3.31,
+        "mean": 0.51
+      },
+      "rasterMs": {
+        "p50": 0.95,
+        "p90": 1.02,
+        "p99": 1.09,
+        "max": 1.2,
+        "mean": 0.91
+      },
+      "totalMs": {
+        "p50": 1.78,
+        "p90": 2.73,
+        "p99": 3.76,
+        "max": 4.95,
+        "mean": 1.87
+      },
+      "jank": {
+        "frames": 0,
+        "rate": 0.0,
+        "buildOverBudget": 0,
+        "rasterOverBudget": 0,
+        "longestRun": 0
+      },
+      "limits": {
+        "buildP90Ms": 8.33,
+        "rasterP90Ms": 8.33,
+        "p99Ms": 12.5,
+        "jankRate": 0.01
+      },
+      "checks": {
+        "buildP90": true,
+        "rasterP90": true,
+        "buildP99": true,
+        "rasterP99": true,
+        "jankRate": true,
+        "noJankPairs": true
+      },
+      "passed": true,
+      "extra": {
+        "idleFramesLeftOut": 9
+      }
+    },
+    "cover_corners_decoration": {
+      "scenario": "cover_corners_decoration",
+      "refreshRate": 120.0,
+      "periodMs": 8.33,
+      "frames": 1492,
+      "buildMs": {
+        "p50": 0.36,
+        "p90": 1.1,
+        "p99": 1.98,
+        "max": 3.36,
+        "mean": 0.51
+      },
+      "rasterMs": {
+        "p50": 0.96,
+        "p90": 1.03,
+        "p99": 1.11,
+        "max": 1.24,
+        "mean": 0.95
+      },
+      "totalMs": {
+        "p50": 1.79,
+        "p90": 2.69,
+        "p99": 3.48,
+        "max": 4.9,
+        "mean": 1.92
+      },
+      "jank": {
+        "frames": 0,
+        "rate": 0.0,
+        "buildOverBudget": 0,
+        "rasterOverBudget": 0,
+        "longestRun": 0
+      },
+      "limits": {
+        "buildP90Ms": 8.33,
+        "rasterP90Ms": 8.33,
+        "p99Ms": 12.5,
+        "jankRate": 0.01
+      },
+      "checks": {
+        "buildP90": true,
+        "rasterP90": true,
+        "buildP99": true,
+        "rasterP99": true,
+        "jankRate": true,
+        "noJankPairs": true
+      },
+      "passed": true,
+      "extra": {
+        "idleFramesLeftOut": 7
+      }
+    }
+  }
+}

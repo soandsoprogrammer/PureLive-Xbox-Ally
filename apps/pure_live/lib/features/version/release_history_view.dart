@@ -1,0 +1,642 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:live_store/live_store.dart';
+import 'package:live_ui/live_ui.dart';
+import 'package:pure_live/app/services.dart';
+import 'package:pure_live/features/version/app_version.dart';
+import 'package:pure_live/features/version/markdown_text.dart';
+import 'package:pure_live/features/version/update_download.dart';
+import 'package:pure_live/features/version/update_feed.dart';
+import 'package:pure_live/i18n/i18n.dart';
+import 'package:pure_live/routes/app_navigator.dart';
+
+/// From this width of the page the history shows the list and the details
+/// side by side (docs/A-界面设计/A15-小页面/A15.2-关于和版本 c10, N3 A: the plan's "expanded"
+/// width of the parent; 3.x used the whole screen's 760).
+const double releaseHistorySplitWidth = 840;
+
+/// Every release with its notes and files (3.x `VersionHistoryPage`,
+/// docs/A-界面设计/A15-小页面/A15.2-关于和版本 "版本历史"): a list (a release opens in a dialog
+/// whose close button is at the top right), or the list and the details
+/// side by side from [releaseHistorySplitWidth], or on the two halves of a
+/// fold that splits the page (a foldable half open like a book; A04.1). The
+/// newest release is marked "最新", the installed one "当前" (c11).
+class ReleaseHistoryView extends ConsumerStatefulWidget {
+  /// Creates the view.
+  const new({super.key});
+
+  @override
+  ConsumerState<ReleaseHistoryView> createState() => _ReleaseHistoryViewState();
+}
+
+class _ReleaseHistoryViewState extends ConsumerState<ReleaseHistoryView> {
+  List<ReleaseInfo> _releases = const [];
+  bool _loading = false;
+  bool _failed = false;
+  String? _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _failed = false;
+    });
+    List<ReleaseInfo>? releases;
+    try {
+      releases = await ref.read(updateFeedProvider).releases();
+    } on Object {
+      releases = null;
+    }
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      if (releases == null) {
+        _failed = true;
+        // A failed refresh keeps the list it had (3.x).
+        if (_releases.isNotEmpty) AppNavigator.toast(i18n('version_history_load_failed'));
+      } else {
+        _releases = releases;
+        if (!releases.any((release) => release.version == _selected)) _selected = releases.firstOrNull?.version;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final actions = <Widget>[
+      IconButton(
+        key: const ValueKey('release-history-refresh'),
+        tooltip: i18n('refresh'),
+        onPressed: _loading ? null : _load,
+        icon: _loading
+            ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(AppIcons.refresh),
+      ),
+      const SizedBox(width: 4),
+    ];
+    return Scaffold(
+      appBar:
+          SettingsPageHeaderScope.maybeOf(context)
+              ?.builder(context, title: i18n('version_history'), actions: actions) ??
+          AppBar(
+            toolbarHeight: WindowClassScope.toolbarHeightOf(context),
+            title: Text(i18n('version_history'), maxLines: 2, overflow: TextOverflow.ellipsis),
+            actions: actions,
+          ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final textScale = MediaQuery.textScalerOf(context).scale(1);
+          final fold = DisplayHinge.maybeOf(context)?.splitRow(left: 0, width: constraints.maxWidth);
+          final wide = (constraints.maxWidth >= releaseHistorySplitWidth || fold != null) && textScale <= 1.5;
+          return _body(wide, fold);
+        },
+      ),
+    );
+  }
+
+  Widget _body(bool wide, ({double start, double gap})? fold) {
+    if (_releases.isEmpty) {
+      if (_loading) return const AppStatusView(type: AppStatusType.loading);
+      if (_failed) return AppStatusView(type: AppStatusType.error, onButtonPressed: _load);
+      return const AppStatusView(type: AppStatusType.empty);
+    }
+    final selected = _releases.firstWhere((release) => release.version == _selected, orElse: () => _releases.first);
+    return Stack(
+      children: [
+        Positioned.fill(child: wide ? _wide(selected, fold) : _narrow()),
+        if (_loading)
+          const Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: LinearProgressIndicator(key: ValueKey('release-history-refresh-progress'), minHeight: 2),
+          ),
+      ],
+    );
+  }
+
+  /// The newest release is the first (by date, then version).
+  bool _latest(ReleaseInfo release) => identical(release, _releases.first);
+
+  /// The list and the details side by side; with a [fold], the list fills
+  /// the half before it.
+  Widget _wide(ReleaseInfo selected, ({double start, double gap})? fold) {
+    final colors = Theme.of(context).colorScheme;
+    return Row(
+      key: const ValueKey('release-history-desktop-layout'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          width: fold?.start ?? 320,
+          child: ListView.builder(
+            key: const ValueKey('release-history-desktop-list'),
+            physics: const PureLiveScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            itemCount: _releases.length,
+            itemBuilder: (context, index) {
+              final release = _releases[index];
+              final current = identical(release, selected);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Material(
+                  color: current ? colors.primaryContainer.withValues(alpha: 0.35) : colors.surface,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: const BorderRadius.all(Radius.circular(16)),
+                    side: current ? BorderSide(color: colors.primary, width: 1.5) : BorderSide.none,
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: _HistoryInkWell(
+                    key: ValueKey('release-history-desktop-${release.version}'),
+                    onTap: () => setState(() => _selected = release.version),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: _VersionLine(release: release, latest: _latest(release), highlighted: current),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        if (fold == null)
+          VerticalDivider(width: 1, thickness: 1, color: colors.outlineVariant.withValues(alpha: 0.6))
+        else
+          SizedBox(width: fold.gap),
+        Expanded(
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1000),
+              child: Padding(
+                key: ValueKey('release-history-detail-${selected.version}'),
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                child: _ReleaseScrollArea(
+                  builder: (controller) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _ReleaseHeader(release: selected),
+                      const SizedBox(height: 16),
+                      Expanded(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: colors.surfaceContainerLow,
+                            borderRadius: const BorderRadius.all(Radius.circular(16)),
+                          ),
+                          child: SingleChildScrollView(
+                            controller: controller,
+                            physics: const PureLiveScrollPhysics(),
+                            padding: const EdgeInsets.all(20),
+                            child: _ReleaseBody(release: selected),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _narrow() => LayoutBuilder(
+    builder: (context, constraints) {
+      final colors = Theme.of(context).colorScheme;
+      final side = math.max(16, (constraints.maxWidth - readableContentMaxWidth) / 2).toDouble();
+      final last = _releases.length - 1;
+      return ListView.builder(
+        key: const ValueKey('release-history-mobile-list'),
+        physics: const PureLiveScrollPhysics(),
+        padding: EdgeInsets.fromLTRB(side, 8, side, 24),
+        itemCount: _releases.length,
+        // One card, the releases on it divided by lines.
+        itemBuilder: (context, index) {
+          final release = _releases[index];
+          return Material(
+            color: colors.surfaceContainerLow,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.vertical(
+                top: index == 0 ? const Radius.circular(16) : Radius.zero,
+                bottom: index == last ? const Radius.circular(16) : Radius.zero,
+              ),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: _HistoryInkWell(
+              key: ValueKey('release-history-mobile-${release.version}'),
+              onTap: () => unawaited(_showDetails(release)),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  border: index == last
+                      ? null
+                      : Border(bottom: BorderSide(color: colors.outlineVariant.withValues(alpha: 0.7))),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _VersionLine(release: release, latest: _latest(release), highlighted: false),
+                      ),
+                      Icon(AppIcons.forward, size: 22, color: colors.onSurfaceVariant),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+
+  /// One release on a phone (c12): the close button at the top right next
+  /// to the release page, the rest scrolls on its own; Back, Esc and a tap
+  /// outside close it too (3.x put "关闭" after everything).
+  Future<void> _showDetails(ReleaseInfo release) => showAppDialog<void>(
+    context: context,
+    builder: (dialogContext) {
+      final media = MediaQuery.of(dialogContext);
+      return Dialog(
+        key: const ValueKey('release-history-detail-dialog'),
+        clipBehavior: Clip.antiAlias,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+        child: SizedBox(
+          width: math.min(680, media.size.width - 32),
+          height: math.max(240, math.min(640, media.size.height - media.padding.vertical - 48)),
+          child: _ReleaseScrollArea(
+            builder: (controller) => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+                  child: _ReleaseHeader(release: release, onClose: () => Navigator.of(dialogContext).pop()),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    controller: controller,
+                    key: const ValueKey('release-history-detail-scroll'),
+                    physics: const PureLiveScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                    child: _ReleaseBody(release: release),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+/// Owns the detail viewport's scroll position, including inside a dialog.
+/// The header remains inside the keyboard area so Right can always leave
+/// reading mode for an action, even when a release has no download files.
+class _ReleaseScrollArea extends StatefulWidget {
+  const new({required this.builder});
+
+  final Widget Function(ScrollController? controller) builder;
+
+  @override
+  State<_ReleaseScrollArea> createState() => _ReleaseScrollAreaState();
+}
+
+class _ReleaseScrollAreaState extends State<_ReleaseScrollArea> {
+  final _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final directional = MediaQuery.navigationModeOf(context) == NavigationMode.directional;
+    final child = widget.builder(directional ? _controller : null);
+    return directional
+        ? KeyboardScrollArea(
+            key: const ValueKey('release-history-keyboard-scroll'),
+            controller: _controller,
+            label: i18n('update_log'),
+            ringColor: Theme.of(context).colorScheme.onSurface,
+            child: child,
+          )
+        : child;
+  }
+}
+
+/// A release row keeps selection separate from the remote's current focus.
+class _HistoryInkWell extends StatefulWidget {
+  const new({required this.onTap, required this.child, super.key});
+
+  final VoidCallback onTap;
+  final Widget child;
+
+  @override
+  State<_HistoryInkWell> createState() => _HistoryInkWellState();
+}
+
+class _HistoryInkWellState extends State<_HistoryInkWell> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+    foregroundPainter: _focused && SettingsRowStyle.tvOf(context)
+        ? const FocusRingPainter(color: TvColors.focusRing, borderRadius: AppRadii.button, gap: -3)
+        : null,
+    child: InkWell(
+      onTap: widget.onTap,
+      onFocusChange: (value) => setState(() => _focused = value),
+      child: widget.child,
+    ),
+  );
+}
+
+/// A small filled mark after a version ("最新", "当前").
+class _Badge extends StatelessWidget {
+  const new(this.text, {super.key});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.primaryContainer,
+        borderRadius: const BorderRadius.all(Radius.circular(6)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        child: Text(
+          text,
+          style: context.textStyles.t12.copyWith(color: colors.onPrimaryContainer, fontWeight: FontWeight.w600),
+        ),
+      ),
+    );
+  }
+}
+
+/// The version with "最新" or "当前", and "发布于 date" (c11; 3.x wrote the
+/// size of the release's first file, which may be another platform's).
+class _VersionLine extends StatelessWidget {
+  const new({required this.release, required this.latest, required this.highlighted});
+
+  final ReleaseInfo release;
+  final bool latest;
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final styles = context.textStyles;
+    final installed = compareVersions(release.version, appVersion) == 0;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              'v${release.version}',
+              // 17 by default: the card title size × 17 / 15.
+              style: styles.t16.copyWith(
+                fontSize: LiveFontSizes.of(styles.theme.textTheme).titleMedium * 17 / 15,
+                fontWeight: FontWeight.w600,
+                color: highlighted ? colors.primary : colors.onSurface,
+              ),
+            ),
+            if (latest) _Badge(key: ValueKey('release-latest-${release.version}'), i18n('version_latest_badge')),
+            if (installed) _Badge(key: ValueKey('release-current-${release.version}'), i18n('version_current_badge')),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          i18n('version_published_at', args: {'date': release.date}),
+          style: styles.t13.copyWith(color: colors.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+}
+
+/// Publisher, version, date and the release page button; [onClose] adds
+/// the close button at the end (the phone's dialog).
+class _ReleaseHeader extends StatelessWidget {
+  const new({required this.release, this.onClose});
+
+  final ReleaseInfo release;
+  final VoidCallback? onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final styles = context.textStyles;
+    final page = updateDownloadUri(release.github);
+    final avatar = updateDownloadUri(release.authorAvatar);
+    final placeholder = Icon(AppIcons.releaseAuthor, size: 18, color: colors.onSurfaceVariant);
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 18,
+          backgroundColor: colors.surfaceContainerHighest,
+          child: avatar == null
+              ? placeholder
+              : ClipOval(
+                  child: Image.network(
+                    avatar.toString(),
+                    width: 36,
+                    height: 36,
+                    cacheWidth: 72,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => placeholder,
+                  ),
+                ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'v${release.version}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: styles.t16.copyWith(
+                  fontSize: LiveFontSizes.of(styles.theme.textTheme).titleMedium * 17 / 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Text(
+                i18n('version_published_at', args: {'date': release.date}),
+                style: styles.t13.copyWith(color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          key: const ValueKey('release-history-open-release'),
+          tooltip: i18n('version_history_open_release'),
+          style: onClose == null ? IconButton.styleFrom(backgroundColor: colors.surfaceContainerHigh) : null,
+          onPressed: page == null ? null : () => unawaited(_open(page)),
+          icon: const Icon(AppIcons.releasePage, size: 20),
+        ),
+        if (onClose case final close?)
+          IconButton(
+            key: const ValueKey('release-history-close-details'),
+            tooltip: i18n('close'),
+            onPressed: close,
+            icon: const Icon(AppIcons.close),
+          ),
+      ],
+    );
+  }
+}
+
+/// The notes and the files of a release.
+class _ReleaseBody extends StatelessWidget {
+  const new({required this.release});
+
+  final ReleaseInfo release;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      MarkdownText(release.changelog),
+      if (release.files.isNotEmpty) ...[
+        const SizedBox(height: 20),
+        Text(i18n('download_files'), style: context.textStyles.t15.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 10),
+        for (final (index, file) in release.files.indexed)
+          _FileCard(key: ValueKey('release-history-file-$index'), file: file, release: release),
+      ],
+    ],
+  );
+}
+
+class _FileCard extends ConsumerWidget {
+  const new({required this.file, required this.release, super.key});
+
+  final ReleaseFile file;
+  final ReleaseInfo release;
+
+  String get _name => file.name.isEmpty ? i18n('version_history_unnamed_file') : file.name;
+
+  /// c13: says what is downloaded and what happens after (3.x asked
+  /// "点击下载" twice), then downloads in the app like 3.x
+  /// (`downloadAndInstallApk`, U.3d's dialog).
+  Future<void> _download(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showAppConfirmDialog(
+      context: context,
+      key: const ValueKey('release-download-confirm'),
+      title: i18n('update_download_package_title'),
+      message: i18n('update_download_confirm_named', args: {'name': _name, 'size': file.size}),
+      confirmLabel: i18n('update_download_action'),
+      cancelKey: const ValueKey('release-download-cancel'),
+      confirmKey: const ValueKey('release-download-start'),
+    );
+    if (!confirmed || !context.mounted) return;
+    final githubOrigin = ref.read(appServicesProvider).store.settings.get(Settings.useGitHubOriginForUpdates);
+    await showUpdateDownload(
+      context,
+      file: file,
+      sources: downloadSources(file.url, githubOrigin: githubOrigin),
+      historical: true,
+      historicalRelease: release,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = Theme.of(context).colorScheme;
+    final styles = context.textStyles;
+    final uri = updateDownloadUri(file.url);
+    final round = IconButton.styleFrom(backgroundColor: colors.surfaceContainerHighest);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.surfaceContainer,
+          borderRadius: const BorderRadius.all(Radius.circular(14)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          child: Row(
+            children: [
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: colors.primaryContainer.withValues(alpha: 0.5),
+                  borderRadius: const BorderRadius.all(Radius.circular(10)),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Icon(AppIcons.releaseFile, color: colors.primary, size: 20),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(_name, style: styles.t14.copyWith(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 2),
+                    Text(
+                      i18n('version_downloads_count', args: {'size': file.size, 'count': '${file.downloads}'}),
+                      style: styles.t12.copyWith(color: colors.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                key: const ValueKey('release-file-copy'),
+                tooltip: i18n('copy_link'),
+                style: round,
+                onPressed: uri == null
+                    ? null
+                    : () async {
+                        await Clipboard.setData(ClipboardData(text: uri.toString()));
+                        AppNavigator.toast(i18n('copied_to_clipboard'));
+                      },
+                icon: Icon(AppIcons.copy, size: 20, color: colors.primary),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                key: const ValueKey('release-file-download'),
+                tooltip: i18n('update_download_action'),
+                style: round,
+                onPressed: uri == null ? null : () => unawaited(_download(context, ref)),
+                icon: Icon(AppIcons.downloadPackage, size: 20, color: colors.primary),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> _open(Uri uri) async {
+  var opened = false;
+  try {
+    opened = await AppNavigator.openExternal(uri);
+  } on Object {
+    opened = false;
+  }
+  if (!opened) AppNavigator.toast(i18n('external_browser_not_opened'));
+}

@@ -1,0 +1,23 @@
+{
+  "base": "4c9f86ba0e53f69bd479e4a7977a9630221d8529",
+  "date": "2026-10-29",
+  "focused_tests_passed": 105,
+  "new_layout_cases": 10,
+  "before_failed": true,
+  "synthetic_frames_manually_reviewed": true,
+  "physical_device_tested": false,
+  "installer_released": false,
+  "local_log_sha256": {
+    "repro.log": "03d72d8f673c61848960ffa5618d7ef311e09b3ac931dfae832e6a3f73cfd38b",
+    "capture-before.log": "ca21d00b875b5397667b7950630cb1977913ac4b1e623823618133419084bca5",
+    "focused-initial.log": "68a13a4eca4a1e4688d2aa320ff18b706a0d68def946f909ead38e7f041de773",
+    "focused.log": "e1c76039fbdaa06bfd684e8e6d9bb65df1cab37cd392f438b480639530701820",
+    "capture-after.log": "373b16fcd2520d1fd61ba67e97f14fefa1bb96f1ea77b4a97bc7eda4dbeff1d2"
+  },
+  "frames_sha256": {
+    "after-favorites.png": "0830d29ae27701bb314fb93a06f42a260e587c10bc1f32652f891467033cec47",
+    "before-popular.png": "e9e1c3a0505799afd8e8828f5864c428cf2c2fc2a41d45b65541c3744bb4d15f",
+    "after-popular.png": "aa624c9644a459c82649b3522f0333f87b750b51ef2110710ab2083e3760a568",
+    "before-favorites.png": "58b216066f0aa3b66d42f470c094b5e402c0e6af67d8cc807e7c5a4fb53e920a"
+  }
+}

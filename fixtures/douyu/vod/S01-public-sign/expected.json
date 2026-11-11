@@ -1,0 +1,15 @@
+{
+  "input": {
+    "pointId": "12345678",
+    "videoId": "ABCDabcd01234567",
+    "did": "0123456789abcdef0123456789abcdef",
+    "seconds": 1793340000
+  },
+  "form": {
+    "v": "220320261030",
+    "did": "0123456789abcdef0123456789abcdef",
+    "tt": "1793340000",
+    "sign": "d50ce9c4fa613a2d2638209582e3b99d",
+    "vid": "ABCDabcd01234567"
+  }
+}

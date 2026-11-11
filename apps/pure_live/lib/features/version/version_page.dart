@@ -1,0 +1,656 @@
+import 'dart:async';
+import 'dart:ffi' show Abi;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:live_store/live_store.dart';
+import 'package:live_ui/live_ui.dart';
+import 'package:pure_live/app/services.dart';
+import 'package:pure_live/features/version/app_version.dart';
+import 'package:pure_live/features/version/markdown_text.dart';
+import 'package:pure_live/features/version/release_history_view.dart';
+import 'package:pure_live/features/version/update_download.dart';
+import 'package:pure_live/features/version/update_feed.dart';
+import 'package:pure_live/i18n/i18n.dart';
+import 'package:pure_live/routes/app_navigator.dart';
+import 'package:pure_live/routes/route_args.dart';
+import 'package:pure_live/routes/route_path.dart';
+
+/// The installation packages of [platform] in a release, by section title
+/// key, in 3.x's order; Android only lists the ABIs the release declares.
+List<(String, ReleaseFile)> platformPackages(String platform, UpdateInfo info, List<ReleaseFile> files) {
+  final packages = <(String, ReleaseFile)>[];
+  void add(String title, PackageKind kind, {bool offered = true, PackageKind? otherwise}) {
+    if (!offered) return;
+    final file = kind.pick(files) ?? otherwise?.pick(files);
+    if (file != null) packages.add((title, file));
+  }
+
+  switch (platform) {
+    case 'android':
+      add('arch_arm64', PackageKind.androidArm64, offered: info.androidAbis.contains('arm64-v8a'));
+      add('arch_arm32', PackageKind.androidArm32, offered: info.androidAbis.contains('armeabi-v7a'));
+      add('arch_x86_64', PackageKind.androidX64, offered: info.androidAbis.contains('x86_64'));
+    case 'windows':
+      add('exe_installer', PackageKind.windowsSetup);
+      add('msix_installer', PackageKind.windowsMsix, offered: info.windowsMsixAvailable);
+      add('portable_package', PackageKind.windowsPortable);
+    case 'linux':
+      add('linux_package', PackageKind.linuxTarball);
+    case 'macos':
+      add('macos_package', PackageKind.macosDmg, otherwise: PackageKind.macosZip);
+  }
+  return packages;
+}
+
+/// The title of this device's package among [platformPackages] (the "本机"
+/// mark, docs/A-界面设计/A15-小页面/A15.2-关于和版本 c7): the running app's architecture on
+/// Android, the EXE installer on Windows, the tarball on Linux, the
+/// universal package on macOS;
+/// null elsewhere.
+String? nativePackageTitle([Abi? abi]) => switch (abi ?? Abi.current()) {
+  Abi.androidArm64 => 'arch_arm64',
+  Abi.androidArm => 'arch_arm32',
+  Abi.androidX64 => 'arch_x86_64',
+  Abi.windowsX64 || Abi.windowsArm64 => 'exe_installer',
+  Abi.linuxX64 => 'linux_package',
+  Abi.macosArm64 || Abi.macosX64 => 'macos_package',
+  _ => null,
+};
+
+/// [nativePackageTitle] for the version page (tests replace it).
+final Provider<String?> nativePackageTitleProvider = Provider<String?>((ref) => nativePackageTitle());
+
+/// The name of an update platform on the page ("下载文件 · Android").
+String _platformName(String platform) => switch (platform) {
+  'android' => 'Android',
+  'windows' => 'Windows',
+  'macos' => 'macOS',
+  'ios' => 'iOS',
+  'linux' => 'Linux',
+  _ => platform,
+};
+
+/// Update check and version history (3.x `lib/modules/version` and
+/// `modules/about/version_history.dart`, docs/A-界面设计/A15-小页面/A15.2-关于和版本).
+///
+/// Routes: `RoutePath.kVersionPage` ([UpdateView]) and
+/// `RoutePath.kVersionHistory` ([ReleaseHistoryView]; the about page hands
+/// that route here).
+class VersionPage extends StatelessWidget {
+  /// Creates the page for [route].
+  const new({required this.route, super.key});
+
+  /// The path and arguments the page was opened with.
+  final RouteArgs route;
+
+  @override
+  Widget build(BuildContext context) => switch (route.path) {
+    RoutePath.kVersionHistory => const ReleaseHistoryView(),
+    _ => const UpdateView(),
+  };
+}
+
+/// Reads `assets/version.json` and `assets/releases.json` from the
+/// repository (the files the installed 3.x apps read too) and shows a
+/// status card (a newer version or the newest), this platform's packages
+/// with "下载并安装" (this device's marked "本机", the mirrors folded under
+/// "选择下载源"), and the update notes; at most 720 wide.
+class UpdateView extends ConsumerStatefulWidget {
+  /// Creates the view.
+  const new({super.key});
+
+  @override
+  ConsumerState<UpdateView> createState() => _UpdateViewState();
+}
+
+class _UpdateViewState extends ConsumerState<UpdateView> {
+  final _scrollController = ScrollController();
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+  bool _loading = true;
+  UpdateSnapshot? _snapshot;
+  int _generation = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_check());
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  /// Always asks the repository again (3.x answered from a copy kept since
+  /// the start-up check, so "retry" never saw a new release).
+  Future<void> _check() async {
+    final generation = ++_generation;
+    setState(() {
+      _loading = true;
+    });
+    final feed = ref.read(updateFeedProvider);
+    UpdateSnapshot? checked;
+    try {
+      checked = await feed.check();
+    } on Object {
+      checked = null;
+    }
+    if (!mounted || generation != _generation || !feed.isActive || !identical(feed, ref.read(updateFeedProvider))) {
+      return;
+    }
+    final snapshot = checked ?? _snapshot?.asLastKnown();
+    if (snapshot != null) noteCheckedUpdate(snapshot.info);
+    setState(() {
+      _loading = false;
+      _snapshot = snapshot;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    ref.listen(updateFeedProvider, (previous, next) {
+      if (previous == null || identical(previous, next)) return;
+      _generation++;
+      setState(() {
+        _loading = false;
+        _snapshot = _snapshot?.asLastKnown();
+      });
+    });
+    final platform = ref.watch(updateFeedProvider).platform;
+    final actions = <Widget>[
+      IconButton(
+        key: const ValueKey('version-refresh'),
+        tooltip: i18n('refresh'),
+        onPressed: _loading ? null : _check,
+        icon: _loading
+            ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(AppIcons.refresh),
+      ),
+      const SizedBox(width: 4),
+    ];
+    final reading =
+        MediaQuery.navigationModeOf(context) == NavigationMode.directional &&
+        (_snapshot?.info.log.trim().isNotEmpty ?? false);
+    final scaffold = Scaffold(
+      key: _scaffoldKey,
+      appBar:
+          SettingsPageHeaderScope.maybeOf(context)?.builder(context, title: i18n('version_update'), actions: actions) ??
+          AppBar(
+            toolbarHeight: WindowClassScope.toolbarHeightOf(context),
+            title: Text(i18n('version_update'), maxLines: 2, overflow: TextOverflow.ellipsis),
+            actions: actions,
+          ),
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        child: switch ((_loading, _snapshot)) {
+          (true, null) => AppStatusView(
+            key: const ValueKey('version-checking'),
+            type: AppStatusType.loading,
+            title: i18n('version_checking'),
+          ),
+          // 3.x's failure: an offline cloud, what failed, "重试".
+          (_, null) => AppStatusView(
+            key: const ValueKey('version-update-error'),
+            type: AppStatusType.error,
+            icon: AppIcons.cloudOff,
+            title: i18n('version_update_failed_title'),
+            subtitle: i18n('version_update_failed_subtitle'),
+            buttonText: i18n('retry'),
+            buttonIcon: AppIcons.retry,
+            onButtonPressed: _check,
+          ),
+          (_, final UpdateSnapshot snapshot) => IgnorePointer(
+            ignoring: _loading,
+            child: ExcludeFocus(
+              excluding: _loading,
+              child: _Details(
+                key: const ValueKey('version-update-scroll'),
+                controller: reading ? _scrollController : null,
+                snapshot: snapshot,
+                platform: _platformName(platform),
+                packages: snapshot.info.isNewer ? platformPackages(platform, snapshot.info, snapshot.files) : const [],
+                native: ref.watch(nativePackageTitleProvider),
+              ),
+            ),
+          ),
+        },
+      ),
+    );
+    // Include the header so Right can always reach refresh, including a
+    // read-only response with no release URL or downloadable packages.
+    return reading
+        ? KeyboardScrollArea(
+            key: const ValueKey('version-keyboard-scroll'),
+            controller: _scrollController,
+            label: i18n('update_log'),
+            ringColor: Theme.of(context).colorScheme.onSurface,
+            child: scaffold,
+          )
+        : scaffold;
+  }
+}
+
+class _Details extends ConsumerWidget {
+  const new({
+    required this.snapshot,
+    required this.platform,
+    required this.packages,
+    required this.native,
+    this.controller,
+    super.key,
+  });
+
+  final ScrollController? controller;
+  final UpdateSnapshot snapshot;
+  final String platform;
+  final List<(String, ReleaseFile)> packages;
+  final String? native;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final info = snapshot.info;
+    final githubOrigin = watchSetting(ref, Settings.useGitHubOriginForUpdates);
+    final release = updateDownloadUri(info.releaseUrl);
+    final colors = Theme.of(context).colorScheme;
+    return ListView(
+      controller: controller,
+      physics: const PureLiveScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      children: [
+        for (final child in [
+          _StatusCard(snapshot: snapshot),
+          if (packages.isNotEmpty)
+            SettingsGroup(
+              key: const ValueKey('version-packages'),
+              title: '${i18n('download_files')} · $platform',
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (final (index, (title, file)) in packages.indexed) ...[
+                      if (index > 0)
+                        Divider(
+                          height: 1,
+                          indent: 16,
+                          endIndent: 16,
+                          color: colors.outlineVariant.withValues(alpha: 0.7),
+                        ),
+                      _Package(
+                        title: i18n(title),
+                        file: file,
+                        native: title == native,
+                        sources: downloadSources(file.url, githubOrigin: githubOrigin),
+                        githubOrigin: githubOrigin,
+                        info: info,
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            )
+          else if (release != null)
+            // iOS, Linux: no package of this platform (v4).
+            SettingsGroup(
+              title: i18n('download_files'),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        // iPhone and iPad: the IPAs are there, installed
+                        // with AltStore, SideStore or TrollStore (A18.1 c13).
+                        i18n(
+                          !info.isNewer
+                              ? 'version_current_packages'
+                              : defaultTargetPlatform == TargetPlatform.iOS
+                              ? 'version_ios_packages'
+                              : 'version_no_packages',
+                        ),
+                        style: context.textStyles.t14.copyWith(color: colors.onSurfaceVariant),
+                      ),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        key: const ValueKey('version-open-release'),
+                        style: OutlinedButton.styleFrom(minimumSize: const Size(48, 48)),
+                        onPressed: () => unawaited(_openExternal(release)),
+                        icon: const Icon(AppIcons.openExternal, size: 18),
+                        label: Text(
+                          i18n(
+                            defaultTargetPlatform == TargetPlatform.iOS
+                                ? 'update_go_download_page'
+                                : 'version_history_open_release',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          if (info.log.trim().isNotEmpty)
+            SettingsGroup(
+              title: i18n('update_log'),
+              children: [Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 12), child: MarkdownText(info.log))],
+            ),
+        ])
+          ReadableContent(
+            child: SizedBox(width: double.infinity, child: child),
+          ),
+      ],
+    );
+  }
+}
+
+/// "发现新版本: v…" or "已在使用最新版本", the installed and the newest
+/// version and "预发布" (c6; 3.x computed it but did not say it).
+class _StatusCard extends StatelessWidget {
+  const new({required this.snapshot});
+
+  final UpdateSnapshot snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final info = snapshot.info;
+    final colors = Theme.of(context).colorScheme;
+    final styles = context.textStyles;
+    final newer = info.isNewer;
+    final color = newer ? colors.primary : colors.tertiary;
+    final muted = styles.t13.copyWith(color: colors.onSurfaceVariant);
+    return Container(
+      key: ValueKey(snapshot.lastKnown ? 'version-last-known' : (newer ? 'version-newer' : 'version-latest')),
+      margin: const EdgeInsets.only(top: 8, bottom: 4),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          Icon(newer ? AppIcons.updateAvailable : AppIcons.upToDate, color: color, size: 36),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  snapshot.lastKnown
+                      ? i18n('version_last_known')
+                      : newer
+                      ? i18n('new_version_info', args: {'version': updateVersionLabel(info)})
+                      : i18n('version_no_newer_observed'),
+                  style: styles.t16.emphasis,
+                ),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(i18n('version_installed', args: {'version': appVersion}), style: muted),
+                    Text(i18n('version_source_version', args: {'version': updateVersionLabel(info)}), style: muted),
+                    if (info.prerelease)
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: colors.errorContainer,
+                          borderRadius: const BorderRadius.all(Radius.circular(6)),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                          child: Text(
+                            i18n('version_prerelease'),
+                            style: styles.t12.copyWith(color: colors.onErrorContainer),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One package (c7, N2 A): "ARM64 (64位) · 38.6 MB", "本机" on this
+/// device's, "下载并安装" (U.3d: the fastest mirror first, the next one on
+/// failure); the mirrors fold under "选择下载源（N 个）" and each opens its
+/// dialog as in 3.x.
+class _Package extends StatefulWidget {
+  const new({
+    required this.title,
+    required this.file,
+    required this.native,
+    required this.sources,
+    required this.githubOrigin,
+    required this.info,
+  });
+
+  final String title;
+  final ReleaseFile file;
+  final bool native;
+  final List<String> sources;
+  final bool githubOrigin;
+  final UpdateInfo info;
+
+  @override
+  State<_Package> createState() => _PackageState();
+}
+
+class _PackageState extends State<_Package> {
+  bool _open = false;
+
+  String _sourceName(int index) => widget.githubOrigin || index == widget.sources.length - 1
+      ? i18n('github_origin_source')
+      : i18n('download_source', args: {'num': '${index + 1}'});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final styles = context.textStyles;
+    final file = widget.file;
+    final heading = Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text(widget.title, style: styles.t15.copyWith(fontWeight: FontWeight.w600)),
+        Text('· ${file.size}', style: styles.t13.copyWith(color: colors.onSurfaceVariant)),
+        if (widget.native)
+          DecoratedBox(
+            key: ValueKey('version-native-${file.name}'),
+            decoration: BoxDecoration(
+              color: colors.primaryContainer,
+              borderRadius: const BorderRadius.all(Radius.circular(6)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              child: Text(
+                i18n('update_native_package'),
+                style: styles.t12.copyWith(color: colors.onPrimaryContainer, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+      ],
+    );
+    final install = FilledButton.tonalIcon(
+      key: ValueKey('version-download-${file.name}'),
+      style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),
+      onPressed: widget.sources.isEmpty
+          ? null
+          : () => unawaited(showUpdateDownload(context, file: file, sources: widget.sources, update: widget.info)),
+      icon: const Icon(AppIcons.downloadPackage, size: 18),
+      label: Text(i18n(file.hasIntegrity ? 'update_download_install' : 'update_download_action')),
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) => constraints.maxWidth < 280
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [heading, const SizedBox(height: 8), install],
+                  )
+                : Row(
+                    children: [
+                      Expanded(child: heading),
+                      const SizedBox(width: 8),
+                      install,
+                    ],
+                  ),
+          ),
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: TextButton.icon(
+              key: ValueKey('version-sources-${file.name}'),
+              style: TextButton.styleFrom(minimumSize: const Size(48, 48)),
+              onPressed: () => setState(() => _open = !_open),
+              icon: Icon(_open ? AppIcons.foldUp : AppIcons.dropDown, size: 20),
+              label: Text(i18n('update_choose_source', args: {'count': '${widget.sources.length}'})),
+            ),
+          ),
+          if (_open)
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final width = constraints.maxWidth;
+                final columns = width > 800 ? 4 : (width > 500 ? 3 : 2);
+                const spacing = 8.0;
+                final buttonWidth = (width - spacing * (columns - 1)) / columns;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Wrap(
+                    spacing: spacing,
+                    runSpacing: spacing,
+                    children: [
+                      for (final (index, source) in widget.sources.indexed)
+                        SizedBox(
+                          width: buttonWidth,
+                          child: Tooltip(
+                            message: source,
+                            waitDuration: const Duration(milliseconds: 300),
+                            child: OutlinedButton.icon(
+                              key: ValueKey('version-source-${file.name}-$index'),
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(0, kMinInteractiveDimension),
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                                shape: const RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.all(Radius.circular(12)),
+                                ),
+                              ),
+                              onPressed: () => unawaited(_showSource(context, index, source)),
+                              icon: const Icon(AppIcons.downloadSource, size: 16),
+                              label: Text(
+                                _sourceName(index),
+                                style: styles.t13.copyWith(fontWeight: FontWeight.w600),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// One mirror (c8): "ARM64 (64位) · 下载源 3", the file and the address,
+  /// then download in the app, in the browser, or copy (3.x needed another
+  /// "点击下载" inside).
+  Future<void> _showSource(BuildContext pageContext, int index, String url) => showAppDialog<void>(
+    context: pageContext,
+    builder: (dialogContext) {
+      final colors = Theme.of(dialogContext).colorScheme;
+      final styles = dialogContext.textStyles;
+      final file = widget.file;
+      final directional = MediaQuery.navigationModeOf(dialogContext) == NavigationMode.directional;
+      const wide = ButtonStyle(minimumSize: WidgetStatePropertyAll(Size.fromHeight(48)));
+      return AppDialog(
+        key: const ValueKey('version-source-dialog'),
+        autofocus: !directional,
+        title: '${widget.title} · ${_sourceName(index)}',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(file.name, style: styles.t14.copyWith(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: colors.surfaceContainerHighest,
+                borderRadius: const BorderRadius.all(Radius.circular(12)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: SelectableText(url, style: styles.t12.copyWith(color: colors.onSurfaceVariant)),
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              key: const ValueKey('version-source-download'),
+              autofocus: directional,
+              style: wide,
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                unawaited(showUpdateDownload(pageContext, file: file, sources: [url], update: widget.info));
+              },
+              icon: const Icon(AppIcons.downloadPackage, size: 20),
+              label: Text(i18n('update_download_in_app')),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              key: const ValueKey('version-source-browser'),
+              style: wide,
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                final uri = updateDownloadUri(url);
+                if (uri != null) unawaited(_openExternal(uri));
+              },
+              icon: const Icon(AppIcons.openInBrowser, size: 20),
+              label: Text(i18n('update_open_in_browser')),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              key: const ValueKey('version-source-copy'),
+              style: wide,
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await Clipboard.setData(ClipboardData(text: url));
+                AppNavigator.toast(i18n('copied_to_clipboard'));
+              },
+              icon: const Icon(AppIcons.copy, size: 20),
+              label: Text(i18n('copy_link')),
+            ),
+          ],
+        ),
+        actions: const [DialogCancelButton(key: ValueKey('version-source-cancel'))],
+      );
+    },
+  );
+}
+
+/// Opens [uri] in the browser; tells the user when nothing opened.
+Future<void> _openExternal(Uri uri) async {
+  var opened = false;
+  try {
+    opened = await AppNavigator.openExternal(uri);
+  } on Object {
+    opened = false;
+  }
+  if (!opened) AppNavigator.toast(i18n('external_browser_not_opened'));
+}

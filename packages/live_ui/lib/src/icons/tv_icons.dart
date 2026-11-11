@@ -1,0 +1,260 @@
+import 'package:flutter/material.dart';
+import 'package:live_ui/src/icons/custom_icons.dart';
+import 'package:remixicon/remixicon.dart';
+
+/// The icons of the TV interface by what they are for (docs/A-界面设计/A17-电视界面/A17.1-电视设计系统和通用组件),
+/// in the same spirit as `AppIcons`: TV pages name the use, never the glyph.
+/// Uses the phone has too (refresh, close, lock, the audience kinds) come
+/// from `AppIcons`; these are the TV shell's own and the shared components
+/// the TV draws first (the card dialog, the status page, the tag dialog).
+abstract final class TvIcons {
+  // ---- the side menu (pure_live_TV `TvMenuType`); the phone's glyphs where
+  // the phone has the same destination (A17.2 c4) ----
+
+  /// Follows.
+  static const IconData menuFavorites = Remix.heart_3_line;
+
+  /// Recommended rooms.
+  static const IconData menuPopular = Remix.fire_line;
+
+  /// Areas.
+  static const IconData menuAreas = Remix.shapes_line;
+
+  /// Watch history.
+  static const IconData menuHistory = Remix.history_line;
+
+  /// Search.
+  static const IconData menuSearch = CustomIcons.search;
+
+  /// Network TV.
+  static const IconData menuIptv = Icons.live_tv_rounded;
+
+  /// Link playback (A17.5 c12).
+  static const IconData menuLink = Remix.links_line;
+
+  /// Videos.
+  static const IconData menuVideo = Icons.movie_rounded;
+
+  /// Music.
+  static const IconData menuMusic = Icons.library_music_rounded;
+
+  /// Wallpapers.
+  static const IconData menuWallpaper = Icons.wallpaper_rounded;
+
+  /// Settings.
+  static const IconData menuSettings = Remix.settings_5_line;
+
+  /// The followed areas (A17.2 c4: the phone's "关注分区" button).
+  static const IconData menuFollowedAreas = Remix.heart_add_2_line;
+
+  /// The video mode's "我的" (A17.6).
+  static const IconData videoMine = Remix.user_3_line;
+
+  /// The video mode's home.
+  static const IconData videoHome = Remix.home_4_line;
+
+  /// Music: play next (A17.7).
+  static const IconData musicNext = Remix.play_list_add_line;
+
+  /// Music: the queue.
+  static const IconData musicQueue = Remix.play_list_line;
+
+  /// Music: a playlist.
+  static const IconData musicPlaylist = Remix.folder_music_line;
+
+  /// Music: now playing.
+  static const IconData musicNow = Remix.disc_line;
+
+  /// Music: recommended.
+  static const IconData musicDiscover = Remix.compass_3_line;
+
+  /// "稍后再看".
+  static const IconData videoLater = Remix.time_line;
+
+  /// "导航栏始终展开" (A17.2 c2).
+  static const IconData menuExpand = Remix.side_bar_line;
+
+  /// The icons a side menu entry can take instead of its own (A17.9-31,
+  /// pure_live_TV "选择图标"), by a stored name.
+  static const Map<String, IconData> menuChoices = {
+    'heart': Remix.heart_3_line,
+    'star': Remix.star_line,
+    'fire': Remix.fire_line,
+    'shapes': Remix.shapes_line,
+    'apps': Remix.apps_2_line,
+    'compass': Remix.compass_3_line,
+    'history': Remix.history_line,
+    'time': Remix.time_line,
+    'search': Remix.search_line,
+    'tv': Remix.tv_2_line,
+    'live': Remix.live_line,
+    'link': Remix.links_line,
+    'film': Remix.film_line,
+    'music': Remix.music_2_line,
+    'image': Remix.image_line,
+    'home': Remix.home_4_line,
+    'bookmark': Remix.bookmark_line,
+    'game': Remix.gamepad_line,
+    'user': Remix.user_3_line,
+    'folder': Remix.folder_3_line,
+    'rocket': Remix.rocket_line,
+    'leaf': Remix.leaf_line,
+    'sun': Remix.sun_line,
+    'moon': Remix.moon_line,
+  };
+
+  /// Showing or hiding an entry, moving it (A17.9 c11).
+  static const IconData menuShown = Remix.eye_line;
+
+  /// A hidden entry.
+  static const IconData menuHidden = Remix.eye_off_line;
+
+  // ---- the background (A17.8) ----
+
+  /// Colours and gradients.
+  static const IconData wallpaperSolid = Remix.palette_line;
+
+  /// The library of pictures.
+  static const IconData wallpaperLibrary = Remix.gallery_line;
+
+  /// Random pictures.
+  static const IconData wallpaperRandom = Remix.shuffle_line;
+
+  /// A video background.
+  static const IconData wallpaperVideo = Remix.film_line;
+
+  /// How it fills the screen.
+  static const IconData wallpaperFit = Remix.aspect_ratio_line;
+
+  /// The veil.
+  static const IconData wallpaperMask = Remix.contrast_drop_2_line;
+
+  /// The blur.
+  static const IconData wallpaperBlur = Remix.blur_off_line;
+
+  /// An entry being moved.
+  static const IconData menuMoving = Remix.drag_move_2_line;
+
+  /// A part of the TV interface that is not built yet.
+  static const IconData underConstruction = Icons.construction_rounded;
+
+  // ---- cards and covers (U.15a c6–c9, the phone's U.4a) ----
+
+  /// The cover of a room or area whose picture is loading or failed (one
+  /// placeholder for both, U.15a c8; never the "offline" Wi-Fi glyph).
+  static const IconData coverPlaceholder = Icons.live_tv_rounded;
+
+  /// A followed room or area on its cover.
+  static const IconData followedMark = Icons.favorite_rounded;
+
+  /// The "录播" chip of a replay (3.x `Icons.videocam_rounded`).
+  static const IconData replay = Icons.videocam_rounded;
+
+  /// "All platforms" in a platform tab row (pure_live_TV `Icons.apps_rounded`).
+  static const IconData allPlatforms = Icons.apps_rounded;
+
+  /// Set a room's tags (3.x `Remix.price_tag_3_line`).
+  static const IconData tags = Remix.price_tag_3_line;
+
+  /// Delete one entry (3.x `RemixIcons.delete_bin_line`).
+  static const IconData delete = Remix.delete_bin_line;
+
+  /// Clear a whole list (history, recent searches).
+  static const IconData clearAll = Icons.delete_sweep_rounded;
+
+  /// A tag that is ticked in a multiple choice.
+  static const IconData ticked = Icons.check_rounded;
+
+  /// A follow-the-area heart, not followed.
+  static const IconData followArea = Icons.favorite_border_rounded;
+
+  /// A follow-the-area heart, followed.
+  static const IconData followedArea = Icons.favorite_rounded;
+
+  // ---- states of a page (U.15a c14) ----
+
+  /// The list could not be loaded (network, platform).
+  static const IconData loadFailed = Icons.wifi_off_rounded;
+
+  /// The platform hides its rooms until the user signs in.
+  static const IconData needsLogin = Icons.account_circle_outlined;
+
+  /// No rooms on a platform (the popular page's flame).
+  static const IconData noRooms = Icons.local_fire_department_rounded;
+
+  /// No follows yet.
+  static const IconData noFollows = Icons.favorite_border_rounded;
+
+  /// No areas.
+  static const IconData noAreas = Icons.grid_view_rounded;
+
+  /// No watch history.
+  static const IconData noHistory = Icons.history_rounded;
+
+  /// Nothing found.
+  static const IconData noResults = Icons.search_off_rounded;
+
+  /// Search before the first word.
+  static const IconData searchIntro = Icons.manage_search_rounded;
+
+  /// No playlists yet (network TV).
+  static const IconData noPlaylists = Icons.playlist_add_rounded;
+
+  /// No platforms switched on.
+  static const IconData noPlatforms = Icons.apps_rounded;
+
+  // ---- settings rows and fields ----
+
+  /// A row that opens a page (›).
+  static const IconData chevron = Icons.chevron_right_rounded;
+
+  /// A row whose value opens a choice (▾).
+  static const IconData choice = Icons.arrow_drop_down_rounded;
+
+  /// The search field.
+  static const IconData search = Icons.search_rounded;
+
+  /// A recent search word.
+  static const IconData recentWord = Icons.history_rounded;
+
+  /// Search for rooms (A17.3 c11).
+  static const IconData searchRooms = Icons.live_tv_rounded;
+
+  /// Search for streamers (A17.3 c11).
+  static const IconData searchAnchors = Icons.person_search_rounded;
+
+  /// The order of the results.
+  static const IconData sort = Icons.sort_rounded;
+
+  /// What the chosen platforms find (opens the scope panel).
+  static const IconData searchScope = Icons.info_outline_rounded;
+
+  /// Type on a phone ("用手机输入": a code to scan).
+  static const IconData phoneInput = Icons.qr_code_2_rounded;
+
+  /// Manage the network TV playlists.
+  static const IconData manage = Icons.tune_rounded;
+
+  /// The interface mode (phone or TV).
+  static const IconData uiMode = Icons.tv_rounded;
+
+  /// The preferred quality.
+  static const IconData quality = Icons.high_quality_rounded;
+
+  /// Danmaku on the picture, on.
+  static const IconData danmakuOn = Icons.subtitles_rounded;
+
+  /// Danmaku on the picture, off.
+  static const IconData danmakuOff = Icons.subtitles_off_rounded;
+
+  /// Grow the focused item (the low-end-box switch, U.15a c2).
+  static const IconData focusZoom = Icons.zoom_in_rounded;
+
+  // ---- the TV room (U.15d redraws it) ----
+
+  /// A room off air.
+  static const IconData offAir = Icons.nightlight_round;
+
+  /// The room list beside the picture.
+  static const IconData roomList = Icons.format_list_bulleted_rounded;
+}

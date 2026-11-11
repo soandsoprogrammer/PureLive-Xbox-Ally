@@ -1,0 +1,110 @@
+# The recorder's native FFmpeg for iOS and macOS (tools/ffmpeg_kit/bundles.txt),
+# built from source on GitHub's macOS runner (D-041: we have no Mac). The
+# Android, Linux and Windows bundles are built on our own machine with
+# tools/ffmpeg_kit/rebuild/build.sh; check them all with check.sh there
+# (docs/Z-工程文档和维护/Z04-构建和装机).
+#
+# Same scripts and options as ffmpeg-kit-builders' own release of the version
+# ffmpeg_kit_extended_flutter pins (base bundle, LGPL, not small), with FFmpeg
+# fixed to a tag instead of the moving release branch, and every dependency
+# (jsoncpp and the rest) built from source here instead of downloaded from
+# the builders' releases. The run keeps the two xcframework zips and their
+# SHA-256 as an artifact; they are published by hand in a native-ffmpeg-*
+# prerelease after their checks.
+name: FFmpegKit Apple
+
+on:
+  workflow_dispatch:
+    inputs:
+      builders:
+        description: akashskypatel/ffmpeg-kit-builders commit
+        default: fac2076d06a473b8e1c1ed5a1fabe52ee974a5c0 # tag v0.11.2-android
+      ffmpeg:
+        description: FFmpeg tag
+        default: n9.0.2
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  apple:
+    name: FFmpegKit Apple
+    runs-on: xcode-27
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: akashskypatel/ffmpeg-kit-builders
+          ref: ${{ inputs.builders }}
+          persist-credentials: false
+
+      - name: Read this project's toolchain policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: purelive-config
+          persist-credentials: false
+
+      - name: Install official stable Python
+        run: bash purelive-config/tools/toolchain/macos_python.sh
+
+      - name: Tools
+        run: |
+          set -euo pipefail
+          find scripts FFmpegKit -type f -name '*.sh' -exec chmod +x {} +
+          scripts/toolchain/setup-macos-tools.sh
+          sudo xcodebuild -license accept
+          bash purelive-config/tools/toolchain/apple.sh
+
+      - name: Pin FFmpeg
+        env:
+          FFMPEG_TAG: ${{ inputs.ffmpeg }}
+        run: |
+          set -euo pipefail
+          perl -pi -e 's/^export ffmpeg_git_checkout_version=.*/export ffmpeg_git_checkout_version="$ENV{FFMPEG_TAG}"/' scripts/variable.sh
+          grep -n '^export ffmpeg_git_checkout_version=' scripts/variable.sh
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          sudo -E "$HOMEBREW_BASH" scripts/build_all.sh \
+            --platform=ios-aarch64,iphonesimulator-aarch64,macos-aarch64,macos-x86_64 \
+            --build=ffmpeg,kit,bundle --bundle=base --license=lgpl --not-small --local --reset --deps
+
+      - name: Check and hash
+        env:
+          FFMPEG_TAG: ${{ inputs.ffmpeg }}
+        run: |
+          set -euo pipefail
+          out=prebuilt/apple/xcframeworks
+          mkdir -p dist
+          for name in bundle-base-ios-universal-lgpl bundle-base-macos-universal-lgpl; do
+            cp "$out/$name.xcframework.zip" dist/
+            rm -rf "check-$name" && mkdir "check-$name"
+            unzip -q "dist/$name.xcframework.zip" -d "check-$name"
+            while IFS= read -r binary; do
+              echo "== $binary"
+              lipo -info "$binary"
+              # Not `strings | grep -m1`: under pipefail, grep's early exit fails the pipe.
+              strings "$binary" > strings.txt
+              grep -m1 -F "$FFMPEG_TAG" strings.txt || { echo "::error::$binary does not carry $FFMPEG_TAG"; exit 1; }
+            done < <(find "check-$name" -path '*/ffmpegkit.framework/ffmpegkit' -not -path '*dSYM*')
+          done
+          (cd dist && shasum -a 256 *.zip | tee SHA256SUMS)
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-kit-apple
+          path: dist
+          if-no-files-found: error
+          compression-level: 0
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: ffmpeg-kit-apple-log
+          path: build.log
+          if-no-files-found: ignore

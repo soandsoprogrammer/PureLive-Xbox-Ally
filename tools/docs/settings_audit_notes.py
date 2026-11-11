@@ -1,0 +1,623 @@
+"""The hand-written part of the J01.2 settings table (see settings_audit.py).
+
+NOTES maps a storage key to what the script cannot find by itself:
+
+- v3: 3.x's default on a fresh Android phone, as a Dart literal, when 3.x
+  computed it (a constant from another file, an expression);
+- v3src: where 3.x reads it (`lib/` relative), when not a `hive*` call;
+- v3range: 3.x's range and repair (file:line under `lib/`);
+- ui: the settings page's range when the row is not a catalogue slider,
+  counter or number box;
+- reads / when: overrides of the found readers and the timing;
+- kind: same / approved / fixed / open (default: compared by the script);
+- verdict: the reason, the task or decision;
+- new: True for settings v4 added (no 3.x key).
+
+Paths under 3.x's `lib/` drop the prefix `common/services/settings/` for
+the settings controllers.
+"""
+
+_D = 'danmaku_settings_controller.dart'
+_REC = 'recorder/consts/recorder_config.dart'
+_LOCAL = 'modules/live_play/widgets/local_interaction/local_interaction_controller.dart'
+_RECORD_PAGE = '录制设置页 `record_settings_page.dart`'
+_LOCAL_PANEL = '本地互动样式面板 `local_style_panel.dart`'
+_BLOCK = '屏蔽页 `block_manager.dart`'
+_FILTER_WHEN = '立即（直播间和多画面监听它，重建过滤器）'
+_RESET = 'J01.3 改成和 3.x 一样回到默认值（`IntSetting` 的 `resetOutOfRange`）'
+_FIXED_RANGE = '注册表原来不限，3.x 存的值和导入的备份都夹到这个范围；改成同样的 `min`/`max`'
+
+
+def _new(task: str) -> dict:
+    return {'new': True, 'kind': 'same', 'verdict': f'v4 新加（{task}），默认值照来源任务'}
+
+
+def _danmaku(line: str, low: str, high: str, *, fixed: bool = False, note: str = '') -> dict:
+    entry = {'v3range': f'{low}～{high}（`{_D}:{line}`）'}
+    if fixed:
+        entry['kind'] = 'fixed'
+        entry['verdict'] = _FIXED_RANGE + (f'；{note}' if note else '')
+    elif note:
+        entry['verdict'] = note
+    return entry
+
+
+NOTES: dict[str, dict] = {
+    # ---- app ----
+    'autoRefreshTime': {
+        'v3range': '不限',
+        'verdict': '3.x 也没有读取它的代码，只存、只进备份（功能清点第 15 节）',
+    },
+    'asmrSleepMinutes': {'v3range': '1～525600（`app_settings_controller.dart:227`）'},
+    'enableRotateScreen': {'verdict': '3.x 也没有读取它的代码，只存、只进备份'},
+    'enableDenseFavorites': {'verdict': '3.x 也没有改它的界面（只有备份能改），v4 同样'},
+    'skippedUpdateVersion': _new('A06.3 c4，本机记录'),
+    'backgroundAudioOnly': {
+        **_new('O01.3'),
+        'verdict': 'v4 新加（O01.3，D-040）：默认关，后台播放时照旧解码视频；开了以后离开应用 1.5 秒（不在画中画）关掉视频输出只放声音，回来恢复画面；用户自己开的“纯音频”不受影响',
+        'when': '下一次离开应用',
+    },
+    'backgroundPauseDanmaku': {
+        **_new('O01.3'),
+        'verdict': 'v4 新加（O01.3，D-040）：默认关，后台照旧连着弹幕；开了以后离开应用 1.5 秒（不在画中画）断开弹幕，回来重新连接（这段时间的弹幕不补）',
+        'when': '下一次离开应用',
+    },
+    'pauseOnPipClose': {
+        **_new('O01.3'),
+        'verdict': 'v4 新加（O01.3，D-040）：默认关，开着后台播放时关掉系统画中画窗口照旧在后台出声；开了以后关掉画中画就暂停，回到应用再继续',
+        'when': '下一次关掉画中画',
+    },
+    'refreshRateMode': {
+        'v3': "'powerSaving'",
+        'v3src': 'app_settings_controller.dart:36-40、:53',
+        'verdict': '3.x 新装没有旧开关 `enableHighRefreshRate`，`_initialRefreshRateMode()` 得 `powerSaving`；'
+        '旧开关为真的老用户迁移成 `balanced`（`legacy_snapshot.dart`）',
+    },
+    'matchVideoFrameRate': _new('R02.1，U.2i'),
+    'realOnlinePlatforms': {
+        'v3': "['douyin', 'kuaishou', 'cc', 'twitch', 'soop', 'acfun', 'picarto', 'twitcasting']",
+        'v3src': 'app_settings_controller.dart:11-20、:55',
+        'verdict': '`defaultRealOnlinePlatforms` 展开后一样；3.x 的 `audienceMetricMigration` 补的平台都已在列表里',
+    },
+    'savedMenuIds': {
+        'v3': "['favorites', 'popular', 'areas', 'record']",
+        'v3src': '`app_settings_controller.dart:69`，`HomeMenu` 在 `common/consts/app_consts.dart:6-10`',
+    },
+    'showUnplayableInDiscover': _new('UPGRADES 统一原则“受限”，J02.1'),
+    'detectClipboardRooms': {
+        **_new('O03.2'),
+        'verdict': 'v4 新加（O03.2）；3.x 一直检测剪贴板、没有开关，默认开和 3.x 的行为一样',
+    },
+    'douyuForceRenew': _new('UPGRADES 2-1'),
+    'twitchLanguages': {
+        **_new('UPGRADES 8-3'),
+        'verdict': 'v4 新加（UPGRADES 8-3）；空 = 不筛语言（3.x 固定只看中文和韩语，作为预设 `twitchLegacyLanguages` 提供）',
+    },
+    # ---- favorite ----
+    'hotAreasList': {
+        'v3': "['bilibili', 'douyu', 'huya', 'douyin', 'kuaishou', 'cc', 'twitch', 'soop', 'yy', 'acfun', 'picarto', "
+        "'twitcasting', 'missevan', 'inke', 'kilakila', 'xiaohongshu', 'niconico', 'weibo', 'showroom', 'chzzk', "
+        "'liveme', 'tiktok', 'youtube', 'bigo', 'pandalive', 'fc2live', 'steambroadcast', 'jdlive', 'kugoulive', "
+        "'baidulive', 'sixroom', 'looklive', '17live', 'iptv']",
+        'v3src': '`favorite_room_controller.dart:20`，`AppConsts.supportSites` = `core/sites.dart:217-251`',
+        'kind': 'approved',
+        'verdict': 'v4 多了 Kick（排在 chzzk 后面）：Kick 重新支持（UPGRADES X-1，E 组 M4.34）；其余 34 个和顺序一样',
+    },
+    'preferPlatform': {'v3': "'bilibili'", 'v3src': 'favorite_room_controller.dart:24'},
+    'historyLimit': {
+        'v3range': '≥ 0，负数回到 50（`history_controller.dart:8-15`）',
+        'kind': 'fixed',
+        'verdict': f'默认值和范围一样；存了负数时 3.x 回到 50，v4 原来夹成 0（不限），{_RESET}',
+    },
+    # ---- theme ----
+    'themeColorSwitch': {
+        'v3': "'FF2196F3'",
+        'v3src': '`theme_settings_controller.dart:13、:19`（`Colors.blue`）',
+        'kind': 'approved',
+        'verdict': '品牌蓝 `FF2E6FE0`（A11.2 C-3）；3.x 默认的蓝色存过的老用户迁移一次（`themeColorMigration`）',
+    },
+    'pureBlackTheme': _new('A11.2 C-4'),
+    'liquidGlass': {
+        **_new('A01.5，A01.6'),
+        'verdict': 'v4 新加（A01.5）；5.2 起默认开（A01.6，用户要液态玻璃）：手机首页底栏悬浮成液态玻璃胶囊，边缘折射、选中项是可拖动的玻璃水滴，不支持着色器的设备是毛玻璃，内存 4 GB 及以下（或读不到）的安卓机只半透明不模糊；关掉是普通底栏；宽屏侧栏、直播间不变',
+        'when': '马上',
+    },
+    'iptvPopularPlaylist': {
+        **_new('V02.9'),
+        'verdict': 'v4 新加（V02.9，issue #6）：热门 → 网络显示哪个播放列表；空是内置热门列表（3.x 只能显示它），列表不在了就回到内置的，内置的删了就用第一个导入的',
+        'when': '马上',
+    },
+    'iptvHotRemoved': {
+        **_new('V02.9'),
+        'verdict': 'v4 新加（V02.9，issue #6）：内置热门列表删掉以后不再自动导入（3.x 每次打开热门都会重新导入，删不掉）；网络电视页可以恢复',
+        'when': '马上',
+    },
+    'themeColorMigration': _new('A11.2，本机记录'),
+    'crossAxisSpacing': {'v3range': '0～64（`theme_settings_controller.dart:10-12`、:109-113）', 'ui': '加减 0～64'},
+    'mainAxisSpacing': {'v3range': '0～64（同上）', 'ui': '加减 0～64'},
+    'loadingStyle': {'v3': "'default'", 'v3src': '`theme_settings_controller.dart:23`，`common/consts/app_consts.dart:21`'},
+    # ---- font ----
+    'textScaleFactor': {'v3range': '0.5～2（`font_settings_controller.dart:16-18`）', 'ui': '滑块 0.5～2，步长 0.05'},
+    'fontSizeBodySmall': {'v3range': '9～15（`font_settings_controller.dart:19-21`）', 'ui': '滑块 9～15，步长 1'},
+    'fontSizeBodyMedium': {'v3range': '11～17（`font_settings_controller.dart:22-24`）', 'ui': '滑块 11～17，步长 1'},
+    'fontSizeBodyLarge': {'v3range': '12～18（`font_settings_controller.dart:25-27`）', 'ui': '滑块 12～18，步长 1'},
+    'fontSizeTitleMedium': {'v3range': '13～20（`font_settings_controller.dart:28-30`）', 'ui': '滑块 13～20，步长 1'},
+    'fontSizeTitleLarge': {'v3range': '16～26（`font_settings_controller.dart:31-33`）', 'ui': '滑块 16～26，步长 1'},
+    # ---- player ----
+    'videoFitIndex': {
+        'v3range': '0～5，越界回到 0（`player_settings_controller.dart:135-139`）',
+        'kind': 'fixed',
+        'verdict': f'默认值和范围一样；越界时 3.x 回到 0（适应），v4 原来夹到 0 或 5，{_RESET}',
+    },
+    'videoPlayerKey': {
+        'v3': "'mpv'",
+        'v3src': 'player_settings_controller.dart:11、:27、:34（iOS 是 ijk）',
+        'verdict': 'v4 只用 mpv，这个键只为备份往返保留（J02.1 有意差异，F-ROOM-24 不做），没有读取',
+    },
+    'preferResolution': {'v3': "'原画'", 'v3src': '`player_settings_controller.dart:36`，`player/utils/player_consts.dart:25`'},
+    'preferResolutionCellular': {'v3': "'原画'", 'v3src': 'player_settings_controller.dart:37'},
+    'preferH264': _new('UPGRADES 统一原则、22-3'),
+    'autoPipOnLeave': _new('A07.8，选择 J1'),
+    'floatWindowSize': {
+        **_new('A07.22，V01.5'),
+        'v3range': '3.x 没有这个设置，应用内小窗的大小按屏幕算（`player/core/player_manager.dart:4737`）',
+        'verdict': 'v4 新加（A07.22，V01.5，D-036）：小、中、大 = A07.8 c6 的大小 × 0.8、1、1.25；默认“中”和原来一样；'
+        '不认识的值读成“中”',
+    },
+    'floatWindowLandscapeScale': {
+        **_new('A07.22'),
+        'v3range': '3.x 不能拖小窗改大小',
+        'ui': '小窗上拖角或两指缩放；长边 160～屏幕短边 × 0.9（`mini_window.dart` 的 `inAppMiniScale`）',
+        'verdict': 'v4 新加（A07.22，V01.5）：横屏画面小窗拖过的大小，是“小窗大小”的倍数；1 = 没拖过；选一档“小窗大小”回到 1',
+    },
+    'floatWindowPortraitScale': {
+        **_new('A07.22'),
+        'v3range': '3.x 不能拖小窗改大小',
+        'ui': '同上；竖屏画面的小窗另记一份',
+        'verdict': 'v4 新加（A07.22，V01.5）：竖屏画面小窗拖过的大小，和横屏画面的分开记（上游 a25facd94 的做法）',
+    },
+    'portraitLayoutMode': {'v3': "'balanced'", 'v3src': '`player_settings_controller.dart:58`，`player/core/portrait_stream_support.dart:9`'},
+    'portraitFullscreenPolicy': {'v3': "'followSource'", 'v3src': 'player_settings_controller.dart:59-62'},
+    'portraitFullscreenDisplayMode': {'v3': "'ambient'", 'v3src': 'player_settings_controller.dart:63-66'},
+    'portraitDanmakuMode': {'v3': "'followGlobal'", 'v3src': 'player_settings_controller.dart:68'},
+    'portraitFullscreenSwipeSwitch': _new('A07.2 c14、A07.3'),
+    'portraitRoomOverrides': {
+        'kind': 'same',
+        'verdict': '3.x 在 Hive 里存 JSON 字符串 `\'{}\'`，v4 存映射；读 3.x 的字符串时解码（`JsonSetting`）',
+    },
+    'livePlayChatCollapsed': _new('A07.5 第 7 条，直播间里记住'),
+    'roomSwitcherLayout': _new('A07.13 c4，D-022'),
+    # ---- danmaku ----
+    'danmakuTopArea': _danmaku('115', '0', '300'),
+    'danmakuArea': _danmaku('116', '0', '1'),
+    'danmakuBottomArea': _danmaku('117', '0', '300'),
+    'danmakuSpeed': _danmaku('118', '20', '400', fixed=True),
+    'danmakuFontSize': _danmaku('119', '10', '30', fixed=True),
+    'danmakuFontWeight': _danmaku(
+        '41-44、:120',
+        '100',
+        '900',
+        fixed=True,
+        note='3.x 还取整到整百（550 → 600），J01.3 加了同样的取整（`IntSetting` 的 `step: 100`）',
+    ),
+    'danmakuFontBorder': _danmaku('121', '0', '4'),
+    'danmakuOpacity': _danmaku('122', '0', '1'),
+    'danmakuListStyle': _new('A07.1，U.2a'),
+    'showChatGifts': _new('A08.6 c3，B-21'),
+    'danmakuListFontSize': {
+        **_new('A08.15'),
+        'v3range': '3.x 没有这个设置，弹幕卡片写死 14 号（`modules/live_play/widgets/danmaku/danmaku_list_view.dart:468-509`）',
+        'verdict': 'v4 新加（A08.15，D-040）：默认 0 = 跟主题的正文字号，和以前一样；12～22，超出范围读成 0；粉丝牌、徽章、头像、礼物图按比例，系统字体放大照样乘上去；飞行弹幕不受影响',
+    },
+    'danmakuListLineSpacing': {
+        **_new('A08.15'),
+        'v3range': '3.x 没有这个设置，行距固定',
+        'verdict': 'v4 新加（A08.15，D-040）：默认“标准”和以前一样；“紧密”各处上下间距减半、文字行高 1.4，“宽松”间距 1.5 倍、行高 1.7；不认识的值读成“标准”',
+    },
+    'chatGiftsAboveTier': {
+        **_new('A08.12'),
+        'v3range': '3.x 没有平台礼物',
+        'verdict': 'v4 新加（A08.12，D-040）：默认关，和以前一样显示所有礼物；开着时聊天列表只留值钱以上（约 10 元起）的平台礼物，连击加起来够了再显示；只在“在聊天列表显示礼物”开着时起作用',
+    },
+    'giftValueInYuan': {
+        **_new('A08.12'),
+        'v3range': '3.x 没有平台礼物',
+        'verdict': 'v4 新加（A08.12，D-040）：默认关，礼物价值照平台单位写；开着时金瓜子、钻石、抖币、分按平台固定比例写成元，海外币种不换算',
+    },
+    'superChatIncludesMembership': {
+        **_new('D07.2'),
+        'v3range': '3.x 没有上舰和会员，醒目留言只有哔哩哔哩、斗鱼、虎牙',
+        'verdict': 'v4 新加（D07.2）：默认开，是 D-040 写明的例外：哔哩哔哩上舰、YouTube 会员，Twitch、CHZZK、Kick、Picarto 的订阅在醒目留言页多一张卡，到点移除；聊天列表里的行开关两种情况都不变；关掉和以前一样',
+    },
+    'danmakuShowGifts': {
+        **_new('A08.12'),
+        'v3range': '3.x 没有平台礼物，飞行弹幕只有聊天',
+        'verdict': 'v4 新加（A08.12，D-040）：默认关，和以前一样礼物不飞；开着时值钱以上的平台礼物飞过直播间画面、全屏、小窗和画中画、多画面、电视，很值钱的在顶部停 4 秒，连击只飞开头和总数，每秒最多 3 条',
+    },
+    'showChatNames': {
+        **_new('A08.10'),
+        'v3range': '3.x 没有这个设置，弹幕列表总显示用户名',
+        'verdict': 'v4 新加（A08.10，用户 2026-10-09）：默认开，和 3.x 一样显示用户名；关掉后直播间的弹幕列表只显示内容，长按面板仍显示用户名',
+    },
+    'danmakuPausedBehavior': _new('A07.10 c3'),
+    'danmakuFps': _danmaku('123', '30', '240'),
+    'holdDanmakuOnPress': {
+        **_new('D03.4，V01.3'),
+        'verdict': 'v4 新加（D03.4，V01.3，D-036）：默认开（D-039，用户 2026-10-09）；按住一条飞行弹幕时它停住，松手继续；关掉和 3.x 一样',
+    },
+    'danmakuMaxVisibleCount': {
+        **_new('D05.2，V01.4'),
+        'v3range': '3.x 没有这个设置，直播间和多画面写死 48',
+        'verdict': 'v4 新加（D05.2，V01.4，D-036）：默认 48 和 3.x 一样；10～120，超出范围（上游电视版存 0 表示按设备）读成 48',
+    },
+    'repeatedDanmakuWindowSeconds': {
+        'v3range': f'1～30（`{_D}:259-261`，导入备份时）',
+        'kind': 'fixed',
+        'verdict': '注册表原来只有下限 1，3.x 导入时夹到 1～30、设置页滑块也是 1～30；补上 `max: 30`',
+        'when': _FILTER_WHEN,
+    },
+    'collapseRepeatedDanmaku': {'when': _FILTER_WHEN},
+    'enableDanmakuSimilarityFilter': {'v3': 'false', 'v3src': f'{_D}:39、:105-108', 'when': _FILTER_WHEN},
+    'savedDanmakuTemplate': {
+        'reads': '弹幕设置的“模板”本身（`shared/danmaku/danmaku_settings_content.dart`、`danmaku_templates.dart`）',
+        'when': '立即',
+    },
+    'enablePipDanmaku': {'v3': 'true', 'v3src': f'{_D}:17、:79'},
+    'pipDanmakuColor': {'v3range': '不限'},
+    'pipDanmakuFontSize': _danmaku('272-274', '8', '24', fixed=True, note='3.x 在导入备份时夹，设置页滑块同样 8～24'),
+    'pipDanmakuFontWeight': _danmaku('124、:275', '100', '900', fixed=True, note='取整到整百同上（J01.3）'),
+    'pipDanmakuSpeed': _danmaku('276-278', '20', '400', fixed=True),
+    'pipDanmakuOpacity': {
+        'v3range': f'0.1～1（`{_D}:279-281`）',
+        'kind': 'fixed',
+        'verdict': '注册表原来是 0～1，3.x 导入时和设置页滑块都是 0.1～1；下限改成 0.1（0 会让小窗弹幕完全看不见）',
+    },
+    'pipDanmakuArea': {
+        'v3range': f'0.1～1（`{_D}:282-284`）',
+        'kind': 'fixed',
+        'verdict': '注册表原来是 0～1，3.x 导入时和设置页滑块都是 0.1～1；下限改成 0.1',
+    },
+    'pipDanmakuMaxVisibleCount': {
+        'v3range': f'1～20（`{_D}:285-287`）',
+        'kind': 'fixed',
+        'verdict': '注册表原来只有下限 1，3.x 导入时和设置页加减都是 1～20；补上 `max: 20`',
+    },
+    'pipDanmakuEmitInterval': _danmaku('288-290', '0.05', '2', fixed=True),
+    'pipDanmakuFps': {
+        **_danmaku('291', '15', '240', fixed=True),
+        'ui': '滑块 15～240（`playback_tiles.dart` 的 `PipFpsTile`）',
+    },
+    'filterDouyuSuspectedAutomatedMessages': {
+        'v3': 'false',
+        'v3src': f'{_D}:35、:99-102',
+        'when': '立即（斗鱼弹幕每条消息都读）',
+    },
+    'danmakuSimilarityThreshold': {'v3range': f'50～100（`{_D}:125`）', 'ui': f'滑块 50～100（{_BLOCK}）', 'when': _FILTER_WHEN},
+    'danmakuSimilarityCacheDuration': {'v3range': f'1～60（`{_D}:126`）', 'ui': f'滑块 1～60（{_BLOCK}）', 'when': _FILTER_WHEN},
+    'danmakuSimilarityMaxCacheSize': {'v3range': f'20～1000（`{_D}:127`）', 'ui': f'滑块 20～1000（{_BLOCK}）', 'when': _FILTER_WHEN},
+    'blockEmoteOnlyDanmaku': {
+        **_new('D02.2，V03.6 E11'),
+        'verdict': 'v4 新加（D02.2，V03.6 E11，D-040）：默认关，和 3.x 一样（3.x 没有这个屏蔽）；只有表情的平台弹幕不显示',
+        'ui': f'开关（{_BLOCK}“按内容屏蔽”）',
+        'when': _FILTER_WHEN,
+    },
+    'blockLongDanmaku': {
+        **_new('D02.2，V03.6 E11'),
+        'verdict': 'v4 新加（D02.2，D-040）：默认关，和 3.x 一样；超过“最多字数”的平台弹幕不显示',
+        'ui': f'开关（{_BLOCK}“按内容屏蔽”）',
+        'when': _FILTER_WHEN,
+    },
+    'blockLongDanmakuLength': {
+        **_new('D02.2，V03.6 E11'),
+        'v3range': '3.x 没有这个设置',
+        'verdict': 'v4 新加（D02.2）：默认 30，10～100（超出范围夹到两端），一个表情算一个字',
+        'ui': f'滑块 10～100（{_BLOCK}，“屏蔽超长弹幕”关着时变灰）',
+        'when': _FILTER_WHEN,
+    },
+    'youtubeShowAllChat': _new('UPGRADES B-13'),
+    # ---- volume ----
+    'defaultMobileVolume': {
+        'v3range': '0～1（`volume_settings_controller.dart:103-106`）',
+        'verdict': '直播间里手机音量固定 1、只有多画面读它，和 3.x 一样（3.x 的适配器在手机上强制 1.0，见 G05 说明）',
+    },
+    'defaultDesktopVolume': {'v3range': '0～1（同上）'},
+    'volumeBoostDb': {
+        **_new('wzgrx/pure_live#38'),
+        'v3range': '3.x 没有这个设置',
+        'verdict': 'v5.4 新加：mpv `volume-gain`（dB）加在音量之上，0 是关；直播间、多画面、电视和音乐都读它，换了设置下一次开播放器生效',
+        'ui': '单选：关闭、+3、+6、+9、+12 dB',
+    },
+    'roomVolumes': {
+        'kind': 'same',
+        'verdict': '3.x 在 Hive 里存 JSON 字符串 `\'{}\'`，v4 存映射；每个房间的值读出时夹到 0～1（`live_player` 的 `roomVolume`）',
+    },
+    # ---- room card ----
+    'room_card_mobile_preset': {'v3': "'normal'", 'v3src': 'room_card_settings_controller.dart:15、:251'},
+    'room_card_desktop_preset': {'v3': "'normal'", 'v3src': 'room_card_settings_controller.dart:252'},
+    'room_card_mobile_config': {
+        'v3': {},
+        'v3src': 'room_card_settings_controller.dart:253-259',
+        'kind': 'same',
+        'verdict': '3.x 没存时用预设的外观（`_storedPresetFallback`），v4 的空映射同样表示“用预设”',
+    },
+    'room_card_desktop_config': {
+        'v3': {},
+        'v3src': 'room_card_settings_controller.dart:260-266',
+        'kind': 'same',
+        'verdict': '同上',
+    },
+    # ---- page ----
+    'page_default_size': {
+        'v3': '12',
+        'v3src': 'page_settings_controller.dart:17、:23-34（宽于 960 逻辑像素是 20）',
+        'v3range': '1～100 且必须是可选的条数之一，否则取第一个（`page_settings_controller.dart:9-10`、:51-62）',
+        'kind': 'approved',
+        'verdict': 'v4 默认 0 = 由界面按宽度定（`shared/rooms/paging.dart` 的 `pageSizesOf`，结果和 3.x 一样是 12 或 20），'
+        'J02.1 有意差异（纯 Dart 包拿不到屏幕宽度）；3.x 读到 v4 备份里的 0 时取可选条数的第一个，同样是 12 或 20',
+    },
+    'page_size_options_raw': {
+        'verdict': '空 = 按宽度用 3.x 的默认可选条数（12/24/36/48 或 20/40/60/80），和 3.x 一样',
+    },
+    # ---- refresh ----
+    'autoRefreshInterval': {
+        'v3range': '5～360（`refresh_config_controller.dart:6-14`）',
+        'ui': '选项 5～360 分钟，12 档',
+        'when': '立即（重排定时器）',
+    },
+    'autoRefreshFavorite': {'when': '立即（重排定时器）'},
+    'liveAlertEnabled': {
+        **_new('O01.1，V01.1'),
+        'verdict': 'v4 新加（O01.1，V01.1，D-036）：默认关，和以前一样不发通知；开了以后关注的主播开播时发系统通知（只在 Android）',
+        'reads': '`features/favorite/favorite_controller.dart` 的 `liveAlerts`（每轮刷新后比较）和 `_scheduleAutoRefresh`'
+        '（没开“关注自动刷新”时每 15 分钟只查要提醒的关注）',
+        'when': '立即（重排定时器；关掉时忘记看到过的状态）',
+    },
+    'liveAlertTagIds': {
+        **_new('O01.1，V01.1'),
+        'verdict': 'v4 新加（O01.1，V01.1）：空 = 提醒全部关注；选了标签只提醒带这些标签的关注，已删除的标签不算',
+        'when': '下一轮检查',
+    },
+    'liveAlertRoomKeys': {
+        **_new('A09.13，V01.1'),
+        'verdict': 'v5.1 新加（A09.13，V01.1 L3）：关注卡片长按菜单和直播间关注小菜单里单独打开的主播；'
+        '和选中的标签合起来算，两样都空 = 提醒全部关注；取消关注的不算',
+        'ui': '不在设置页，在卡片和直播间菜单里开关',
+        'when': '下一轮检查',
+    },
+    'liveAlertBackground': {
+        **_new('O01.2，V01.1'),
+        'verdict': 'v5.1 新加（O01.2，V01.1 L1、L14）：默认开，但只在“开播提醒”开着时起作用；应用被系统冻结或清理后，'
+        'WorkManager 大约每 15 分钟（系统决定，可能推迟）在后台查一次要提醒的关注；应用自己在查时跳过',
+        'reads': '`features/favorite/favorite_controller.dart` 的 `_syncBackground`（开关 WorkManager、写共享文件）'
+        '和 `app/live_alert_worker.dart`（后台检查）',
+        'when': '立即（开关周期任务）',
+    },
+    'maxConcurrentRefresh': {'v3range': '1～20（`refresh_config_controller.dart:9-18`）'},
+    'thumbnailRefreshInterval': {
+        'v3range': '5～360（`refresh_config_controller.dart:6-14`）',
+        'ui': '选项 5～360 分钟，8 档',
+        'reads': '封面刷新定时器 `features/settings/data_tools.dart` 的 `CoverRefreshTimer`（启动时接上，F-APP-20）',
+        'when': '立即',
+    },
+    'autoRefreshThumbnails': {
+        'reads': '同上（`CoverRefreshTimer`）',
+        'when': '立即',
+    },
+    # ---- iptv ----
+    'autoSyncHoursInterval': {'v3range': '2～72（`iptv_settings_controller.dart:7-12`）', 'ui': '网络电视页的选项'},
+    'm3uDirectory': {'verdict': '3.x 的默认值就是这个字面量；3.x 也没有读取它的代码'},
+    # ---- proxy ----
+    'proxyPort': {
+        'v3': '7897',
+        'v3src': '`proxy_settings_controller.dart:9、:13`，`core/common/proxy_routing.dart:1`',
+        'v3range': '1～65535，越界回到 7897（`core/common/proxy_routing.dart:2-9`）',
+        'ui': '代理对话框的数字框',
+        'kind': 'fixed',
+        'verdict': f'默认值和范围一样；越界时 3.x 回到 7897，v4 原来夹到 1 或 65535，{_RESET}',
+        'when': '下一个请求（每个请求都读）',
+    },
+    'appProxyPort': {
+        'v3': '7897',
+        'v3src': 'proxy_settings_controller.dart:18',
+        'v3range': '同上',
+        'ui': '代理对话框的数字框',
+        'kind': 'fixed',
+        'verdict': f'同上，{_RESET}',
+        'when': '下一个请求（每个请求都读）',
+    },
+    'enableProxy': {'when': '下一个请求（每个请求都读）'},
+    'proxyHost': {'when': '下一个请求（每个请求都读）'},
+    'enableAppProxy': {'when': '下一个请求（每个请求都读）'},
+    'appProxyHost': {'when': '下一个请求（每个请求都读）'},
+    # ---- window ----
+    'window_width': {'v3range': '400～16384（`window_size_controller.dart:97-101`、:320-324）', 'ui': '窗口大小对话框'},
+    'window_height': {'v3range': '300～16384（同上）', 'ui': '窗口大小对话框'},
+    'windows_pip_width': {
+        'v3range': '0～16384；宽或高 ≤ 0 时四个都归零（`window_size_controller.dart:277-313`）',
+        'kind': 'fixed',
+        'verdict': '注册表原来不限；补上 3.x 的 0～16384（只有 Windows 用）。“宽或高 ≤ 0 时都归零”在读的地方做（`mini_window.dart` 只在宽高都大于 0 时恢复）',
+    },
+    'windows_pip_height': {
+        'v3range': '同上',
+        'kind': 'fixed',
+        'verdict': '同上',
+    },
+    'windows_pip_x': {'v3range': '不限'},
+    'windows_pip_y': {'v3range': '不限'},
+    # ---- exit ----
+    'exitChoose': {'v3': "'exit'", 'v3src': 'exit_settings_controller.dart:10、:24'},
+    'autoShutDownTime': {
+        'v3': '120',
+        'v3src': 'exit_settings_controller.dart:13、:25',
+        'v3range': '1～525600（`exit_settings_controller.dart:13-17`）',
+        'ui': '数字对话框',
+        'reads': '定时退出 `features/settings/settings_editors.dart` 的 `AutoExitTimer`（设置页打开时接上，F-APP-21）',
+        'when': '立即（重新计时）',
+    },
+    'enableAutoShutDownTime': {
+        'reads': '同上（`AutoExitTimer`）',
+        'when': '立即',
+    },
+    # ---- recorder ----
+    'segmentTime': {'v3range': f'60～3600（`{_REC}:56-57`）', 'ui': f'滑块 1～60 分钟（{_RECORD_PAGE}）'},
+    'maxTaskCount': {'v3range': f'1～10（`{_REC}:58-59`）', 'ui': f'加减 1～10（{_RECORD_PAGE}）'},
+    'maxCacheMB': {'v3range': f'≥ 1（`{_REC}:60`、:76）', 'ui': f'数字对话框（{_RECORD_PAGE}）'},
+    'recordSavePath': {'v3': "''", 'v3src': f'{_REC}:142'},
+    'default_quality': {'v3': "'原画'", 'v3src': f'{_REC}:151-152'},
+    'max_retry_count': {'v3range': f'1～20（`{_REC}:61-62`）', 'ui': f'滑块 1～20（{_RECORD_PAGE}）'},
+    'retry_delay': {'v3range': f'5～120（`{_REC}:63-64`）', 'ui': f'滑块 5～120（{_RECORD_PAGE}）'},
+    'live_check_interval': {'v3range': f'10～300（`{_REC}:65-66`）', 'ui': f'滑块 10～300（{_RECORD_PAGE}）'},
+    'max_check_interval': {'v3range': f'300～3600（`{_REC}:67-68`）', 'ui': f'滑块 5～60 分钟（{_RECORD_PAGE}）'},
+    'recorder_rw_timeout': {
+        'v3range': f'15 / 30 / 60，别的值回到 15（`{_REC}:69`、:86）',
+        'ui': f'选项 15 / 30 / 60（{_RECORD_PAGE}）',
+        'verdict': '注册表夹到 15～60，`live_record` 的 `RecordSettings` 再按 3.x 只认 15 / 30 / 60（`packages/live_record/lib/src/settings.dart:45`），结果一样',
+    },
+    'recorder_thread_queue_size': {
+        'v3range': f'512 / 1024 / 2048 / 4096 / 8192，别的值回到 2048（`{_REC}:70`、:88-89）',
+        'ui': f'选项（{_RECORD_PAGE}）',
+        'verdict': '同上，`RecordSettings` 按 3.x 只认这 5 个（`settings.dart:46`）',
+    },
+    'recordDanmakuGifts': {
+        **_new('H01.8'),
+        'v3range': '3.x 录制的弹幕只写聊天',
+        'ui': f'开关（{_RECORD_PAGE}，“同时录制弹幕”下面）',
+        'verdict': 'v4 新加（H01.8，D-040）：默认关，弹幕 XML 和以前逐字一样；开着时同一个文件里也写礼物 `<gift>`（连击一条）和醒目留言 `<sc>`，格式照录播姬，DanmakuFactory 能读；只在录弹幕时起作用',
+    },
+    # ---- local interaction ----
+    'localInteraction.userName': {'v3range': f'最多 20 个字（`{_LOCAL}:821-824`）', 'verdict': 'v4 保存时同样截到 20 个字'},
+    'localInteraction.previewPlatform': {'v3': "'bilibili'", 'v3src': f'{_LOCAL}:93'},
+    'localInteraction.coins': {'v3range': '不限', 'verdict': 'v4 下限 0（3.x 送礼前检查余额，不会存负数），没有实际差别'},
+    'localInteraction.experience': {'v3range': '不限', 'verdict': '同上'},
+    'localInteraction.history': {'v3range': f'最多 30 条（`{_LOCAL}:907`）'},
+    'localInteraction.danmakuFontSize': {'v3range': f'14～32（`{_LOCAL}:745`）', 'ui': f'滑块 14～32（{_LOCAL_PANEL}）'},
+    'localInteraction.danmakuSpeed': {'v3range': f'60～260（`{_LOCAL}:746`）', 'ui': f'滑块 60～260（{_LOCAL_PANEL}）'},
+    'localInteraction.danmakuFontWeight': {'v3range': f'400～900（`{_LOCAL}:747`）'},
+    'localInteraction.danmakuStrokeWidth': {
+        'v3range': f'画的时候 0.5～4（`{_LOCAL}:749`）',
+        'ui': f'滑块 0.5～4（{_LOCAL_PANEL}）',
+        'verdict': '存的值 3.x 不限、画的时候夹到 0.5～4；v4 存的值夹到 0～4，画的时候同样夹到 0.5～4（`local_interaction.dart` 的样式）',
+    },
+    'localInteraction.danmakuOpacity': {'v3range': f'0.35～1（`{_LOCAL}:753`）', 'ui': f'滑块 0.35～1（{_LOCAL_PANEL}）'},
+    'localInteraction.danmakuLetterSpacing': {'v3range': f'-0.5～3（`{_LOCAL}:754`）', 'ui': f'滑块 -0.5～3（{_LOCAL_PANEL}）'},
+    'localInteraction.danmakuShadowBlur': {'v3range': f'0～6（`{_LOCAL}:758`）', 'ui': f'滑块 0～6（{_LOCAL_PANEL}）'},
+    'localInteraction.danmakuShadowOffset': {'v3range': f'0～4（`{_LOCAL}:759`）', 'ui': f'滑块 0～4（{_LOCAL_PANEL}）'},
+    'localInteraction.danmakuFixedDurationMs': {
+        'v3range': f'2000～10000（`{_LOCAL}:760`）',
+        'ui': f'滑块 2000～10000（{_LOCAL_PANEL}）',
+    },
+    'localInteraction.replayOnEnter': {
+        **_new('D08.1 c6，V03.6 E5'),
+        'v3range': '3.x 没有这个设置，离开直播间本地弹幕就没了',
+        'verdict': 'v4 新加（D08.1，D-040 写明的例外）：默认开；重进同一个直播间时，24 小时内在这里发过的本地弹幕（最多 20 条）放在弹幕列表顶上、标“之前发的”、不飞过画面；关掉和 3.x 一样',
+    },
+    'localInteraction.phrases': {
+        **_new('D08.2 c1～c5，V03.6 E6'),
+        'v3range': '3.x 没有常用语',
+        'ui': '设置 → 本地用户与互动 →“常用语”一组（加、改、删 4 秒撤销、拖动排序）；长按自己的本地弹幕“存为常用语”',
+        'verdict': 'v4 新加（D08.2）：默认空，老用户看不到变化（D-040）；最多 20 条（`StringListSetting.maxItems`），去掉首尾空白、空的和重复的（`tidy`）；每条最多 40 个字（本地弹幕的长度，应用读写时按字截，`LocalCatalog.clipDanmaku`）；跟设置一起进备份和设备同步',
+    },
+    'localInteraction.growthEnabled': {
+        **_new('D08.3 c1，V03.6 E7'),
+        'v3range': '3.x 没有本地成长：经验只来自送礼，体验币只来自按钮',
+        'ui': '设置 → 本地用户与互动 →“本地用户资料”一组的开关“本地成长”',
+        'verdict': 'v4 新加（D08.3，D-040 写明的例外）：默认开；看直播每满 10 分钟 +10 经验 +20 币（每天最多 300 经验）、每天第一次进直播间 +20 经验 +100 币、发本地弹幕 +1 经验（每天最多 50）；关掉和 3.x 一样只有送礼加经验；跟设置一起进备份和设备同步',
+    },
+    'localInteraction.growthDay': {
+        **_new('D08.3 c2～c4'),
+        'v3range': '3.x 没有',
+        'ui': '没有单独的界面：身份卡和设置页“今天已签到 · 看直播 +N/300 · 弹幕 +N/50”读它',
+        'verdict': 'v4 新加（D08.3）：当天的计数（本机日期、看了多久、看直播和弹幕各得了多少经验、签到过没有），JSON，应用读写（`LocalGrowthDay`）；不是今天的读成什么都没得；默认空；跟设置一起进备份和设备同步，恢复同一天的备份不会再签到一次',
+    },
+    'localInteraction.enableGiftEffects': {
+        'ui': '设置 → 本地用户与互动 →“画面上”一组和直播间本地互动面板的“显示本地礼物特效”三选一（全部 / 只要大礼物 / 关），关 = 这个开关关',
+        'verdict': '键和含义不变（D-018）；D08.5 起它和 `localInteraction.giftEffectLevel` 一起写（关 = 关，其余 = 开），读的时候它先说了算：关着就是“关”，3.x 装回来改了它照样生效',
+    },
+    'localInteraction.giftEffectLevel': {
+        **_new('D08.5 c2，V03.6 E9'),
+        'v3range': '3.x 只有开关 `localInteraction.enableGiftEffects`，一种横幅',
+        'ui': '设置 → 本地用户与互动 →“画面上”一组和直播间本地互动面板的“显示本地礼物特效”三选一：全部 / 只要大礼物 / 关',
+        'verdict': 'v4 新加（D08.5）：默认 `all`，就是开关开着时的样子（D-040）；`all` 三档都有（小礼物顶部飘屏、中礼物横幅、大礼物横幅加座驾动效），`bigOnly` 只有大礼物有、其余只进列表，`off` 都没有；旧开关关着时一律按“关”读；跟设置一起进备份和设备同步',
+    },
+    # ---- backup, cache, log, accounts, meta ----
+    'webdavAutoBackupEnabled': _new('J04.2（V01.9），只在前台运行'),
+    'webdavAutoBackupHours': _new('J04.2（V01.9），1～168 小时'),
+    'webdavAutoBackupScope': _new('J04.2（V01.9），全部设置 / 仅关注'),
+    'webdavAutoBackupFolder': _new('J04.2（V01.9），服务器根目录下的相对路径'),
+    'webdavAutoBackupKeep': _new('J04.2（V01.9），保留最近 N 份自动备份'),
+    'webdavAutoBackupIncludeAccounts': _new('J04.2（V01.9），默认不含 Cookie 和 WebDAV 密码'),
+    'downloadDirectoryPath': {
+        'v3': "''",
+        'v3src': 'cache_controller.dart:108、:124-130',
+    },
+    'downloadDirectoryDecisionMade': {
+        'v3': 'false',
+        'v3src': 'cache_controller.dart:112、:132-138',
+    },
+    'enableLocalLog': _new('I01.3；3.x 的开关只管当次运行、默认关'),
+    'logLevel': _new('I01.3'),
+    'bilibiliUid': {'v3range': '不限'},
+    'douyuCookieSavedAt': {'v3range': '不限'},
+    'remote_sync_device_id': {
+        'v3': "''",
+        'v3src': 'modules/remote_receiver/remote_sync_service.dart:134-143（第一次用时生成）',
+    },
+    'uiMode': _new('X03.1（M14.1），本机记录'),
+    'tvFocusZoom': _new('A17.1 c2'),
+    'tvMenuAlwaysExpanded': {
+        **_new('A17.2 c2'),
+        'verdict': 'v4 新加（A17.2 c2）：默认关，电视首页左边导航栏只显示图标，焦点移进去时展开盖在页面上；开了以后一直展开、页面右移（X03.1 原来的样子）',
+        'when': '马上',
+    },
+    'tvMode': {
+        **_new('A17.2 X1、A17.6'),
+        'verdict': 'v5.1 新加（A17.2 X1）：电视首页的模式，live（直播，和以前一样）/ video（哔哩哔哩点播，A17.6）',
+        'ui': '电视首页导航栏最上面的模式按钮',
+        'when': '马上',
+    },
+    'tvMenuOrder': {
+        **_new('A17.9 c11'),
+        'verdict': 'v5.1 新加（A17.9 c11）：电视导航栏入口的顺序，存的排在前面，其余按默认顺序；空 = 默认顺序',
+        'ui': '电视设置 › 导航栏显示控制（长按确认进入移动）',
+        'when': '马上',
+    },
+    'tvMenuHidden': {
+        **_new('A17.9 c11'),
+        'verdict': 'v5.1 新加（A17.9 c11）：电视导航栏隐藏的入口，至少留一个；空 = 全部显示',
+        'ui': '电视设置 › 导航栏显示控制（确认显示或隐藏）',
+        'when': '马上',
+    },
+    'musicPlayMode': {**_new('A17.7'), 'verdict': 'v5.1 新加（A17.7，pure_live_TV 的默认播放模式）：列表循环 / 单曲循环 / 随机，默认列表循环', 'when': '马上'},
+    'musicAudioOnly': {**_new('A17.7'), 'verdict': 'v5.1 新加（A17.7）：音乐只放声音（封面和歌词），默认开', 'when': '下一首'},
+    'musicResumeOnOpen': {**_new('A17.7'), 'verdict': 'v5.1 新加（A17.7）：打开音乐模式时接着上次的队列和位置，默认关', 'when': '下次打开'},
+    'musicProgressLine': {**_new('A17.7'), 'verdict': 'v5.1 新加（A17.7）：控制栏收起时底边显示进度线，默认开', 'when': '马上'},
+    'musicLossless': {**_new('A17.7'), 'verdict': 'v5.1 新加（A17.7）：账号有无损时优先放 Hi-Res，默认关', 'when': '下一首'},
+    'musicCacheLimitMb': {**_new('A17.7'), 'verdict': 'v5.1 新加（A17.7）：音频缓存上限，默认 1024 MB，0 = 不缓存', 'when': '下一首'},
+    'musicThirdPartyEndpoints': {**_new('A17.7'), 'verdict': 'v5.1 新加（A17.7，L03.1）：导入歌单和歌词的第三方地址，空 = 默认', 'when': '下次请求'},
+    'tvWallpaperKind': {
+        **_new('A17.8 h1'),
+        'verdict': 'v5.1 新加（A17.8 h1）：电视界面的背景，none（主题纯色，和以前一样）/ color / gradient / image / video',
+        'ui': '电视设置 › 电视 › 背景设置',
+        'when': '马上',
+    },
+    'tvWallpaperValue': {**_new('A17.8 h1'), 'verdict': 'v5.1 新加（A17.8）：背景的颜色、渐变名或文件（图片已模糊好）', 'when': '马上'},
+    'tvWallpaperSource': {**_new('A17.8'), 'verdict': 'v5.1 新加（A17.8）：图片或视频的来源地址（网格标“✓ 当前”）和模糊前的原图', 'when': '马上'},
+    'tvWallpaperFit': {**_new('A17.8 h1'), 'verdict': 'v5.1 新加（A17.8 h1）：填充模式 7 种，默认等比覆盖（照 pure_live_TV）', 'when': '马上'},
+    'tvWallpaperMask': {**_new('A17.8 h1'), 'verdict': 'v5.1 新加（A17.8 h1）：遮罩 0～100%，默认 35%（照 pure_live_TV）', 'when': '马上'},
+    'tvWallpaperBlur': {**_new('A17.8 h7'), 'verdict': 'v5.1 新加（A17.8 h1、h7）：高斯模糊，默认关；设图片背景时模糊一次存成文件，视频不能模糊', 'when': '马上（重新生成模糊图）'},
+    'tvMenuIcons': {
+        **_new('A17.9-31'),
+        'verdict': 'v5.1 新加（A17.9-31，pure_live_TV 的“选择图标”）：电视导航栏入口自己选的图标，`入口:图标`；没选的用默认图标',
+        'ui': '电视设置 › 导航栏显示控制 › 图标',
+        'when': '马上',
+    },
+}
+
+V3_ONLY_NOTE = (
+    '3.x 用 `hive*` 存、v4 不作为设置的键共 20 个：8 个 `<平台>Cookie` 和 `douyuLtp0`、`douyuDid` '
+    '进加密的 `SecretStore`；`favoriteRooms`、`favoriteAreas`、`historyRooms`、`shieldList`、`blockedDanmakuUsers`、'
+    '`webDavConfigs`、`currentWebDavConfig` 进各自的存储；`audienceMetricMigration`、`danmakuInteractionMigration`、'
+    '`siteCatalogMigration` 是 3.x 的迁移标记。另有 `enableHighRefreshRate`（换成 `refreshRateMode`）、`recorder_tasks`、'
+    '`record_history`、`cached_area_pics` 等不经 `hive*` 的键，见功能清点（`docs/inventory/FEATURES.md`）第 15 节，'
+    '都在 `packages/live_store/lib/src/legacy/legacy_snapshot.dart` 导入到别处或有意丢掉。'
+)

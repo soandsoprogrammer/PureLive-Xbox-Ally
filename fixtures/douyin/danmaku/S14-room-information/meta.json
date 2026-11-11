@@ -1,0 +1,19 @@
+{
+  "source": "https://live.douyin.com/webcast/im/fetch/",
+  "recordedAt": "2026-10-30T10:23:42.957805Z",
+  "anonymous": true,
+  "transport": "official public initial protobuf Response, empty cursor",
+  "originalHighlightPayloadSha256": "028237ab8a5cc3063182886f565e1ea02981664f04cdfc08b84e8cfa597de486",
+  "redactions": [
+    "Reencoded only the schema fields under test",
+    "Room and appointment ids replaced",
+    "Common metadata omitted except synthetic room/time",
+    "Intro text replaced",
+    "No user objects, headers, cookies, viewer messages or endpoint query retained"
+  ],
+  "preserved": [
+    "actual highlight schema name",
+    "actual platform date_text and time_text",
+    "separate RoomIntroMessage intro field"
+  ]
+}

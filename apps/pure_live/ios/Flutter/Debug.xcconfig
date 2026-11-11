@@ -1,0 +1,3 @@
+#include "Generated.xcconfig"
+// The recorder's FFmpeg simulator slice is arm64 only (Apple silicon Macs).
+ARCHS[sdk=iphonesimulator*] = arm64

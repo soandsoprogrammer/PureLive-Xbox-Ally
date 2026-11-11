@@ -1,0 +1,110 @@
+{
+  "source_commit": "8aa2e47164e4adbac90fff08c0a34cd149d2959d",
+  "source_tree": "574881476d848ab93669f15c047a023f2fb8ba20",
+  "version": "5.4.19",
+  "build": 5123,
+  "source_gate_passed": true,
+  "source_gate_members": 14,
+  "apple_run_id": 40668580369,
+  "release_url": "https://github.com/wzgrx/PureLive/releases/tag/v5.4.19",
+  "package_manifest": {
+    "source_commit": "8aa2e47164e4adbac90fff08c0a34cd149d2959d",
+    "source_tree": "574881476d848ab93669f15c047a023f2fb8ba20",
+    "version": "5.4.19",
+    "build": 5123,
+    "apple_run_id": 40668580369,
+    "packages": [
+      {
+        "name": "PureLive-5.4.19-5123-debug-signed-android-arm64-v8a-release.apk",
+        "bytes": 114062024,
+        "sha256": "ff6f06dc9833bc322f92375c82110dd9e4096ff23fbcba192ce4abc3ee9293ae"
+      },
+      {
+        "name": "PureLive-5.4.19-5123-debug-signed-android-armeabi-v7a-release.apk",
+        "bytes": 101625162,
+        "sha256": "5995d63a48dbf59fc54758b653907a183aac91f3f25d899d09f5e28c80487cf0"
+      },
+      {
+        "name": "PureLive-5.4.19-5123-debug-signed-android-x86_64-release.apk",
+        "bytes": 125776555,
+        "sha256": "3bed3326b7b77a4aefd87527bac0681fd11f589267e4d43943a66eb9a0a63ce9"
+      },
+      {
+        "name": "PureLive-5.4.19-5123-linux-x64.tar.gz",
+        "bytes": 57737162,
+        "sha256": "810edf99e9bed775e2717ced25ae8cdd8cb2e8b44bddb72e7ab86166b0efef6f"
+      },
+      {
+        "bytes": 68985509,
+        "name": "PureLive-5.4.19-5123-windows-x64-portable.zip",
+        "sha256": "68af258ef2dd1d1c054e42e127dd580a2ff4e164c26c9354f5a87bc033d3a771"
+      },
+      {
+        "bytes": 53058841,
+        "name": "PureLive-5.4.19-5123-windows-x64-setup.exe",
+        "sha256": "cd51d54fd10b8a65a5711f3a295d5efddfab8796ecbffed37c1b99fca2a140d2"
+      },
+      {
+        "name": "PureLive-5.4.19-5123-ios-trollstore.ipa",
+        "bytes": 47701693,
+        "sha256": "11f8e8ec499cb1fee0e1f862dd953077f90accd3245c0e3755052ac0bde28e42"
+      },
+      {
+        "name": "PureLive-5.4.19-5123-ios-unsigned.ipa",
+        "bytes": 47535450,
+        "sha256": "be37b900da20d4b1fec4518df6d9447307223bc76a60b7da68c3227e18c66666"
+      },
+      {
+        "name": "PureLive-5.4.19-5123-macos-universal.dmg",
+        "bytes": 100613706,
+        "sha256": "a115073547b7ca3f3bbcf02610abeb035a2488b77fbb27f3c86ceb45b022d6c0"
+      },
+      {
+        "name": "PureLive-5.4.19-5123-macos-universal.zip",
+        "bytes": 89423080,
+        "sha256": "45d3d5464093b535cbe031b76d3c3a21fd299652bd0110a75e68b30c18611557"
+      }
+    ],
+    "checksum_file": {
+      "name": "SHA256SUMS.txt",
+      "bytes": 1138,
+      "sha256": "60eb1297b7d20fc1123d4d79c6d17ef52f8312946074d70c0ed2858cdb8d6025"
+    }
+  },
+  "local_receipts_sha256": {
+    "candidate-source.json": "5ab4df5febfd0a03ffefdcd28f6f803b9a3409705342b0e9b14c4bd9f5c31745",
+    "release-full-gate.json": "a8f70eaf9d42728d98de54deb31acd4a234e60b4fc37e26d1d3a6b888a46e225",
+    "all-package-manifest.json": "352d2852bfbe7691fa5244fd84cab86156a4b791c29c7bdcc4044ce0f8c7d315",
+    "windows-package-startup-verification.json": "41d5451f03a4aa80976d8a0a25b230bf35c8b07630d0c613035245aef69f7162",
+    "native-windows-feature-verification.json": "2739c5d3af483c60a073d204f1ba42b1893fc189ca993f083d0a7ba8f9269249",
+    "emulator-normal-iptv-verification.json": "9d16ceb3edfcce23efd2817c3e808b74ca0cf1184a889ae9c26941ee071528db",
+    "apple-manual-frame-review.json": "bd8a1a0808bc349db6152f11754eceb9d08f5a34537605cbb106b202767b4fd4"
+  },
+  "screenshots_sha256": {
+    "native-windows-final-iptv-focus.png": "b3de3d0286cdbad2698cc26d5766b4f473b0753c0a3c33e6e30c2ef176036b76",
+    "native-windows-final-platform-picker.png": "23c93bf5136ec9f38dbb5005b15b320dbb608158af63a9a6fa3510367247398f",
+    "native-windows-final-multi.png": "9af0558086b156d06c1cbe1ca1ee9fc68aceb0626c00bd07b3b3cfc1c6467ae4",
+    "native-windows-final-record-saved.png": "49b0a3215e821a037ec53976a30986e3b10761cbb378dac147915c3ef1b50ec0",
+    "native-windows-final-single.png": "f588f560ba25e0086117598f761e686e614d8c57e29a93383648c890c2da80c1",
+    "23-normal-iptv-loaded.jpg": "7163a032bd4cdc4d77b2539a260ebd2e826fc294a8d0482e4e01427361d73bc3",
+    "windows-tv-backup-menu-keyboard.png": "2361d82e528220c51820dba9e5c4cd19b68427c16ada0b25466d8b4ec1fd3c10",
+    "native-windows-final-tv.png": "0b5bc37282395ba8232b9f7b918fe5f6f1d46a81741200a7c8ae4a9a54b92d6d"
+  },
+  "physical_k90_tested": false,
+  "original_reporter_devices_tested": false,
+  "public_downloads": {
+    "anonymous": true,
+    "all_11_asset_hashes_match": true,
+    "receipt_sha256": "8ec116f16332330f00ebfcbec783bc17d40b63df829b06793c8c0d6ebc8ea3e4"
+  },
+  "legacy_update": {
+    "commit": "c363ea757fce5eff048ab73ec9335a7f257045ea",
+    "only_two_files": true,
+    "same_six_baseline_failures": true,
+    "receipt_sha256": "ac3827fcc9dd9bb68d60db97c71465b06acff908fb53e20addef417908a68cf0"
+  },
+  "feed_sha256": {
+    "version.json": "76c6330353be43e72df14b09729e76677985ae4f00d541dbd37fde212f642900",
+    "releases.json": "b68c008545f877c2734713e462957228ca278ab1230e4f814c5cfb944d32f132"
+  }
+}

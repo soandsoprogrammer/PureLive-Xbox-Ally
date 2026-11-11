@@ -1,0 +1,175 @@
+import 'dart:async';
+import 'dart:developer';
+
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:live_core/live_core.dart';
+import 'package:live_ui/live_ui.dart' show AppToast;
+import 'package:pure_live/i18n/i18n.dart';
+import 'package:pure_live/routes/route_args.dart';
+import 'package:pure_live/routes/route_path.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+/// How a short message is shown (3.x `ToastUtil.show`); the app sets it to
+/// the one toast ([AppToast], docs/A-界面设计/A02-组件/A02.2-弹窗组件) on the root messenger.
+typedef ToastPresenter = void Function(String message);
+
+/// Navigation without a [BuildContext] (3.x `AppNavigator` plus the
+/// `Get.toNamed` / `Get.offAllNamed` / `Get.back` calls of the pages), so
+/// pages port call by call:
+///
+/// | 3.x | here |
+/// |---|---|
+/// | `Get.toNamed(path, arguments: x)` | `AppNavigator.toNamed(path, arguments: x)` |
+/// | `Get.offAllNamed(path)` | `AppNavigator.offAllNamed(path)` |
+/// | `Get.back()` | `AppNavigator.back()` |
+/// | `Get.arguments` | `GoRouterState.of(context).extra` (the page builder passes it) |
+abstract final class AppNavigator {
+  static GoRouter? _router;
+  static bool _openingLiveRoom = false;
+  static bool _openingOfficialCategory = false;
+
+  /// Shows a short message; set by the app.
+  static ToastPresenter toast = (message) => log(message, name: 'Toast');
+
+  /// Shows a toast with an action ("撤销", "重试") or ✕ (U.1d c13); set by
+  /// the app. Until then (and in tests that replace only [toast]) the words
+  /// go to [toast].
+  static void Function(AppToast toast) showToast = (toast) => AppNavigator.toast(toast.message);
+
+  /// Opens a web address outside the app; replaceable in tests.
+  static Future<bool> Function(Uri uri) openExternal = (uri) => launchUrl(uri, mode: LaunchMode.externalApplication);
+
+  /// Opens a local file with the app the system picks; the app sets it
+  /// (open_filex on Android, M12.3); replaceable in tests.
+  static Future<bool> Function(String path) openFile = (path) => openExternal(Uri.file(path));
+
+  /// The context of the root navigator (dialogs from outside a page, such
+  /// as the window's close question); null before the app is up.
+  static BuildContext? get navigatorContext => _router?.routerDelegate.navigatorKey.currentContext;
+
+  /// The router in use.
+  static GoRouter get router => _router ?? (throw StateError('No router attached'));
+
+  /// Attaches [router] (the app does this once it builds it).
+  static set router(GoRouter? router) => _router = router;
+
+  /// Opens [path] on top (3.x `Get.toNamed`).
+  static Future<T?> toNamed<T extends Object?>(String path, {Object? arguments}) =>
+      router.push<T>(path, extra: arguments);
+
+  /// Replaces every page with [path] (3.x `Get.offAllNamed`).
+  static void offAllNamed(String path, {Object? arguments}) => router.go(path, extra: arguments);
+
+  /// Replaces the top page with [path] (3.x `Get.offAndToNamed`).
+  static Future<T?> offAndToNamed<T extends Object?>(String path, {Object? arguments}) =>
+      router.pushReplacement<T>(path, extra: arguments);
+
+  /// Closes the top page (3.x `Get.back`).
+  static void back<T extends Object?>([T? result]) {
+    if (router.canPop()) router.pop<T>(result);
+  }
+
+  /// A desktop mouse's Back: modal, nested page and PopScope first;
+  /// an unpoppable home never delegates to the operating system.
+  static Future<bool> mouseBack() async {
+    final router = _router;
+    if (router == null) return false;
+    if (router.routeInformationProvider.value.uri.path == RoutePath.kInitial && !router.canPop()) return false;
+    return await router.routerDelegate.popRoute();
+  }
+
+  /// Opens the rooms of [category] on [site] (3.x `toCategoryDetail`). CC's
+  /// official entries are web pages and open in the browser.
+  static Future<void> toCategoryDetail({required LiveSite site, required LiveArea category}) async {
+    if (CcApi.isOfficialEntry(category)) {
+      if (_openingOfficialCategory) return;
+      final uri = site.id == SiteIds.cc ? CcApi.officialEntryUri(category) : null;
+      if (uri == null) {
+        toast(i18n('external_browser_not_opened'));
+        return;
+      }
+      _openingOfficialCategory = true;
+      try {
+        if (!await openExternal(uri)) toast(i18n('external_browser_not_opened'));
+      } on Object {
+        toast(i18n('external_browser_not_opened'));
+      } finally {
+        _openingOfficialCategory = false;
+      }
+      return;
+    }
+    unawaited(toNamed<void>(RoutePath.kAreaRooms, arguments: [site, category]));
+  }
+
+  /// Whether [room] has a usable platform and id.
+  static bool _usable(LiveRoom room) {
+    final platform = room.platform.trim().toLowerCase();
+    return platform.isNotEmpty && room.roomId.isNotEmpty && SiteIds.isSupported(platform);
+  }
+
+  /// The room with a usable platform and id, or null after telling the user
+  /// why not (retired platform, missing id).
+  static LiveRoom? _openable(LiveRoom room) {
+    if (!_usable(room)) {
+      toast(
+        i18n(SiteIds.isRetired(room.platform.trim().toLowerCase()) ? 'platform_retired' : 'get_room_info_failed_retry'),
+      );
+      return null;
+    }
+    return room;
+  }
+
+  /// The live room's route arguments: [room] with the usable rooms of
+  /// [playlist] (U.2b2), or [room] alone when that leaves nothing to switch
+  /// to.
+  static Object liveRoomArguments(LiveRoom room, List<LiveRoom> playlist) {
+    final playable = [
+      for (final item in playlist)
+        if (_usable(item)) item,
+    ];
+    final others = playable.where((item) => !item.hasSameIdentity(room));
+    return others.isEmpty ? room : LiveRoomArgs(room: room, playlist: List.unmodifiable(playable));
+  }
+
+  /// Opens the live room (3.x `toLiveRoomDetail`); a second call while one
+  /// is opening is ignored. The player's floating window hand-off belongs
+  /// to the player (M7.2/M13). [playlist] is the list the room was picked
+  /// from, in its order (U.2b2: the portrait fullscreen swipes through it).
+  static Future<void> toLiveRoomDetail({required LiveRoom liveRoom, List<LiveRoom> playlist = const []}) async {
+    if (_openingLiveRoom) return;
+    final room = _openable(liveRoom);
+    if (room == null) return;
+    _openingLiveRoom = true;
+    try {
+      // 3.x awaited `Get.toNamed`, which completes when the room closes, so
+      // it ignored every other room while one was open. Here a second tap
+      // is ignored only while the room's page is coming in.
+      unawaited(toNamed<void>(RoutePath.kLivePlay, arguments: liveRoomArguments(room, playlist)));
+    } on Object catch (error, stack) {
+      log('Open live room failed', name: 'AppNavigator', error: error, stackTrace: stack);
+      toast(i18n('get_room_info_failed_retry'));
+    } finally {
+      unawaited(Future<void>.delayed(openGuard, () => _openingLiveRoom = false));
+    }
+  }
+
+  /// How long a second request to open a room is ignored.
+  static const Duration openGuard = Duration(milliseconds: 500);
+
+  /// Replaces the current live room with [liveRoom] (3.x
+  /// `offAndToRoomDetail`).
+  static Future<void> offAndToRoomDetail({required LiveRoom liveRoom}) async {
+    final room = _openable(liveRoom);
+    if (room == null) return;
+    unawaited(offAndToNamed<void>(RoutePath.kLivePlay, arguments: room));
+  }
+
+  /// Opens multi-view (3.x `toMultiview`).
+  static Future<void> toMultiview() async => unawaited(toNamed<void>(RoutePath.kMultiview));
+
+  /// Opens the Bilibili login (3.x `toBiliBiliLogin`): the QR code page,
+  /// which offers the web login (phones) and the cookie under the code
+  /// (docs/A-界面设计/A12-账号和数据界面/A12.1-账号总览 K2 A; 3.x first asked "请选择登陆方式").
+  static Future<void> toBiliBiliLogin() => toNamed<void>(RoutePath.kBiliBiliQRLogin);
+}

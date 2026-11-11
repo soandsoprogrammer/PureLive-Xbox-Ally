@@ -1,0 +1,12 @@
+{
+  "source": "https://v.douyu.com/show/2V0JMV10gRD7RY5k",
+  "captureDate": "2026-10-30",
+  "sourceScriptSha256": "bbf2a6c86442fc6ba1fd9e5afdd5ecfcde3383a54eba924c21e4a37e594f3d7c",
+  "dataOnly": true,
+  "remoteCodeExecuted": false,
+  "redactions": [
+    "Only public algorithm constants and allowed integer mutations retained; no executable original JavaScript.",
+    "Signing input device, point and video identifiers are fixed synthetic values. No user cookies, account or signed media URL retained."
+  ],
+  "generator": "Independent bounded Python integer implementation, cross-checked with anonymous live getStreamUrlWeb acceptance; original receipts remain outside the repository."
+}

@@ -1,0 +1,882 @@
+// The live room's other pop-ups (docs/A-界面设计/A07-直播间界面/A07.12-直播间子弹窗统一, task B07): the room
+// menu's sleep timer, room volume, stream address and casting are room
+// panels in every layout; the fit and orientation are small menus next to
+// their buttons; the room volume on a phone is the system's media volume;
+// toasts in fullscreen sit above the bottom bar.
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:live_core/live_core.dart';
+import 'package:live_danmaku/live_danmaku.dart';
+import 'package:live_store/live_store.dart';
+import 'package:live_ui/live_ui.dart';
+import 'package:pure_live/app/services.dart';
+import 'package:pure_live/features/live_play/layout/room_panel.dart';
+import 'package:pure_live/features/live_play/live_play_page.dart';
+import 'package:pure_live/features/live_play/logic/background_playback.dart';
+import 'package:pure_live/features/live_play/logic/room_layout.dart';
+import 'package:pure_live/features/live_play/logic/room_orientation.dart';
+import 'package:pure_live/features/live_play/player/player_gestures.dart';
+import 'package:pure_live/features/live_play/player/player_view.dart';
+import 'package:pure_live/routes/app_navigator.dart';
+import 'package:pure_live/routes/route_args.dart';
+import 'package:pure_live/routes/route_path.dart';
+
+import '../../qa_capture.dart';
+import '../../support.dart';
+import 'live_play_support.dart';
+
+final class _Room {
+  new(this.services, this.danmaku, this.toasts);
+
+  final AppServices services;
+  final FakeDanmaku danmaku;
+  final List<String> toasts;
+}
+
+Future<_Room> _pump(
+  WidgetTester tester, {
+  double width = 393,
+  double height = 852,
+  TargetPlatform platform = TargetPlatform.android,
+}) async {
+  // Reset by [_close]: the test must end with it unset.
+  debugDefaultTargetPlatformOverride = platform;
+  tester.view
+    ..physicalSize = Size(width, height)
+    ..devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  RoomOrientationChoice.clearSession();
+  final services = (await tester.runAsync(testServices))!;
+  await tester.runAsync(loadStrings);
+  tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async => null);
+  addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+  final danmaku = FakeDanmaku();
+  final toasts = <String>[];
+  final previous = AppNavigator.toast;
+  AppNavigator.toast = toasts.add;
+  addTearDown(() => AppNavigator.toast = previous);
+  final site = FakeSite(liveRoom(startedAt: DateTime.now().subtract(const Duration(minutes: 30))));
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        appServicesProvider.overrideWithValue(services),
+        sitesProvider.overrideWithValue(SiteRegistry({SiteIds.bilibili: () => site})),
+        danmakuProvider.overrideWithValue(DanmakuRegistry({SiteIds.bilibili: () => danmaku})),
+        playbackSessionFactoryProvider.overrideWithValue(({config}) => fakeSession(FakeEngine())),
+      ],
+      child: MaterialApp(
+        theme: const LiveTheme().light,
+        builder: (context, child) =>
+            MediaQuery(data: MediaQuery.of(context).copyWith(disableAnimations: true), child: child!),
+        home: LivePlayPage(
+          route: RouteArgs(
+            RoutePath.kLivePlay,
+            arguments: LiveRoom(platform: SiteIds.bilibili, roomId: '6', nick: '主播'),
+          ),
+        ),
+      ),
+    ),
+  );
+  await _settle(tester);
+  return _Room(services, danmaku, toasts);
+}
+
+Future<void> _settle(WidgetTester tester) async {
+  for (var i = 0; i < 5; i++) {
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await tester.pump();
+  }
+}
+
+Future<void> _close(WidgetTester tester, _Room room) async {
+  await tester.pumpWidget(const SizedBox.shrink());
+  await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+  await tester.pump(const Duration(seconds: 5));
+  await tester.runAsync(room.services.close);
+  debugDefaultTargetPlatformOverride = null;
+}
+
+Finder _key(String key) => find.byKey(ValueKey(key));
+
+Finder _in(String key, Finder finder) => find.descendant(of: _key(key), matching: finder);
+
+/// The room menu's button: the picture's top bar in fullscreen, else the
+/// app bar's.
+Finder _menuButton() {
+  final onPicture = find.descendant(of: _key('live-play-top-bar'), matching: _key('live-play-menu'));
+  return onPicture.evaluate().isNotEmpty ? onPicture : _key('live-play-menu').first;
+}
+
+Future<void> _menu(WidgetTester tester, String entry) async {
+  await tester.tap(_menuButton());
+  await tester.pumpAndSettle();
+  await tester.tap(_key('room-menu-$entry'));
+  await tester.pumpAndSettle();
+}
+
+Future<void> _closePanel(WidgetTester tester) async {
+  await tester.tap(_key('room-panel-close'));
+  await tester.pumpAndSettle();
+}
+
+/// The panels the room menu opens (U.2n c1), by their keys.
+const _panels = {'timer': 'room-timer-panel', 'volume': 'room-volume-panel', 'streamLink': 'stream-panel-copy'};
+
+/// No centred dialog and nothing dims the picture.
+void _noDialog(WidgetTester tester) {
+  expect(find.byType(Dialog), findsNothing);
+  expect(find.byType(AlertDialog), findsNothing);
+  expect(find.byType(BottomSheet), findsNothing);
+  for (final barrier in tester.widgetList<ModalBarrier>(find.byType(ModalBarrier))) {
+    expect(barrier.color == null || barrier.color!.a == 0, isTrue, reason: 'the picture is not dimmed');
+  }
+}
+
+/// The words of the text widget [key].
+String? _text(WidgetTester tester, String key) => tester.widget<Text>(_key(key)).data;
+
+void main() {
+  tearDown(() => DeviceControls.debugAvailable = null);
+
+  testWidgets('issue #24: iPad picture drags change native brightness and volume without changing them on entry', (
+    tester,
+  ) async {
+    var volume = 0.4;
+    var brightness = 0.5;
+    final calls = <String>[];
+    const channel = MethodChannel('pure_live/device_controls');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      switch (call.method) {
+        case 'getVolume':
+          return volume;
+        case 'getBrightness':
+          return brightness;
+        case 'setVolume':
+          volume = ((call.arguments as Map)['value'] as num).toDouble();
+        case 'setBrightness':
+          brightness = ((call.arguments as Map)['value'] as num).toDouble();
+      }
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+    for (final fullscreen in [false, true]) {
+      calls.clear();
+      volume = 0.4;
+      brightness = 0.5;
+      final room = await _pump(tester, width: 1024, height: 768, platform: TargetPlatform.iOS);
+      expect(DeviceControls.available, isTrue);
+      if (fullscreen) {
+        await tester.tap(_key('live-play-fullscreen'));
+        await _settle(tester);
+        expect(tester.widget<RoomPlayer>(find.byType(RoomPlayer)).display, RoomDisplay.fullscreen);
+      }
+      expect(calls.where((method) => method.startsWith('set')), isEmpty);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump();
+      Future<void> drag(double fraction) async {
+        final picture = tester.getRect(find.byType(PlayerGestureLayer));
+        final from = Offset(picture.left + picture.width * fraction, picture.top + picture.height * 0.7);
+        final gesture = await tester.startGesture(from);
+        await gesture.moveBy(const Offset(0, -20));
+        await _settle(tester);
+        await gesture.moveBy(const Offset(0, -60));
+        await tester.pump();
+        await gesture.up();
+        await _settle(tester);
+      }
+
+      await drag(0.2);
+      expect(brightness, greaterThan(0.5));
+      await drag(0.8);
+      expect(volume, greaterThan(0.4));
+      await captureQaFrame(tester, fullscreen ? 'ipad-fullscreen-volume' : 'ipad-inline-volume');
+      expect(calls, containsAll(['getBrightness', 'setBrightness', 'getVolume', 'setVolume']));
+      await _close(tester, room);
+      expect(calls, contains('resetBrightness'));
+    }
+  });
+
+  group("U.2n c1: the room menu's settings are room panels", () {
+    testWidgets('portrait: under the picture, all the height below it', (tester) async {
+      final room = await _pump(tester);
+      final video = tester.getRect(_key('live-play-video-box'));
+      for (final MapEntry(key: entry, value: panel) in _panels.entries) {
+        await _menu(tester, entry);
+        expect(_key(panel), findsOneWidget, reason: entry);
+        _noDialog(tester);
+        final rect = tester.getRect(_key(panel));
+        expect(rect.top, moreOrLessEquals(video.bottom), reason: entry);
+        expect(rect.bottom, 852, reason: entry);
+        expect(rect.width, 393, reason: entry);
+        await _closePanel(tester);
+        expect(_key(panel), findsNothing);
+      }
+      await _close(tester, room);
+    });
+
+    testWidgets('landscape fullscreen: on the right, 360 wide and the full height; cast from the top bar too', (
+      tester,
+    ) async {
+      final room = await _pump(tester, width: 852, height: 393);
+      await tester.tap(_key('live-play-fullscreen'));
+      await _settle(tester);
+      expect(_key('live-play-back'), findsOneWidget, reason: 'fullscreen');
+      const right = Rect.fromLTRB(852.0 - 360, 0, 852, 393);
+      // The menu on the picture leaves out what the bars show (U.2m c12):
+      // the timer, the volume and the address are in it.
+      for (final MapEntry(key: entry, value: panel) in _panels.entries) {
+        await _menu(tester, entry);
+        _noDialog(tester);
+        expect(tester.getRect(_key(panel)), right, reason: entry);
+        await _closePanel(tester);
+      }
+      await tester.tap(_key('live-play-cast'));
+      await tester.pumpAndSettle();
+      _noDialog(tester);
+      expect(tester.getRect(_key('stream-panel-cast')), right);
+      // Back closes the panel before leaving fullscreen.
+      expect(await tester.binding.handlePopRoute(), isTrue);
+      await tester.pumpAndSettle();
+      expect(_key('stream-panel-cast'), findsNothing);
+      expect(_key('live-play-back'), findsOneWidget, reason: 'still fullscreen');
+      await _close(tester, room);
+    });
+
+    testWidgets('portrait fullscreen: the bottom 60 %', (tester) async {
+      final room = await _pump(tester);
+      await tester.tap(_key('live-play-fullscreen'));
+      await _settle(tester);
+      expect(_key('live-play-bottom-first-row'), findsOneWidget, reason: 'the portrait fullscreen');
+      for (final MapEntry(key: entry, value: panel) in _panels.entries) {
+        await _menu(tester, entry);
+        _noDialog(tester);
+        final rect = tester.getRect(_key(panel));
+        expect(rect.top, moreOrLessEquals(852 * 0.4), reason: entry);
+        expect(rect.bottom, 852, reason: entry);
+        await _closePanel(tester);
+      }
+      await _close(tester, room);
+    });
+
+    testWidgets('tablet: on the right over the chat column', (tester) async {
+      final room = await _pump(tester, width: 1280, height: 800);
+      final chat = tester.getRect(_key('live-play-tabs'));
+      for (final MapEntry(key: entry, value: panel) in _panels.entries) {
+        await _menu(tester, entry);
+        _noDialog(tester);
+        final rect = tester.getRect(_key(panel));
+        expect(rect.width, 360, reason: entry);
+        expect(rect.right, 1280, reason: entry);
+        expect(rect.overlaps(chat), isTrue, reason: entry);
+        await _closePanel(tester);
+      }
+      await _close(tester, room);
+    });
+
+    testWidgets("a danmaku's actions: under the picture in portrait, on the right in fullscreen", (tester) async {
+      final room = await _pump(tester, width: 852, height: 393);
+      await tester.tap(_key('live-play-fullscreen'));
+      await _settle(tester);
+      // A tap on a flying danmaku (F.2b) opens the panel of its message.
+      RoomPanelScope.maybeOf(tester.element(_key('live-play-back')))!.openMessage(
+        const LiveMessage(type: LiveMessageType.chat, userName: '路人', message: '前排', color: LiveMessageColor.white),
+      );
+      await tester.pumpAndSettle();
+      _noDialog(tester);
+      expect(tester.getRect(_key('live-play-message-panel')), const Rect.fromLTRB(852.0 - 360, 0, 852, 393));
+      expect(_in('live-play-message-card', find.textContaining('路人：前排', findRichText: true)), findsOneWidget);
+      // B09 c8: the keyword is the panel's second page, still on the right;
+      // no dialog in the middle of the picture.
+      await tester.tap(_key('live-play-block-keyword'));
+      await tester.pumpAndSettle();
+      _noDialog(tester);
+      expect(tester.getRect(_key('live-play-message-panel')), const Rect.fromLTRB(852.0 - 360, 0, 852, 393));
+      expect(_in('live-play-message-panel', _key('live-play-keyword-input')), findsOneWidget);
+      expect(_key('live-play-back'), findsOneWidget, reason: 'still in the fullscreen');
+      await tester.enterText(_key('live-play-keyword-input'), '前');
+      await tester.tap(_key('live-play-keyword-confirm'));
+      await _settle(tester);
+      await tester.pumpAndSettle();
+      expect(await tester.runAsync(() => room.services.store.blockLists.list(BlockKind.keyword)), ['前']);
+      expect(_key('live-play-message-panel'), findsNothing);
+      expect(room.toasts, contains('关键词已加入弹幕屏蔽列表'));
+      await _close(tester, room);
+    });
+  });
+
+  group("A08.8: the message panel shows the sender's level", () {
+    const card = 'live-play-message-card';
+    Future<void> open(WidgetTester tester, LiveMessage message) async {
+      RoomPanelScope.maybeOf(tester.element(_menuButton()))!.openMessage(message);
+      await tester.pumpAndSettle();
+    }
+
+    for (final (name, fullscreen) in [('portrait', false), ('landscape fullscreen', true)]) {
+      testWidgets('$name: message panel shows the sender level', (tester) async {
+        final room = fullscreen ? await _pump(tester, width: 852, height: 393) : await _pump(tester);
+        if (fullscreen) {
+          await tester.tap(_key('live-play-fullscreen'));
+          await _settle(tester);
+        }
+        await open(
+          tester,
+          const LiveMessage(
+            type: LiveMessageType.chat,
+            userName: '路人',
+            message: '前排',
+            color: LiveMessageColor.white,
+            userLevel: '12',
+          ),
+        );
+        expect(_in(card, find.text('Lv.12')), findsOneWidget);
+        final level = tester.widget<Text>(_in(card, find.text('Lv.12')));
+        final context = tester.element(_key(card));
+        expect(level.style?.fontSize, Theme.of(context).textTheme.bodySmall?.fontSize);
+        expect(level.style?.color, Theme.of(context).colorScheme.onSurfaceVariant);
+        final semantics = tester.widget<Semantics>(
+          find.ancestor(of: find.text('Lv.12'), matching: find.byType(Semantics)).first,
+        );
+        expect(semantics.properties.label, '等级 12');
+        await _close(tester, room);
+      });
+
+      testWidgets('$name: message panel without a level has no level line', (tester) async {
+        final room = fullscreen ? await _pump(tester, width: 852, height: 393) : await _pump(tester);
+        if (fullscreen) {
+          await tester.tap(_key('live-play-fullscreen'));
+          await _settle(tester);
+        }
+        await open(
+          tester,
+          const LiveMessage(type: LiveMessageType.chat, userName: '路人', message: '前排', color: LiveMessageColor.white),
+        );
+        expect(_in(card, find.textContaining('Lv.')), findsNothing);
+        expect(_in(card, find.textContaining('路人：前排', findRichText: true)), findsOneWidget);
+        await _close(tester, room);
+      });
+    }
+  });
+
+  group('A08.7: the mini window danmaku colour unfolds in the danmaku panel', () {
+    /// Opens the danmaku panel, turns "保留平台弹幕颜色" off and taps
+    /// "统一弹幕颜色".
+    Future<Finder> openColour(WidgetTester tester) async {
+      final scope = tester.widget<RoomPanelScope>(find.byType(RoomPanelScope).first);
+      scope.notifier!.open(RoomPanelKind.danmaku);
+      await tester.pumpAndSettle();
+      final panel = _key('live-play-danmaku-panel');
+      final list = find.descendant(of: panel, matching: find.byType(Scrollable)).first;
+      await tester.scrollUntilVisible(_key('danmaku-switch-pipOriginalColor'), 200, scrollable: list);
+      await tester.pumpAndSettle();
+      await tester.tap(_key('danmaku-switch-pipOriginalColor'));
+      await _settle(tester);
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(_key('danmaku-setting-pipColor'), 100, scrollable: list);
+      await tester.pumpAndSettle();
+      await tester.tap(_key('danmaku-setting-pipColor'));
+      await tester.pumpAndSettle();
+      return panel;
+    }
+
+    for (final (name, width, height, fullscreen) in [
+      ('landscape fullscreen 852×393', 852.0, 393.0, true),
+      ('portrait 393×852', 393.0, 852.0, false),
+      ('wide 1280×800', 1280.0, 800.0, false),
+    ]) {
+      testWidgets('$name: no dialog; the palette shows whole inside the panel; a swatch applies', (tester) async {
+        final room = await _pump(tester, width: width, height: height);
+        if (fullscreen) {
+          await tester.tap(_key('live-play-fullscreen'));
+          await _settle(tester);
+          expect(_key('live-play-back'), findsOneWidget, reason: 'fullscreen');
+        }
+        final panel = await openColour(tester);
+        _noDialog(tester);
+        final palette = _in('live-play-danmaku-panel', _key('danmaku-color-palette'));
+        expect(palette, findsOneWidget);
+        expect(_in('live-play-danmaku-panel', _key('danmaku-color-fffe0302')), findsOneWidget);
+        // c2: scrolled so the whole palette is in view, inside the panel.
+        final box = tester.getRect(panel);
+        final rect = tester.getRect(palette);
+        expect(rect.left, greaterThanOrEqualTo(box.left));
+        expect(rect.right, lessThanOrEqualTo(box.right));
+        expect(rect.bottom, lessThanOrEqualTo(box.bottom + 0.5));
+        if (fullscreen) expect(box, const Rect.fromLTRB(852.0 - 360, 0, 852, 393));
+        await tester.tap(_key('danmaku-color-fffe0302'));
+        await _settle(tester);
+        await tester.pumpAndSettle();
+        expect(room.services.store.settings.get(Settings.pipDanmakuColor), 0xFFFE0302);
+        expect(
+          find.descendant(of: _key('danmaku-color-fffe0302'), matching: _key('danmaku-color-selected')),
+          findsOneWidget,
+        );
+        _noDialog(tester);
+        await _close(tester, room);
+      });
+    }
+  });
+
+  group("A07.15: drags from the system's gesture area", () {
+    testWidgets('landscape fullscreen: from the bottom or top edge nothing changes; from the middle as before', (
+      tester,
+    ) async {
+      var volume = 0.5;
+      final calls = <String>[];
+      DeviceControls.debugAvailable = true;
+      const channel = MethodChannel('pure_live/device_controls');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        switch (call.method) {
+          case 'getVolume':
+            return volume;
+          case 'getBrightness':
+            return 0.5;
+          case 'setVolume':
+            volume = ((call.arguments as Map)['value'] as num).toDouble();
+        }
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+      final room = await _pump(tester, width: 852, height: 393);
+      await tester.tap(_key('live-play-fullscreen'));
+      await tester.pump();
+      await _settle(tester);
+      // Gesture navigation: the system takes the lowest 32 and the top 24.
+      tester.view.systemGestureInsets = const FakeViewPadding(top: 24, bottom: 32);
+      addTearDown(tester.view.resetSystemGestureInsets);
+      // The controls hide after 4 s: the drags land on the picture.
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump();
+
+      Future<void> drag(Offset from, double dy) async {
+        final gesture = await tester.startGesture(from);
+        for (var i = 0; i < 4; i++) {
+          await gesture.moveBy(Offset(0, dy / 4));
+          await _settle(tester);
+        }
+        await gesture.up();
+        await _settle(tester);
+      }
+
+      // Going home from the bottom edge on the right half.
+      await drag(const Offset(700, 393 - 8), -120);
+      expect(calls, isNot(contains('setVolume')));
+      expect(_key('gesture-level-volume'), findsNothing);
+      // Pulling down the status bar from the top edge on the left half.
+      await drag(const Offset(150, 6), 120);
+      expect(calls, isNot(contains('setBrightness')));
+      expect(_key('gesture-level-brightness'), findsNothing);
+      // The middle of the right half: the volume as before.
+      await drag(const Offset(700, 260), -120);
+      expect(calls, contains('setVolume'));
+      expect(volume, greaterThan(0.5));
+      await _close(tester, room);
+    });
+  });
+
+  group('A03.3 c4 (research S9): the brightness and volume drags', () {
+    testWidgets('every move shows the level; the system is told at most once a frame, the latest level', (
+      tester,
+    ) async {
+      var volume = 0.5;
+      final sets = <double>[];
+      DeviceControls.debugAvailable = true;
+      const channel = MethodChannel('pure_live/device_controls');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'getVolume':
+            return volume;
+          case 'getBrightness':
+            return 0.5;
+          case 'setVolume':
+            volume = ((call.arguments as Map)['value'] as num).toDouble();
+            sets.add(volume);
+        }
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+      final room = await _pump(tester, width: 852, height: 393);
+      await tester.tap(_key('live-play-fullscreen'));
+      await tester.pump();
+      await _settle(tester);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump();
+
+      final gesture = await tester.startGesture(const Offset(700, 260));
+      // Takes the drag and reads the volume it starts from.
+      await gesture.moveBy(const Offset(0, -20));
+      await _settle(tester);
+      // Direction arbitration keeps the displacement from pointer down.
+      expect(volume, closeTo(0.5 + 20 / 393 * 1.2, 0.001));
+      sets.clear();
+      // A 480 Hz touch screen: four moves within one 120 Hz frame.
+      for (var i = 0; i < 4; i++) {
+        await gesture.moveBy(const Offset(0, -10));
+      }
+      await tester.pump();
+      expect(_key('gesture-level-volume'), findsOneWidget);
+      await _settle(tester);
+      expect(sets, hasLength(1), reason: 'one call a frame, not one a move');
+      // 20 before arbitration plus 40 after it; 1.2 a full height.
+      expect(sets.single, closeTo(0.5 + 60 / 393 * 1.2, 0.001));
+      await gesture.up();
+      await _settle(tester);
+      expect(sets, hasLength(1));
+      await _close(tester, room);
+    });
+  });
+
+  group('issue #12 (computers): the wheel and the arrow keys change the volume', () {
+    testWidgets('nothing over the picture; the controls come up and the bar says the level a moment', (tester) async {
+      final room = await _pump(tester, width: 1280, height: 800, platform: TargetPlatform.windows);
+      double opacity(String key, Duration duration) => tester
+          .widgetList<AnimatedOpacity>(find.ancestor(of: _key(key), matching: find.byType(AnimatedOpacity)))
+          .firstWhere((fade) => fade.duration == duration)
+          .opacity;
+      double controls() => opacity('live-play-volume', const Duration(milliseconds: 200));
+      double words() => opacity('live-play-volume-percent', AppDurations.fast);
+      // The controls hide after 4 s.
+      await tester.pump(const Duration(seconds: 5));
+      await _settle(tester);
+      expect(controls(), 0);
+      expect(words(), 0);
+
+      // Three notches down at once add up: 100 % to 85 %.
+      final picture = tester.getCenter(find.byType(PlayerGestureLayer));
+      for (var i = 0; i < 3; i++) {
+        tester.binding.handlePointerEvent(PointerScrollEvent(position: picture, scrollDelta: const Offset(0, 20)));
+      }
+      await _settle(tester);
+      expect(_key('gesture-level-volume'), findsNothing, reason: 'the picture stays clear');
+      expect(controls(), 1);
+      expect(words(), 1);
+      expect(_text(tester, 'live-play-volume-percent'), '85%');
+      expect(tester.widget<Slider>(_key('live-play-volume-slider')).value, closeTo(0.85, 0.001));
+      // A moment later the words go; the controls keep their 4 s.
+      await tester.pump(const Duration(seconds: 2));
+      await _settle(tester);
+      expect(words(), 0);
+      expect(controls(), 1);
+
+      // The arrow keys: the same.
+      await tester.pump(const Duration(seconds: 5));
+      await _settle(tester);
+      expect(controls(), 0);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await _settle(tester);
+      expect(controls(), 1);
+      expect(words(), 1);
+      expect(_text(tester, 'live-play-volume-percent'), '90%');
+      await tester.pump(const Duration(seconds: 2));
+      await _settle(tester);
+      expect(words(), 0);
+
+      // Dragging the slider: the words while it is held.
+      final slider = tester.widget<Slider>(_key('live-play-volume-slider'));
+      slider.onChangeStart!(0.9);
+      await _settle(tester);
+      expect(words(), 1);
+      slider.onChanged!(0.5);
+      await tester.pump(const Duration(seconds: 2));
+      await _settle(tester);
+      expect(words(), 1, reason: 'still held');
+      expect(_text(tester, 'live-play-volume-percent'), '50%');
+      slider.onChangeEnd!(0.5);
+      await tester.pump(const Duration(seconds: 2));
+      await _settle(tester);
+      expect(words(), 0);
+      await _close(tester, room);
+    });
+    testWidgets('the next wheel notch starts from a slider change made during the same burst', (tester) async {
+      final room = await _pump(tester, width: 1280, height: 800, platform: TargetPlatform.windows);
+      final picture = tester.getCenter(find.byType(PlayerGestureLayer));
+      void scroll() =>
+          tester.binding.handlePointerEvent(PointerScrollEvent(position: picture, scrollDelta: const Offset(0, 20)));
+      scroll();
+      await _settle(tester);
+      expect(tester.widget<Slider>(_key('live-play-volume-slider')).value, closeTo(0.95, 0.001));
+      final slider = tester.widget<Slider>(_key('live-play-volume-slider'));
+      slider.onChangeStart!(0.95);
+      slider.onChanged!(0.4);
+      slider.onChangeEnd!(0.4);
+      await _settle(tester);
+      scroll();
+      await _settle(tester);
+      expect(tester.widget<Slider>(_key('live-play-volume-slider')).value, closeTo(0.35, 0.001));
+      expect(_text(tester, 'live-play-volume-percent'), '35%');
+      expect(_key('gesture-level-volume'), findsNothing);
+      await tester.tap(_in('live-play-volume', find.byTooltip('静音')));
+      await _settle(tester);
+      tester.binding.handlePointerEvent(PointerScrollEvent(position: picture, scrollDelta: const Offset(0, -20)));
+      await _settle(tester);
+      expect(_text(tester, 'live-play-volume-percent'), '5%', reason: 'starts from the muted level');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await _settle(tester);
+      scroll();
+      await _settle(tester);
+      expect(_text(tester, 'live-play-volume-percent'), '5%', reason: 'starts from the keyboard level');
+      await _close(tester, room);
+    });
+
+    testWidgets('holding the slider past the controls timeout keeps both the bar and its percentage visible', (
+      tester,
+    ) async {
+      final room = await _pump(tester, width: 1280, height: 800, platform: TargetPlatform.windows);
+      double opacity(String key, Duration duration) => tester
+          .widgetList<AnimatedOpacity>(find.ancestor(of: _key(key), matching: find.byType(AnimatedOpacity)))
+          .firstWhere((fade) => fade.duration == duration)
+          .opacity;
+      final slider = tester.widget<Slider>(_key('live-play-volume-slider'));
+      slider.onChangeStart!(1);
+      slider.onChanged!(0.5);
+      await _settle(tester);
+      await tester.pump(const Duration(seconds: 6));
+      await _settle(tester);
+      expect(opacity('live-play-volume', const Duration(milliseconds: 200)), 1, reason: 'still held');
+      expect(opacity('live-play-volume-percent', AppDurations.fast), 1);
+      slider.onChangeEnd!(0.5);
+      await tester.pump(const Duration(seconds: 2));
+      await _settle(tester);
+      expect(opacity('live-play-volume', const Duration(milliseconds: 200)), 1, reason: 'four seconds after release');
+      expect(opacity('live-play-volume-percent', AppDurations.fast), 0);
+      await tester.pump(const Duration(seconds: 3));
+      await _settle(tester);
+      expect(opacity('live-play-volume', const Duration(milliseconds: 200)), 0);
+      await _close(tester, room);
+    });
+
+    testWidgets('changing layout or leaving the room while holding the slider releases its hold', (tester) async {
+      final room = await _pump(tester, width: 1280, height: 800, platform: TargetPlatform.windows);
+      tester.widget<Slider>(_key('live-play-volume-slider')).onChangeStart!(1);
+      await tester.tap(_key('live-play-fullscreen'));
+      await _settle(tester);
+      await tester.pump(const Duration(seconds: 5));
+      await _settle(tester);
+      final fade = tester
+          .widgetList<AnimatedOpacity>(
+            find.ancestor(of: _key('live-play-volume'), matching: find.byType(AnimatedOpacity)),
+          )
+          .firstWhere((fade) => fade.duration == const Duration(milliseconds: 200));
+      expect(fade.opacity, 0, reason: 'the removed inline slider no longer holds the controls');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await _settle(tester);
+      tester.widget<Slider>(_key('live-play-volume-slider')).onChangeStart!(0.95);
+      await _close(tester, room);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('U.2n c2, c3 (B-3, B-14): the room volume', () {
+    testWidgets('Android: the system media volume, the same one the drag on the picture changes', (tester) async {
+      var system = 0.8;
+      final calls = <String>[];
+      DeviceControls.debugAvailable = true;
+      const channel = MethodChannel('pure_live/device_controls');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        switch (call.method) {
+          case 'getVolume':
+            return system;
+          case 'setVolume':
+            system = ((call.arguments as Map)['value'] as num).toDouble();
+        }
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+      final room = await _pump(tester);
+
+      await _menu(tester, 'volume');
+      await _settle(tester);
+      expect(_text(tester, 'room-volume-value'), '80%', reason: 'reads the system volume');
+      expect(_in('room-volume-panel', find.text('调的是手机的媒体音量：和画面右侧上下滑、音量键是同一个音量')), findsOneWidget);
+      final slider = tester.widget<Slider>(_key('room-volume-slider'));
+      slider.onChangeStart!(0.8);
+      slider.onChanged!(0.3);
+      slider.onChangeEnd!(0.3);
+      await _settle(tester);
+      expect(system, 0.3);
+      expect(_text(tester, 'room-volume-value'), '30%');
+      // Nothing of its own: no room volume is kept on a phone.
+      expect(room.services.store.settings.get(Settings.roomVolumes), isEmpty);
+
+      // B-14: muting and back comes back to 30 %, not 100 %.
+      await tester.tap(_key('room-volume-mute'));
+      await _settle(tester);
+      expect(system, 0);
+      expect(find.byIcon(AppIcons.volumeMuted), findsOneWidget);
+      await tester.tap(_key('room-volume-mute'));
+      await _settle(tester);
+      expect(system, 0.3);
+      await _closePanel(tester);
+
+      // The drag on the right of the picture starts from that same volume.
+      final video = tester.getRect(_key('live-play-video-box'));
+      final gesture = await tester.startGesture(Offset(video.right - 40, video.center.dy + 40));
+      await gesture.moveBy(const Offset(0, -20));
+      await _settle(tester);
+      await gesture.moveBy(const Offset(0, -40));
+      await _settle(tester);
+      await gesture.up();
+      await _settle(tester);
+      expect(
+        system,
+        closeTo(0.3 + 60 / video.height * 1.2, 0.001),
+        reason: "all 60 pixels start from the system's 30 %, not the player's 100 %",
+      );
+      final afterDrag = system;
+
+      // The panel shows what the drag left.
+      await _menu(tester, 'volume');
+      await _settle(tester);
+      expect(_text(tester, 'room-volume-value'), '${(afterDrag * 100).round()}%');
+      // And it follows the volume keys while open.
+      system = 0.65;
+      await tester.pump(const Duration(seconds: 1));
+      await _settle(tester);
+      expect(_text(tester, 'room-volume-value'), '65%');
+      expect(calls, isNot(contains('setBrightness')));
+      await _closePanel(tester);
+      await _close(tester, room);
+    });
+
+    testWidgets('elsewhere: the player volume, kept for the room; muting comes back to it', (tester) async {
+      final room = await _pump(tester, width: 1280, height: 800, platform: TargetPlatform.windows);
+      await _menu(tester, 'volume');
+      expect(_in('room-volume-panel', find.text('只对这个直播间生效，下次进来还是这个音量')), findsOneWidget);
+      final slider = tester.widget<Slider>(_key('room-volume-slider'));
+      slider.onChangeStart!(1);
+      slider.onChanged!(0.4);
+      slider.onChangeEnd!(0.4);
+      await _settle(tester);
+      expect(_text(tester, 'room-volume-value'), '40%');
+      expect(room.services.store.settings.get(Settings.roomVolumes), {'room_vol_bilibili_6': 0.4});
+      await tester.tap(_key('room-volume-mute'));
+      await _settle(tester);
+      expect(_text(tester, 'room-volume-value'), '0%');
+      await tester.tap(_key('room-volume-mute'));
+      await _settle(tester);
+      expect(_text(tester, 'room-volume-value'), '40%');
+      await _closePanel(tester);
+      await _close(tester, room);
+    });
+  });
+
+  testWidgets('U.2n c4 (B-13): the address panel goes back a page and marks the quality and line that play', (
+    tester,
+  ) async {
+    final room = await _pump(tester);
+    await _menu(tester, 'streamLink');
+    final scheme = Theme.of(tester.element(_key('stream-panel-copy'))).colorScheme;
+    // The quality that plays: the primary colour with the tick.
+    expect(_in('stream-quality-0', find.byIcon(AppIcons.selected)), findsOneWidget);
+    expect(tester.widget<Text>(_in('stream-quality-0', find.text('原画'))).style?.color, scheme.primary);
+    expect(_in('stream-quality-0', find.text('正在播放')), findsOneWidget);
+    expect(_in('stream-quality-1', find.byIcon(AppIcons.selected)), findsNothing);
+    expect(_key('stream-panel-back'), findsNothing, reason: 'the first page');
+
+    await tester.tap(_key('stream-quality-1'));
+    await _settle(tester);
+    await tester.pumpAndSettle();
+    expect(find.text('超清 · 选择线路'), findsOneWidget);
+    expect(_key('stream-line-1'), findsOneWidget);
+    expect(find.byIcon(AppIcons.selected), findsNothing, reason: 'not the quality that plays');
+    // ← goes back to the qualities.
+    await tester.tap(_key('stream-panel-back'));
+    await tester.pumpAndSettle();
+    expect(_key('stream-quality-1'), findsOneWidget);
+    expect(_key('stream-line-1'), findsNothing);
+
+    await tester.tap(_key('stream-quality-0'));
+    await _settle(tester);
+    await tester.pumpAndSettle();
+    expect(_in('stream-line-0', find.byIcon(AppIcons.selected)), findsOneWidget, reason: 'the line that plays');
+    expect(_in('stream-line-0', find.textContaining('正在播放')), findsOneWidget);
+    expect(_in('stream-line-1', find.byIcon(AppIcons.selected)), findsNothing);
+    await _closePanel(tester);
+    await _close(tester, room);
+  });
+
+  group('U.2n c5: the fit is one small menu next to its button', () {
+    Future<Rect> fitMenu(WidgetTester tester) async {
+      _noDialog(tester);
+      expect(find.byType(PopupMenuItem<int>), findsNWidgets(6));
+      expect(_in('video-fit-0', find.byIcon(AppIcons.selected)), findsOneWidget);
+      final scheme = Theme.of(tester.element(_key('video-fit-0'))).colorScheme;
+      expect(tester.widget<Text>(_in('video-fit-0', find.text('默认比例'))).style?.color, scheme.primary);
+      return tester.getRect(_key('video-fit-0')).expandToInclude(tester.getRect(_key('video-fit-5')));
+    }
+
+    testWidgets('from the room menu: under the menu button, lined up with it; a choice applies', (tester) async {
+      final room = await _pump(tester);
+      final button = tester.getRect(_menuButton());
+      await _menu(tester, 'videoFit');
+      final menu = await fitMenu(tester);
+      expect(menu.top, greaterThan(button.bottom));
+      expect(menu.top - button.bottom, lessThan(20));
+      expect(menu.right, lessThanOrEqualTo(button.right));
+      expect(button.right - menu.right, lessThan(20), reason: "lined up with the button's right edge");
+      await tester.tap(_key('video-fit-2'));
+      await _settle(tester);
+      expect(room.services.store.settings.get(Settings.videoFitIndex), 2);
+      await _close(tester, room);
+    });
+
+    testWidgets('from the landscape bar: the same menu above its button', (tester) async {
+      final room = await _pump(tester, width: 852, height: 393);
+      await tester.tap(_key('live-play-fullscreen'));
+      await _settle(tester);
+      final button = tester.getRect(_key('live-play-video-fit'));
+      await tester.tap(_key('live-play-video-fit'));
+      await tester.pumpAndSettle();
+      final menu = await fitMenu(tester);
+      expect(menu.bottom, lessThan(button.top));
+      await tester.tap(_key('video-fit-1'));
+      await _settle(tester);
+      expect(room.services.store.settings.get(Settings.videoFitIndex), 1);
+      await _close(tester, room);
+    });
+  });
+
+  group('U.2n c10: toasts in fullscreen sit above the bottom bar', () {
+    Future<Rect> toast(WidgetTester tester) async {
+      showAppToastOn(ScaffoldMessenger.of(tester.element(_key('live-play-fullscreen'))), const AppToast('已复制直链'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      return tester.getRect(find.descendant(of: find.byType(SnackBar), matching: find.byType(Material)).first);
+    }
+
+    testWidgets('landscape: 16 above the bar', (tester) async {
+      final room = await _pump(tester, width: 852, height: 393);
+      await tester.tap(_key('live-play-fullscreen'));
+      await _settle(tester);
+      final bar = tester.getRect(_key('live-play-bottom-bar'));
+      final rect = await toast(tester);
+      expect(rect.bottom, moreOrLessEquals(bar.top - 16));
+      expect(rect.width, appToastMaxWidth);
+      await tester.pump(const Duration(seconds: 4));
+      await _close(tester, room);
+    });
+
+    testWidgets('portrait fullscreen: above both rows; the room page keeps 16 from the bottom', (tester) async {
+      final room = await _pump(tester);
+      var rect = await toast(tester);
+      expect(rect.bottom, moreOrLessEquals(852 - 16));
+      ScaffoldMessenger.of(tester.element(_key('live-play-fullscreen'))).removeCurrentSnackBar();
+      await tester.pump();
+      await tester.tap(_key('live-play-fullscreen'));
+      await _settle(tester);
+      expect(_key('live-play-bottom-first-row'), findsOneWidget, reason: 'the portrait fullscreen');
+      final bar = tester.getRect(_key('live-play-bottom-bar'));
+      rect = await toast(tester);
+      expect(rect.bottom, moreOrLessEquals(bar.top - 16));
+      await tester.pump(const Duration(seconds: 4));
+      await _close(tester, room);
+    });
+  });
+}

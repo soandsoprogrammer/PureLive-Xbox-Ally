@@ -1,0 +1,56 @@
+# OS and editors
+.DS_Store
+*.swp
+*.iml
+*.ipr
+*.iws
+.idea/
+.history
+__pycache__/
+*.pyc
+*.log
+
+# The recorder's FFmpeg bundles (tools/ffmpeg_kit/fetch.sh links them here)
+/.ffmpeg_kit/
+
+# Fonts and sample pictures for UI mockups (tools/ui/mock/fetch.sh links them here)
+/tools/ui/mock/.cache/
+
+# Dart and Flutter, in every workspace member
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+**/doc/api/
+app.*.symbols
+app.*.map.json
+
+# Android and Windows generated files
+**/android/.gradle/
+**/android/.kotlin/
+**/android/local.properties
+**/android/app/debug
+**/android/app/profile
+**/android/app/release
+**/windows/flutter/ephemeral/
+
+# Signing material never enters Git (AGENTS.md)
+**/key.properties
+**/*.jks
+**/*.keystore
+**/*.pfx
+**/*.key
+**/*.csr
+**/*.p12
+**/*.mobileprovision
+**/*.provisionprofile
+**/*.p8
+**/*.cer
+
+# Local build and release outputs
+/local-artifacts/
+
+# Agent worktrees (Claude Code)
+/.claude/worktrees/

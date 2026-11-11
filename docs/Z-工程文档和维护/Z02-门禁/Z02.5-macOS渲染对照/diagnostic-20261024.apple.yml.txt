@@ -1,0 +1,152 @@
+# Temporary exact-artifact diagnostic; never builds or publishes packages.
+name: Apple
+run-name: macOS fresh-runner first-launch comparison
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mac-cold-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  diagnostic:
+    name: First launch ${{ matrix.renderer }} replica ${{ matrix.replica }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        renderer: [original, default, skia]
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Fetch the immutable original artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p diag artifacts
+          expected_source=b1dea4c60418834430e0860147b953b446dcb19d
+          actual_source=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/40083139304" --jq .head_sha)
+          test "$actual_source" = "$expected_source"
+          gh run download 40083139304 --repo "$GITHUB_REPOSITORY" --name PureLive-5.4.13-5117-apple --dir artifacts
+          name=PureLive-5.4.13-5117-macos-universal.zip
+          expected=c8dca334c2ce68bbae5e66c910f45cc14b4016d0bf0489501daccc3e951205eb
+          actual=$(shasum -a 256 "artifacts/$name" | awk '{print $1}')
+          test "$actual" = "$expected"
+          printf 'source=%s\nzip_sha256=%s\n' "$actual_source" "$actual" > diag/original-identity.txt
+      - name: Observe this condition on its fresh runner
+        env:
+          PL_RENDERER: ${{ matrix.renderer }}
+          PL_REPLICA: ${{ matrix.replica }}
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
+          root=$(mktemp -d "$RUNNER_TEMP/purelive-render-XXXXXX")
+          ditto -x -k artifacts/PureLive-5.4.13-5117-macos-universal.zip "$root/original"
+          original="$root/original/PureLive.app"
+          codesign --verify --deep --strict "$original"
+          codesign -d --entitlements - --xml "$original" > "$root/entitlements.plist" 2> diag/original-codesign.txt
+          plutil -lint "$root/entitlements.plist"
+          shasum -a 256 "$original/Contents/MacOS/PureLive" > diag/original-binary-before.txt
+          sw_vers > diag/os.txt
+          uname -m > diag/architecture.txt
+          system_profiler SPDisplaysDataType -json > diag/displays.json
+          for renderer in default skia; do
+            mkdir -p "$root/$renderer"
+            app="$root/$renderer/PureLive.app"
+            ditto "$original" "$app"
+            if [[ "$renderer" = skia ]]; then
+              /usr/libexec/PlistBuddy -c 'Add :FLTEnableImpeller bool false' "$app/Contents/Info.plist"
+            fi
+            codesign --force --sign - --entitlements "$root/entitlements.plist" "$app"
+            codesign --verify --deep --strict "$app"
+            shasum -a 256 "$app/Contents/MacOS/PureLive" > "diag/$renderer-signed-binary-sha256.txt"
+            # The plist hash is part of the embedded signature. Compare
+            # signature-stripped copies, leaving the launch binaries intact.
+            cp "$app/Contents/MacOS/PureLive" "$root/$renderer-code"
+            codesign --remove-signature "$root/$renderer-code"
+            shasum -a 256 "$root/$renderer-code" > "diag/$renderer-code-sha256.txt"
+            plutil -p "$app/Contents/Info.plist" > "diag/$renderer-info.txt"
+          done
+          default_sha=$(shasum -a 256 "$root/default-code" | awk '{print $1}')
+          skia_sha=$(shasum -a 256 "$root/skia-code" | awk '{print $1}')
+          test "$default_sha" = "$skia_sha"
+          owned_pid=''
+          owned_binary=''
+          stop_owned() {
+            if [[ -n "$owned_pid" ]] && kill -0 "$owned_pid" 2>/dev/null; then
+              actual=$(ps -ww -p "$owned_pid" -o command= | sed 's/^[[:space:]]*//')
+              [[ "$actual" = "$owned_binary"* ]] || { echo 'Owned process identity changed'; return 1; }
+              kill -TERM "$owned_pid" 2>/dev/null || true
+              sleep 2
+              if kill -0 "$owned_pid" 2>/dev/null; then
+                actual=$(ps -ww -p "$owned_pid" -o command= | sed 's/^[[:space:]]*//')
+                [[ "$actual" = "$owned_binary"* ]] || { echo 'Owned process identity changed'; return 1; }
+                kill -KILL "$owned_pid" 2>/dev/null || true
+              fi
+              wait "$owned_pid" 2>/dev/null || true
+            fi
+            owned_pid=''
+          }
+          trap stop_owned EXIT
+          selected="$PL_RENDERER"
+          replica="$PL_REPLICA"
+          case "$selected" in original|default|skia) ;; *) exit 64 ;; esac
+          case "$replica" in 1|2) ;; *) exit 64 ;; esac
+          printf 'renderer=%s\nreplica=%s\n' "$selected" "$replica" > diag/selected-condition.txt
+          for iteration in 1 2; do
+            trial="$selected-$replica-$iteration"
+            renderer="$selected"
+            if [[ "$renderer" = original ]]; then
+              app="$original"
+            else
+              app="$root/$renderer/PureLive.app"
+            fi
+            owned_binary="$app/Contents/MacOS/PureLive"
+            "$owned_binary" > "diag/$trial-stdout.log" 2> "diag/$trial-stderr.log" &
+            owned_pid=$!
+            printf 'trial=%s\npid=%s\n' "$trial" "$owned_pid" > "diag/$trial-state.txt"
+            elapsed=0
+            started_epoch=$(date +%s)
+            for target in 5 30 60 90; do
+              sleep "$((target-elapsed))"
+              elapsed=$target
+              if ! kill -0 "$owned_pid" 2>/dev/null; then
+                printf 'ended_before=%s\n' "$target" >> "diag/$trial-state.txt"
+                break
+              fi
+              osascript - "$owned_pid" > "diag/$trial-$target-foreground.log" 2>&1 <<'APPLESCRIPT' || true
+          on run argv
+            with timeout of 15 seconds
+              tell application "System Events"
+                set frontmost of (first process whose unix id is (item 1 of argv as integer)) to true
+              end tell
+            end timeout
+          end run
+          APPLESCRIPT
+              screencapture -x "diag/$trial-$target.png"
+              ps -ww -p "$owned_pid" -o pid=,etime=,%cpu=,command= > "diag/$trial-$target-process.txt" || true
+              if [[ "$target" = 30 ]]; then
+                sample "$owned_pid" 1 -file "diag/$trial-sample.txt" > "diag/$trial-sample-command.log" 2>&1 || true
+              fi
+              actual_elapsed=$(($(date +%s)-started_epoch))
+              printf 'alive_at_nominal=%s actual_elapsed_seconds=%s\n' "$target" "$actual_elapsed" >> "diag/$trial-state.txt"
+            done
+            log show --last 2m --predicate "processID == $owned_pid" --style compact > "diag/$trial-unified.log" || true
+            stop_owned
+          done
+          codesign --verify --deep --strict "$original"
+          shasum -a 256 "$original/Contents/MacOS/PureLive" > diag/original-binary-after.txt
+          cmp diag/original-binary-before.txt diag/original-binary-after.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() }}
+        with:
+          name: mac-cold-${{ matrix.renderer }}-${{ matrix.replica }}
+          path: diag/
+          retention-days: 14

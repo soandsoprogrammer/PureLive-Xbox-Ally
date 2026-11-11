@@ -1,0 +1,78 @@
+[
+  {
+    "id": "weibo-source",
+    "status": 200,
+    "sha256": "1a17354898dc861eff4c71b965366d02febdbd22b6599b5164a9704cb3afc48b",
+    "ffprobe_exit": 0,
+    "streams": [
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "44100"
+      },
+      {
+        "codec_name": "hevc",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920
+      }
+    ]
+  },
+  {
+    "id": "weibo-1080-avc",
+    "status": 200,
+    "sha256": "168b1022531ff39adcffb6759546d3b1d0c7c4a5134ea614b73cb31c8fb84110",
+    "ffprobe_exit": 0,
+    "streams": [
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "44100"
+      },
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1080,
+        "height": 1920
+      }
+    ]
+  },
+  {
+    "id": "original",
+    "status": 200,
+    "sha256": "c2c9210219c43a4c4fd9cacbfc9d2e4507d103193efb2e580bcd5adf0d3b153f",
+    "ffprobe_exit": 0,
+    "streams": [
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "44100"
+      },
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 720,
+        "height": 1280
+      }
+    ]
+  },
+  {
+    "id": "weibo-480-avc",
+    "status": 200,
+    "sha256": "a1bf74f36e14e473f8ecec97a1ab07da8c5adefdc191840b91b8a548b675c042",
+    "ffprobe_exit": 0,
+    "streams": [
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "44100"
+      },
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 480,
+        "height": 854
+      }
+    ]
+  }
+]

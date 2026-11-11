@@ -1,0 +1,210 @@
+﻿#ifndef SourceDir
+  #error SourceDir is required
+#endif
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
+#ifndef OutputDir
+  #define OutputDir "."
+#endif
+#ifndef ArtifactVersion
+  #define ArtifactVersion AppVersion
+#endif
+
+#define AppName "纯粹直播"
+#define AppExeName "pure_live.exe"
+
+[Setup]
+AppId={{C76CD88E-EB3F-49AD-9191-65691050035A}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher=Pure Live
+AppPublisherURL=https://github.com/wzgrx/PureLive
+DefaultDirName={autopf}\PureLive
+DisableDirPage=no
+UsePreviousAppDir=yes
+DefaultGroupName={#AppName}
+OutputDir={#OutputDir}
+OutputBaseFilename=PureLive-{#ArtifactVersion}-windows-x64-setup
+SetupIconFile=..\..\runner\resources\app_icon.ico
+VersionInfoVersion={#AppVersion}
+Compression=lzma2/ultra64
+SolidCompression=yes
+WizardStyle=modern
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+PrivilegesRequired=lowest
+UninstallDisplayIcon={app}\{#AppExeName}
+CloseApplications=force
+RestartApplications=no
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
+
+[CustomMessages]
+english.UpdateShutdownFailed=Pure Live could not exit safely. Close it and its additional windows, then retry. No application files have been replaced.
+chinesesimp.UpdateShutdownFailed=纯粹直播尚未安全退出。请关闭软件及其附加窗口后重试，本次尚未替换应用文件。
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Files]
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; Flutter/CMake uses an incremental output directory, while an Inno upgrade
+; installs over the previous application directory. Remove only replaceable
+; runtime payload before copying the reviewed package so retired plugins,
+; obsolete assets and linker by-products cannot survive an upgrade. AppData
+; remains outside this list and retains follows, settings, IPTV and recordings.
+Type: filesandordirs; Name: "{app}\data"
+Type: files; Name: "{app}\*.dll"
+Type: files; Name: "{app}\*.exp"
+Type: files; Name: "{app}\*.ilk"
+Type: files; Name: "{app}\*.lib"
+Type: files; Name: "{app}\*.pdb"
+
+[Dirs]
+; Runtime state is intentionally retained during an uninstall/reinstall so a
+; normal version upgrade never removes follows, settings or IPTV providers.
+; 3.x kept it in AppData (4.x and 5.x read it once, for the import); 4.x and
+; 5.x keep it in UserData beside the exe.
+Name: "{app}\AppData"; Flags: uninsneveruninstall
+Name: "{app}\UserData"; Flags: uninsneveruninstall
+
+[Icons]
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; Check: NeedsDesktopShortcut
+
+[Run]
+Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+var
+  PreviousInstallDirectory: String;
+
+function NeedsDesktopShortcut(): Boolean;
+var
+  LinkPath, TargetPath: String;
+  Shell, Link: Variant;
+begin
+  Result := True;
+  LinkPath := ExpandConstant('{autodesktop}\{#AppName}.lnk');
+  if not FileExists(LinkPath) then
+    exit;
+  try
+    { Read the existing shortcut without calling Save. Recreating it resets
+      the desktop icon's position even when its target has not changed. }
+    Shell := CreateOleObject('WScript.Shell');
+    Link := Shell.CreateShortcut(LinkPath);
+    TargetPath := Shell.ExpandEnvironmentStrings(Link.TargetPath);
+    if TargetPath <> '' then
+      Result := not SameText(ExpandFileName(TargetPath),
+                            ExpandFileName(ExpandConstant('{app}\{#AppExeName}')));
+  except
+    { A malformed link is handled by the user's selected shortcut task. }
+    Result := True;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ExitCode: Integer;
+  ApplicationPath: String;
+begin
+  if CurUninstallStep <> usUninstall then
+    exit;
+  ApplicationPath := ExpandConstant('{app}\{#AppExeName}');
+  if not FileExists(ApplicationPath) then
+    exit;
+  { The helper closes only this installed file's processes and waits for their
+    graceful state/recording cleanup. A failed close aborts before file removal. }
+  ExitCode := -1;
+  if not Exec(ApplicationPath, '--shutdown-for-uninstall', ExpandConstant('{app}'),
+              SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 42) then
+    RaiseException('无法关闭正在运行的纯粹直播。请退出软件及其附加窗口后重新卸载；本次尚未删除应用文件。');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ExitCode: Integer;
+  ApplicationPath: String;
+  VersionMS, VersionLS: Cardinal;
+begin
+  Result := '';
+  ApplicationPath := ExpandConstant('{app}\{#AppExeName}');
+  if not FileExists(ApplicationPath) then
+    exit;
+  { Builds before 5.5.0 do not understand the helper flag. Do not start such
+    a client as a supposed helper: retain Inno's existing close/retry flow. }
+  if not GetVersionNumbers(ApplicationPath, VersionMS, VersionLS) then
+    exit;
+  if ((VersionMS shr 16) < 5) or
+     (((VersionMS shr 16) = 5) and ((VersionMS and $FFFF) < 5)) then
+    exit;
+  { Use the existing path-scoped graceful handshake before replacing payload.
+    It works with 5.6.1 even when its normal close action hides to the tray. }
+  if not Exec(ApplicationPath, '--shutdown-for-uninstall', ExpandConstant('{app}'),
+              SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 42) then
+    Result := CustomMessage('UpdateShutdownFailed');
+end;
+
+function ReadInstallLocation(RootKey: Integer; SubKey: String): String;
+begin
+  Result := '';
+  RegQueryStringValue(RootKey, SubKey, 'InstallLocation', Result);
+end;
+
+function FindPreviousInstallDirectory(): String;
+begin
+  { Current 2.1.x installer identity. }
+  Result := ReadInstallLocation(HKCU,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{C76CD88E-EB3F-49AD-9191-65691050035A}_is1');
+  if Result = '' then
+    Result := ReadInstallLocation(HKLM64,
+      'Software\Microsoft\Windows\CurrentVersion\Uninstall\{C76CD88E-EB3F-49AD-9191-65691050035A}_is1');
+
+  { Legacy 2.0.x fastforge identity, with both historical key spellings. }
+  if Result = '' then
+    Result := ReadInstallLocation(HKCU,
+      'Software\Microsoft\Windows\CurrentVersion\Uninstall\7B973E89-76D9-430B-81E2-9DB393C8C042_is1');
+  if Result = '' then
+    Result := ReadInstallLocation(HKLM32,
+      'Software\Microsoft\Windows\CurrentVersion\Uninstall\7B973E89-76D9-430B-81E2-9DB393C8C042_is1');
+  if Result = '' then
+    Result := ReadInstallLocation(HKLM64,
+      'Software\Microsoft\Windows\CurrentVersion\Uninstall\7B973E89-76D9-430B-81E2-9DB393C8C042_is1');
+end;
+
+procedure InitializeWizard();
+begin
+  PreviousInstallDirectory := FindPreviousInstallDirectory();
+
+  { Respect an explicit /DIR= command line value. }
+  if ExpandConstant('{param:DIR|}') <> '' then
+    exit;
+
+  if (PreviousInstallDirectory <> '') and DirExists(PreviousInstallDirectory) then
+    WizardForm.DirEdit.Text := RemoveBackslashUnlessRoot(PreviousInstallDirectory);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  NewDirectory: String;
+  LedgerPath: String;
+begin
+  if CurStep <> ssInstall then
+    exit;
+
+  NewDirectory := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
+  if (PreviousInstallDirectory = '') or
+     SameText(RemoveBackslashUnlessRoot(PreviousInstallDirectory), NewDirectory) then
+    exit;
+
+  { The app consumes this ledger on first start and merges the old Hive/IPTV
+    data into the newly selected directory before controllers initialize. }
+  LedgerPath := AddBackslash(NewDirectory) + 'AppData\previous_install_locations.txt';
+  ForceDirectories(ExtractFileDir(LedgerPath));
+  SaveStringToFile(LedgerPath, RemoveBackslashUnlessRoot(PreviousInstallDirectory) + #13#10, True);
+end;

@@ -1,0 +1,4 @@
+# Native SDK archives and extraction output from upstream CMake.
+/third_party/downloads/
+/third_party/libwebrtc/
+/third_party/.libwebrtc_extract/

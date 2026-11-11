@@ -1,0 +1,191 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:flutter_riverpod/misc.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:pure_live/app/image_cache.dart';
+import 'package:pure_live/app/services.dart';
+import 'package:pure_live/features/backup/backup_page.dart';
+import 'package:pure_live/features/backup/log_page.dart';
+import 'package:pure_live/features/iptv/iptv_import.dart';
+import 'package:pure_live/features/record_settings/record_settings_dialogs.dart';
+import 'package:pure_live/features/recorder/recorder_page.dart';
+import 'package:pure_live/features/settings/data_tools.dart';
+import 'package:pure_live/features/settings/font_manager_page.dart';
+import 'package:pure_live/i18n/i18n.dart';
+import 'package:pure_live/platform/overlay_window.dart';
+import 'package:pure_live/routes/app_navigator.dart';
+import 'package:pure_live/shared/background/custom_background.dart';
+import 'package:pure_live/shared/in_app_web.dart';
+import 'package:pure_live/shared/qr_scan.dart';
+import 'package:pure_live/shared/rooms/share_code.dart';
+import 'package:share_plus/share_plus.dart';
+
+/// Hands the plugins to the places that wait for them (M12.3); `main` calls
+/// this once before the first frame.
+///
+/// - the room menu's share sheet ([SystemShare.sheet], share_plus);
+/// - the image cache ([AppImageCache], flutter_cache_manager downloading
+///   through the app proxy of [services]; Q02.1), which live_ui's images,
+///   the flying emoticons and [ImageCacheTools.clearDisk] use, and once
+///   emptying the default manager's cache that earlier versions filled;
+/// - opening local files ([AppNavigator.openFile], open_filex on Android);
+/// - opening the recording folder in Android's file manager
+///   ([RecordFolderOpener.android], android_intent_plus);
+/// - the QR scanner of device sync and TV sync on phones ([QrScan.camera],
+///   mobile_scanner with the bundled ML Kit model, no Play services);
+/// - the in-app browser ([InAppWeb.available], flutter_inappwebview;
+///   Windows needs the WebView2 runtime).
+void installPluginHooks(AppServices services) {
+  SystemShare.sheet = shareText;
+  final images = AppImageCache.install(() => appImageCacheConfig(services.proxy));
+  ImageCacheTools.clearDisk = images.emptyCache;
+  unawaited(AppImageCache.clearLegacyOnce(services.store.meta, () => DefaultCacheManager().emptyCache()));
+  AppNavigator.openFile = openLocalFile;
+  if (Platform.isAndroid) RecordFolderOpener.android = openAndroidFolder;
+  if (Platform.isAndroid || Platform.isIOS) QrScan.camera = MobileQrCamera.new;
+  unawaited(InAppWeb.detect().then((value) => InAppWeb.available = value));
+  // The app's floating window over other apps (A07.25).
+  OverlayWindow.start();
+}
+
+/// The page hooks that are providers (`ProviderScope.overrides` in `main`):
+/// the system pickers of the IPTV import, the backups, the record folder and
+/// the download folder; sharing the log file on phones.
+List<Override> pluginOverrides() => [
+  localFontPickerProvider.overrideWithValue(pickLocalFont),
+  iptvFilePickerProvider.overrideWithValue(pickIptvFile),
+  customBackgroundPickerProvider.overrideWithValue(pickBackgroundImage),
+  backupPickerProvider.overrideWithValue(pickBackupPath),
+  recordDirectoryPickerProvider.overrideWithValue(pickRecordDirectory),
+  downloadDirectoryPickerProvider.overrideWithValue(pickDownloadDirectory),
+  if (Platform.isAndroid || Platform.isIOS) logSharerProvider.overrideWithValue(shareFile),
+];
+
+/// The system share sheet with [file] (share_plus).
+Future<bool> shareFile(File file) async {
+  await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], sharePositionOrigin: sheetOrigin(null)));
+  return true;
+}
+
+/// Where an iPad's share sheet points (it needs a place, A18.1 c7): [tapped],
+/// else the middle of the window; elsewhere [tapped] as it is.
+Rect? sheetOrigin(Rect? tapped, {TargetPlatform? platform, Size? window}) {
+  if ((platform ?? defaultTargetPlatform) != TargetPlatform.iOS || (tapped != null && !tapped.isEmpty)) return tapped;
+  final size = window ?? _windowSize();
+  return Rect.fromCenter(center: size.center(Offset.zero), width: 1, height: 1);
+}
+
+Size _windowSize() {
+  final view = WidgetsBinding.instance.platformDispatcher.views.first;
+  return view.physicalSize / view.devicePixelRatio;
+}
+
+/// The update download folder (3.x `FileUtils.pickDirectory`).
+Future<String?> pickDownloadDirectory() => FilePicker.getDirectoryPath(dialogTitle: i18n('download_directory'));
+
+/// Opens [path] in the system file manager (DocumentsUI) with a document
+/// folder intent (3.x `FileUtils.openDirectory`); false when the folder has
+/// no document address ([androidDocumentFolderUri]) or nothing handles it.
+///
+/// android_intent_plus rather than open_filex: open_filex sends a
+/// `content://` address of its own file provider with a type taken from the
+/// file name, which file managers cannot browse as a folder; the system
+/// file manager opens a folder only from an `externalstorage.documents`
+/// address typed `vnd.android.document/directory`, a raw intent.
+Future<bool> openAndroidFolder(String path) async {
+  final uri = androidDocumentFolderUri(path);
+  if (uri == null) return false;
+  final intent = AndroidIntent(
+    action: 'android.intent.action.VIEW',
+    data: uri.toString(),
+    type: 'vnd.android.document/directory',
+    flags: const [0x10000000], // FLAG_ACTIVITY_NEW_TASK
+  );
+  try {
+    if (await intent.canResolveActivity() != true) return false;
+    await intent.launch();
+    return true;
+  } on Object {
+    return false;
+  }
+}
+
+/// The system share sheet with [text] (share_plus); true once it was shown.
+/// An iPad's sheet points at [origin] ([sheetOrigin]).
+Future<bool> shareText(String text, {Rect? origin}) async {
+  await SharePlus.instance.share(ShareParams(text: text, sharePositionOrigin: sheetOrigin(origin)));
+  return true;
+}
+
+/// Opens the local file at [path] with the app the system picks: open_filex
+/// on Android (a content URI through its file provider; `url_launcher`
+/// cannot hand out the app's private files), the shell elsewhere.
+Future<bool> openLocalFile(String path) async {
+  if (Platform.isAndroid) {
+    final result = await OpenFilex.open(path);
+    return result.type == ResultType.done;
+  }
+  return await AppNavigator.openExternal(Uri.file(path));
+}
+
+/// Desktop pickers filter by extension; Android's document picker filters by
+/// MIME type, which most providers do not know for playlists and guides, so
+/// it shows every file and the importer checks the content.
+bool get _filterByExtension => !Platform.isAndroid;
+
+/// Android providers often omit font MIME types; inspect the copied document.
+Future<LocalFontSelection?> pickLocalFont() async {
+  final selected = await FilePicker.pickFile(
+    dialogTitle: i18n('font_import'),
+    type: _filterByExtension ? FileType.custom : FileType.any,
+    allowedExtensions: _filterByExtension ? const ['ttf', 'otf'] : null,
+  );
+  final path = selected?.path;
+  return path == null ? null : (file: File(path), name: selected!.name);
+}
+
+/// Uses the system document picker; no broad filesystem permission is needed.
+Future<File?> pickBackgroundImage() async {
+  final file = await FilePicker.pickFile(dialogTitle: i18n('custom_background_image'), type: FileType.image);
+  return file?.path == null ? null : File(file!.path!);
+}
+
+/// The IPTV import's file (3.x `FilePicker.platform.pickFiles` with the
+/// kind's extensions). On Android the picker copies the chosen document into
+/// the app's cache, so no storage permission is needed.
+Future<File?> pickIptvFile(BuildContext context, IptvImportKind kind) async {
+  final file = await FilePicker.pickFile(
+    dialogTitle: importPickerTitle(kind),
+    type: _filterByExtension ? FileType.custom : FileType.any,
+    allowedExtensions: _filterByExtension ? importExtensions(kind) : null,
+  );
+  final path = file?.path;
+  return path == null ? null : File(path);
+}
+
+/// A backup file to restore, or the folder backups go to (the backup page's
+/// [BackupPicker]). Android uses the system document picker for both: a
+/// picked file is copied into the app's cache; a picked folder is checked
+/// for writing by the page. No "all files" access is asked for.
+Future<String?> pickBackupPath(BuildContext context, {required String initial, required bool pickFile}) async {
+  final start = Directory(initial).existsSync() ? initial : null;
+  if (!pickFile) {
+    return await FilePicker.getDirectoryPath(dialogTitle: i18n('backup_directory'), initialDirectory: start);
+  }
+  final file = await FilePicker.pickFile(
+    dialogTitle: i18n('recover_backup'),
+    initialDirectory: start,
+    type: _filterByExtension ? FileType.custom : FileType.any,
+    allowedExtensions: _filterByExtension ? const ['txt', 'json'] : null,
+  );
+  return file?.path;
+}
+
+/// The record folder (3.x `FilePicker.platform.getDirectoryPath`).
+Future<String?> pickRecordDirectory() => FilePicker.getDirectoryPath(dialogTitle: i18n('record_save_path'));

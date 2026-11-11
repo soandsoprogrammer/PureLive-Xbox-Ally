@@ -1,0 +1,168 @@
+{
+  "source_commit": "e3c263ccfd6677baf66570b038e16ccb6fdacbcd",
+  "source_tree": "b0230b2880be03e32ab6919df5afc665ffe128e2",
+  "version": "5.4.21",
+  "build": 5125,
+  "apple_run_id": 40760169821,
+  "release_url": "https://github.com/wzgrx/PureLive/releases/tag/v5.4.21",
+  "package_manifest": {
+    "source_commit": "e3c263ccfd6677baf66570b038e16ccb6fdacbcd",
+    "source_tree": "b0230b2880be03e32ab6919df5afc665ffe128e2",
+    "version": "5.4.21",
+    "build": 5125,
+    "apple_run_id": 40760169821,
+    "packages": [
+      {
+        "name": "PureLive-5.4.21-5125-debug-signed-android-arm64-v8a-release.apk",
+        "bytes": 114062560,
+        "sha256": "433df1fa6b553f28622bc044ea598d56e98768a0af1ba1b402e5d50e4e8ded92"
+      },
+      {
+        "name": "PureLive-5.4.21-5125-debug-signed-android-armeabi-v7a-release.apk",
+        "bytes": 101642082,
+        "sha256": "cd6c992a5de12a2057af1aea9f0e40a003df1bafc8889d1d98ac6092419676f3"
+      },
+      {
+        "name": "PureLive-5.4.21-5125-debug-signed-android-x86_64-release.apk",
+        "bytes": 125777091,
+        "sha256": "3d814f100eb4d8c1aa0ae55451df21312e7a26113fed802786b6a23d0e3ee19d"
+      },
+      {
+        "name": "PureLive-5.4.21-5125-linux-x64.tar.gz",
+        "bytes": 57750425,
+        "sha256": "4132b5780965d5502fa2d2aaa4893cf866f9275b8368169184d08684ddd9ae2d"
+      },
+      {
+        "name": "PureLive-5.4.21-5125-windows-x64-portable.zip",
+        "sha256": "9762655822d8f7c8d019cd5e34ead03b09d942fb1aaf6ed3cbcca1952ef256a6",
+        "bytes": 68982943
+      },
+      {
+        "name": "PureLive-5.4.21-5125-windows-x64-setup.exe",
+        "sha256": "4ff2103e3f4c498448f96b3d545cbbe3218e9b188c3952a0795671d4f062ec5a",
+        "bytes": 53070314
+      },
+      {
+        "name": "PureLive-5.4.21-5125-ios-trollstore.ipa",
+        "bytes": 47714016,
+        "sha256": "490fd1a96808912322ef13f52cb64bb7b56269338c36accd7af518980e6a62ef"
+      },
+      {
+        "name": "PureLive-5.4.21-5125-ios-unsigned.ipa",
+        "bytes": 47547764,
+        "sha256": "865859a0d84e51ad7c541e833f71fecc8d4fe492711842710a13a9029184c88e"
+      },
+      {
+        "name": "PureLive-5.4.21-5125-macos-universal.dmg",
+        "bytes": 100206600,
+        "sha256": "82ebb18eda89401f9784df1359a3c2027d8ea4fd31002bd32873550c385735c4"
+      },
+      {
+        "name": "PureLive-5.4.21-5125-macos-universal.zip",
+        "bytes": 89444952,
+        "sha256": "b7b4bf7add7c5a08c074c9cd4ec2701321f7fd11003d4db858bb6f2531bbfba4"
+      }
+    ],
+    "checksum_file": {
+      "name": "SHA256SUMS.txt",
+      "bytes": 1138,
+      "sha256": "b6fa8c928f482c417138b1d729b8cd4c9a2dd4a17b66642749b0c66feaee803d"
+    }
+  },
+  "receipts_sha256": {
+    "candidate-source.json": "33d53ce4e4ae3253da4b503657a4ec90d6ab4dc344100855a0d36e5e768911b6",
+    "release-full-gate.json": "76a02cd09a5916d3af4a0040cf71453516f8d6ab4e6eed2eddad9d61f6261140",
+    "all-package-manifest.json": "c856fa8761b08ef838c2e816dcea584f90f1b5890d14782c8f8a9b08a69a915f",
+    "windows-final-package-verification.json": "3883dcaa9a1ca999896134b79b8da1936cf0abd1db748a9ab2f3d2e7d50fdb64",
+    "emulator-native-acceptance.json": "fd29702e28e7d1f0d57dac03584d5d3b762587ae4db447a89f1b0cd80c2dda6d",
+    "emulator-cleanup.json": "b44ac2b0fec422c8ac97afa38b124b1c5fea66b3654a97fada51b5213c88f3d5",
+    "linux-package-smoke.json": "cfb3efb10adbc6860c460cf8f1c21e00198f5c84a204b23251431db0f7b87e66",
+    "apple-manual-frame-review.json": "4aaf7d67b4202e38b1c2dd479825e27d9102b72d18df758fa7764dcf6860008a",
+    "mac-accepted-visual.json": "287d6c165d0f4081e1628c8b1fd6583663611b7ef46ace2ee64ee58be990dfa0",
+    "native-recording-kernels-verification.json": "ea3c1256c2ae8d02943a2173eda41215fb91dd1262d8c7355c4d554957ec56a9",
+    "native-macos-playback-verification.json": "b6497843a98a2c195bb494e8ca7717a1a4c28addd3f48baf686cd03a5c09b718",
+    "issue98-verification.json": "3be104adc34ea0945cf18c912ff7829d823106e4da6129f19e0a0f248f203414",
+    "gesture-contract-verification.json": "3947f43e0b948946d5803bf3a2891254519fe652c949517e5c96132aabaf173c",
+    "public-download-verification.json": "a8cf0862635e4876bc73ef0c9800439ee8c0b6ee61dfeeda0a77197bb3b838dc",
+    "legacy-gate-verification.json": "e9764e974aae5d97a04756e2608a40eb66ba0f0de4e0888b458d3dbfa1597eb3",
+    "legacy-timing-audit.json": "ae258f8c2c4ef7a7f46f5c28329531c4e20239a03fffa98cda5ef64597a5b171"
+  },
+  "images": [
+    {
+      "caption": "Windows 最终 ZIP：生成频道首页",
+      "file": "windows-package-start1-home.jpg",
+      "source_sha256": "81f7e22b39311c32da0ea4853626d1728c6952b069d315f53564351cb6e9ea31",
+      "sha256": "83a35c32d0c423b82157b70ff45d53ca78f2feb8f3f4d386c20733d60a82e690"
+    },
+    {
+      "caption": "Windows 最终 ZIP：电视手机输入入口",
+      "file": "windows-tv-link-phone-entry.jpg",
+      "source_sha256": "0eb3712c0986a831c7c8ac69de186297c2c643237d57a5d92215d9aac6716768",
+      "sha256": "b07504f60f08462d8459d046dc3f70b6a615982dac394d15a6d5bd9024993dbe"
+    },
+    {
+      "caption": "Linux 最终 tar：隔离首页启动",
+      "file": "linux-home.jpg",
+      "source_sha256": "bb7fcf9f95a067d8c4990f4862ce1bf7ca5fd990ed117873820b2fa04fbb0a5c",
+      "sha256": "c3418bc7fd1dc71541a15f7fe02f9c3f8f052f9444e8cbd3a94ceb8cfe31c7ee"
+    },
+    {
+      "caption": "Android：箭头位于玻璃底栏上方",
+      "file": "02-home-arrows-clear-glass.jpg",
+      "source_sha256": "e5e6e3c1e0595794f70550b07b361e65f0de5755ffe449e88cca55d1d9752948",
+      "sha256": "94afba34759bebbcf0c4598b47a63d3c263c74c10371747138ed250cdf922c2e"
+    },
+    {
+      "caption": "Android：点击箭头到达最后一行",
+      "file": "04-home-arrow-reached-bottom.jpg",
+      "source_sha256": "11837f7b3dcf7912e55bf33f2413d2bcad75efb131aba8d5f70b6f40c407f0d4",
+      "sha256": "11c556bee42d61f46ab45528404dd23500531e0f6612d51d76fc9b80cffb4408"
+    },
+    {
+      "caption": "Android：正常右侧竖滑调节媒体音量",
+      "file": "portrait-right-vertical.jpg",
+      "source_sha256": "0297b9e78ca7903e7a5147777437a72c2f49b5a0f94461214018cff0f5d0d46a",
+      "sha256": "f28cf72a6658da13ef515f4a171b8c1950e3f437773947d63dd3d64370528b17"
+    },
+    {
+      "caption": "Android 电视模式：取消表单后恢复按钮焦点",
+      "file": "17-tv-phone-cancel-focus.jpg",
+      "source_sha256": "3ada6260ed16318aa55b2941010edd67bd03288d98739bd4125c0c5de4f25435",
+      "sha256": "6a97674afa769345aad4a6bbf88243990314418d719ea558a04a9e5160ecadc0"
+    },
+    {
+      "caption": "Android 电视模式：表单提交后指定频道实际播放",
+      "file": "19-tv-native-room-playing.jpg",
+      "source_sha256": "1ae100bca8369e5afe7cefd4adc902d1de079c8b4532ce6c3a64d5f2274dd69a",
+      "sha256": "a7bfbef1e69621bb1c2067c11d210d3ddbb9261017e165ee0a1064d80ab190ec"
+    },
+    {
+      "caption": "Android：恢复原数据及竖屏首页",
+      "file": "20-normal-data-restored.jpg",
+      "source_sha256": "96bf8173f10d7d3c23538f6cb91e3749423632d44d5f81ce1d3bd5c970da76da",
+      "sha256": "b9866b33bde9071da3095c9086b5ed355b46d40c010515b8934e89d05d1c301c"
+    },
+    {
+      "caption": "Mac 最终 ZIP：启动 90 秒后的首页",
+      "file": "launch-1-90.jpg",
+      "source_sha256": "c14aefe3f3b57f05519937aad2a8b0545b89c662ee3afae2606a07c2cc84654d",
+      "sha256": "34bd5f667ea70674227c5dd4ee6b607143fd869193805cebc74997ed9bc188d7"
+    },
+    {
+      "caption": "iOS 模拟器：同源应用首页",
+      "file": "ios-simulator.jpg",
+      "source_sha256": "58542fa62c298a557e6faa029a25eb8c24ab3aa02624769acd05b2ed4262fd52",
+      "sha256": "058c6cb58e97d1cdbb568f8d8eae3a217da95c00b976eaaa07eb0c6cdc42833a"
+    }
+  ],
+  "feed_sha256": {
+    "version.json": "b0843d0f44c239d96d9fc5e20c85799b3278f5b800c100a97df9ac7fb8242cbc",
+    "releases.json": "1aa547a9bcb4e339dc3d7ff17f55b9fe16c5509bd45284a21c6847a3c3086f2d"
+  },
+  "legacy_commit": "59828cb33bfc5c023ad8497fef13244b2a7d2534",
+  "historical_entries_retained": 212,
+  "test_only_followup": "packages/live_danmaku/test/sites/jdlive_test.dart",
+  "runtime_source_unchanged_from_build": true,
+  "physical_k90_tested": false,
+  "original_reporter_devices_tested": false
+}

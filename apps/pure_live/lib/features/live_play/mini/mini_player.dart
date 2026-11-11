@@ -1,0 +1,972 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:live_core/live_core.dart';
+import 'package:live_player/live_player.dart';
+import 'package:live_store/live_store.dart';
+import 'package:live_ui/live_ui.dart';
+import 'package:pure_live/app/desktop/desktop_window.dart';
+import 'package:pure_live/features/live_play/logic/mini_window.dart';
+import 'package:pure_live/features/live_play/logic/reconnect_watch.dart';
+import 'package:pure_live/features/live_play/logic/room_controller.dart';
+import 'package:pure_live/features/live_play/logic/room_status.dart';
+import 'package:pure_live/features/live_play/mini/compact_danmaku.dart';
+import 'package:pure_live/features/live_play/player/recording_badge.dart';
+import 'package:pure_live/i18n/i18n.dart';
+import 'package:pure_live/shared/rooms/room_texts.dart';
+
+/// How long the buttons stay after a tap (3.x: 3 s).
+const Duration miniButtonsTimeout = Duration(seconds: 3);
+
+/// The diameter of a mini window's corner buttons (U.2j: 48, a 45 % black
+/// disc).
+const double miniButtonSize = 48;
+
+/// The diameter of the centre button (3.x: a 42 icon with 8 around it).
+const double miniCentreSize = 58;
+
+/// A07.24: below this width or [miniCompactMaxHeight], the window is a
+/// small one: no mute button, a 48 centre button (the K90 check found them
+/// on top of each other at about 196 wide).
+const double miniCompactMaxWidth = 260;
+
+/// See [miniCompactMaxWidth].
+const double miniCompactMaxHeight = 150;
+
+/// A07.24: the room's name shows between the top buttons from this width.
+const double miniTitleMinWidth = 240;
+
+/// A07.24: the bottom buttons (danmaku, picture-in-picture) show from this
+/// height and width; smaller, the window is all picture.
+const double miniBottomRowMinHeight = 170;
+
+/// See [miniBottomRowMinHeight].
+const double miniBottomRowMinWidth = 240;
+
+final ValueListenable<MiniGripCorner?> _noGrip = ValueNotifier(null);
+
+/// The picture of a room in a mini window with its buttons (U.2j, 3.x
+/// `showAppFloating`, `buildPiPOverlay`): the same in the in-app floating
+/// window, Android's picture-in-picture and the desktop mini window.
+///
+/// - Top left: back to the room (new); top right: close (always stops, c2);
+///   the centre: play or pause, refresh when playback failed, the room's
+///   own [VideoCentreButton] (B02 c2); the desktop adds the pin at the
+///   bottom right and the volume (wheel, bar at the bottom).
+/// - A touch shows the buttons for 3 s, a touch while they show goes back
+///   to the room; a mouse shows them while it hovers and a double click goes
+///   back (3.x). Paused, the play button stays; buffering, it turns.
+/// - Bottom left: the recording mark; over the picture the "小窗弹幕".
+/// - The in-app floating window resizes (A07.22): a grip on the bottom
+///   corner towards the middle of the screen, shown with the buttons, and
+///   two fingers anywhere on the picture (one finger still moves it).
+/// - Android's picture-in-picture has none of the buttons (the system draws
+///   its own).
+///
+/// The picture, the danmaku and the buttons draw on their own layers; the
+/// video is never clipped (UI_PLAN §9.3).
+class MiniPlayerSurface extends StatefulWidget {
+  /// Creates the surface.
+  const new({
+    required this.controller,
+    required this.reconnect,
+    required this.video,
+    required this.kind,
+    this.onBackToRoom,
+    this.onClose,
+    this.pinned = false,
+    this.canPin = true,
+    this.onPin,
+    this.onDragStart,
+    this.onDragUpdate,
+    this.onDragEnd,
+    this.resizeGrip,
+    this.onResizeStart,
+    this.onGripMove,
+    this.onPinch,
+    this.onResizeEnd,
+    this.onPip,
+    this.buttonsShown,
+    super.key,
+  });
+
+  /// The room.
+  final LiveRoomController controller;
+
+  /// The stream's drops.
+  final ReconnectWatch reconnect;
+
+  /// The picture (the room's one video view).
+  final Widget video;
+
+  /// Which mini window.
+  final MiniKind kind;
+
+  /// Back to the room (button 1, the second touch, a double click).
+  final VoidCallback? onBackToRoom;
+
+  /// Stops and closes (button 2).
+  final VoidCallback? onClose;
+
+  /// Told whether the buttons show (the floating window keeps its grip out
+  /// of the system's back gesture meanwhile, A07.25).
+  final ValueNotifier<bool>? buttonsShown;
+
+  /// The desktop mini window stays on top (button 4).
+  final bool pinned;
+
+  /// Whether the desktop lets it stay on top.
+  final bool canPin;
+
+  /// Turns staying on top on or off.
+  final VoidCallback? onPin;
+
+  /// A drag on the picture began (moves the window).
+  final GestureDragStartCallback? onDragStart;
+
+  /// The drag moved.
+  final GestureDragUpdateCallback? onDragUpdate;
+
+  /// The drag ended.
+  final GestureDragEndCallback? onDragEnd;
+
+  /// The corner of the resize grip, shown with the buttons (the in-app
+  /// floating window, A07.22); none when null. A listenable, so the window
+  /// moving from one half of the screen to the other moves the grip without
+  /// rebuilding the picture (A07.24).
+  final ValueListenable<MiniGripCorner?>? resizeGrip;
+
+  /// A resize began: the grip (`pinch` false) or two fingers (`pinch`
+  /// true).
+  final void Function({required bool pinch})? onResizeStart;
+
+  /// The grip moved: the finger's way since the resize began.
+  final ValueChanged<Offset>? onGripMove;
+
+  /// Two fingers pinch or spread the window (A07.22, as Android's own
+  /// picture-in-picture): their scale since the resize began. With it, one
+  /// finger still drags ([onDragStart] …).
+  final ValueChanged<double>? onPinch;
+
+  /// The resize ended.
+  final VoidCallback? onResizeEnd;
+
+  /// Switches to Android's picture-in-picture (the in-app floating window,
+  /// A07.24); no button when null.
+  final VoidCallback? onPip;
+
+  @override
+  State<MiniPlayerSurface> createState() => _MiniPlayerSurfaceState();
+}
+
+class _MiniPlayerSurfaceState extends State<MiniPlayerSurface> {
+  bool _hovered = false;
+  bool _revealed = false;
+  Timer? _hide;
+
+  /// The volume before the mute button (A07.24), given back by it.
+  bool _volumeShown = false;
+  Timer? _volumeHide;
+  Timer? _volumeSave;
+  double _volume = 1;
+
+  /// Whether the running gesture on the picture is a two-finger resize.
+  bool _pinching = false;
+
+  /// Whether the grip is being dragged (the buttons stay meanwhile).
+  bool _gripping = false;
+  Offset _gripMoved = Offset.zero;
+
+  LiveRoomController get _room => widget.controller;
+
+  bool get _buttons => widget.kind != MiniKind.systemPip;
+
+  bool get _desktop => widget.kind == MiniKind.desktop;
+
+  @override
+  void initState() {
+    super.initState();
+    _volume = _room.volume;
+    _room.addListener(_onRoom);
+    // 3.x showed the buttons for a moment when the floating window appeared.
+    if (_buttons) _reveal();
+  }
+
+  @override
+  void didUpdateWidget(MiniPlayerSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      oldWidget.controller.removeListener(_onRoom);
+      widget.controller.addListener(_onRoom);
+      _volume = widget.controller.volume;
+    }
+  }
+
+  @override
+  void dispose() {
+    _room.removeListener(_onRoom);
+    _hide?.cancel();
+    _volumeHide?.cancel();
+    if (_volumeSave?.isActive ?? false) {
+      _volumeSave!.cancel();
+      unawaited(_room.saveVolume());
+    }
+    super.dispose();
+  }
+
+  /// The volume changed (wheel, arrow keys): the desktop shows its bar.
+  void _onRoom() {
+    final volume = _room.volume;
+    if ((volume - _volume).abs() < 0.001) return;
+    _volume = volume;
+    if (!_desktop || !mounted) return;
+    _volumeHide?.cancel();
+    setState(() => _volumeShown = true);
+    _volumeHide = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted) setState(() => _volumeShown = false);
+    });
+  }
+
+  void _reveal() {
+    _hide?.cancel();
+    if (!_revealed && mounted) setState(() => _revealed = true);
+    _revealed = true;
+    _hide = Timer(miniButtonsTimeout, () {
+      if (mounted) setState(() => _revealed = false);
+    });
+  }
+
+  bool get _shown => _hovered || _revealed || _gripping;
+
+  // One finger drags the window, two resize it (A07.22). A finger added or
+  // lifted ends the gesture and starts the other kind (the recognizer
+  // reports an end and a new start).
+  void _onScaleStart(ScaleStartDetails details) {
+    _pinching = details.pointerCount >= 2;
+    if (_pinching) {
+      widget.onResizeStart?.call(pinch: true);
+    } else {
+      widget.onDragStart?.call(
+        DragStartDetails(globalPosition: details.focalPoint, localPosition: details.localFocalPoint),
+      );
+    }
+  }
+
+  void _onScaleUpdate(ScaleUpdateDetails details) {
+    if (_pinching) {
+      widget.onPinch?.call(details.scale);
+    } else {
+      widget.onDragUpdate?.call(
+        DragUpdateDetails(
+          globalPosition: details.focalPoint,
+          localPosition: details.localFocalPoint,
+          delta: details.focalPointDelta,
+        ),
+      );
+    }
+  }
+
+  void _onScaleEnd(ScaleEndDetails details) {
+    if (_pinching) {
+      widget.onResizeEnd?.call();
+    } else {
+      widget.onDragEnd?.call(DragEndDetails(velocity: details.velocity));
+    }
+    _pinching = false;
+  }
+
+  void _onGripStart(DragStartDetails details) {
+    // The buttons (and the grip with them) stay while it is dragged.
+    _hide?.cancel();
+    setState(() {
+      _gripping = true;
+      _gripMoved = Offset.zero;
+    });
+    widget.onResizeStart?.call(pinch: false);
+  }
+
+  void _onGripUpdate(DragUpdateDetails details) {
+    _gripMoved += details.delta;
+    widget.onGripMove?.call(_gripMoved);
+  }
+
+  void _onGripEnd() {
+    if (!_gripping) return;
+    setState(() => _gripping = false);
+    widget.onResizeEnd?.call();
+    _reveal();
+  }
+
+  // A07.24: a tap shows or hides the buttons, a double tap (or click) goes
+  // back to the room; a tap while the buttons show no longer does (3.x did,
+  // and a tap next to a button took the user away).
+  void _onTapUp(TapUpDetails details) {
+    if (!_buttons) return;
+    final mouse = details.kind == PointerDeviceKind.mouse || details.kind == PointerDeviceKind.trackpad;
+    // A mouse shows them while it hovers.
+    if (mouse) return;
+    if (_revealed) {
+      _hide?.cancel();
+      setState(() => _revealed = false);
+    } else {
+      _reveal();
+    }
+  }
+
+  void _onDoubleTap() {
+    if (_buttons) widget.onBackToRoom?.call();
+  }
+
+  /// Mutes the player, or gives back the volume it had (A07.24); the room's
+  /// kept volume does not change.
+  void _toggleMute() {
+    _reveal();
+    unawaited(_room.toggleMute(save: false, fallback: 1));
+  }
+
+  /// Shows or hides the mini windows' danmaku ("小窗显示弹幕", A07.24).
+  void _toggleDanmaku() {
+    _reveal();
+    final settings = _room.store.settings;
+    unawaited(settings.set(Settings.enablePipDanmaku, !settings.get(Settings.enablePipDanmaku)));
+  }
+
+  void _onScroll(PointerSignalEvent event) {
+    if (!_desktop || event is! PointerScrollEvent || event.scrollDelta.dy == 0) return;
+    final next = (_room.volume + (event.scrollDelta.dy > 0 ? -0.05 : 0.05)).clamp(0.0, 1.0);
+    unawaited(_room.setVolume(next));
+    // The room's volume is kept once the wheel rests (as in the room).
+    _volumeSave?.cancel();
+    _volumeSave = Timer(const Duration(milliseconds: 600), () => unawaited(_room.saveVolume()));
+  }
+
+  void _togglePlay() {
+    if (!_hovered) _reveal();
+    unawaited(_room.togglePlayback());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Only a note for the floating window, which redraws nothing on it.
+    widget.buttonsShown?.value = _shown;
+    final room = _room;
+    final content = Stack(
+      fit: StackFit.expand,
+      children: [
+        RepaintBoundary(child: widget.video),
+        // A07.20 c2: a stream without a real picture gets the cover too.
+        StreamBuilder<PlaybackState>(
+          stream: room.session.states,
+          initialData: room.session.state,
+          builder: (context, snapshot) {
+            final playback = snapshot.data ?? room.session.state;
+            return ListenableSelector<bool>(
+              listenable: room,
+              selector: () => room.audioOnly,
+              builder: (context, audioOnly, _) {
+                final voice = !audioOnly && pictureIsPlaceholder(playback, voiceLive: room.site.isVoiceLive);
+                if (!audioOnly && !voice) return const SizedBox.shrink();
+                return IgnorePointer(
+                  child: _MiniAudioCover(room: room.room, voiceLive: voice),
+                );
+              },
+            );
+          },
+        ),
+        IgnorePointer(child: CompactDanmakuLayer(controller: room)),
+        _MiniStatusLayer(controller: room, reconnect: widget.reconnect, centre: _buttons),
+        Positioned(
+          left: 6,
+          bottom: 6,
+          child: IgnorePointer(child: RoomRecordingBadge(room: room.room, compact: true)),
+        ),
+        if (_buttons) ...[
+          Positioned.fill(
+            child: widget.onPinch == null
+                ? GestureDetector(
+                    key: const ValueKey('mini-surface'),
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: _onTapUp,
+                    onDoubleTap: _onDoubleTap,
+                    onPanStart: widget.onDragStart,
+                    onPanUpdate: widget.onDragUpdate,
+                    onPanEnd: widget.onDragEnd,
+                    // The system took the touch (an edge gesture): let go
+                    // where it is.
+                    onPanCancel: () => widget.onDragEnd?.call(DragEndDetails()),
+                  )
+                : GestureDetector(
+                    key: const ValueKey('mini-surface'),
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: _onTapUp,
+                    onDoubleTap: _onDoubleTap,
+                    onScaleStart: _onScaleStart,
+                    onScaleUpdate: _onScaleUpdate,
+                    onScaleEnd: _onScaleEnd,
+                  ),
+          ),
+          _buttonsLayer(context),
+          if (_desktop) _volumeBar(context),
+        ],
+      ],
+    );
+    // Its own Material: the floating window sits above the pages.
+    final framed = Material(color: OnVideoColors.ground, child: content);
+    if (!_buttons) return framed;
+    final hovered = MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: Listener(onPointerSignal: _onScroll, child: framed),
+    );
+    // The desktop mini window's edges resize it (3.x).
+    return _desktop ? DesktopWindow.resizeArea(hovered) : hovered;
+  }
+
+  Widget _buttonsLayer(BuildContext context) =>
+      LayoutBuilder(builder: (context, constraints) => _buttonsFor(context, constraints.biggest));
+
+  Widget _buttonsFor(BuildContext context, Size size) {
+    // A07.24 (K90 check): a small window keeps back, close, the grip and a
+    // smaller centre button apart; mute waits for a larger one.
+    final compact = size.width < miniCompactMaxWidth || size.height < miniCompactMaxHeight;
+    return _buttonsLaidOut(context, size, compact: compact);
+  }
+
+  Widget _buttonsLaidOut(BuildContext context, Size size, {required bool compact}) => StreamBuilder<PlaybackState>(
+    stream: _room.session.states,
+    initialData: _room.session.state,
+    builder: (context, snapshot) {
+      final playback = snapshot.data ?? _room.session.state;
+      return ListenableSelector<MiniStatus>(
+        listenable: Listenable.merge([_room, widget.reconnect]),
+        selector: () =>
+            miniStatusOf(stage: _room.stage, playback: playback.status, reconnecting: widget.reconnect.reconnecting),
+        builder: (context, status, _) {
+          final shown = _shown;
+          final failed = status == MiniStatus.failed;
+          final paused = status == MiniStatus.paused;
+          final buffering = status == MiniStatus.buffering;
+          // Paused, the play button stays (c8); buffering, it turns (B02
+          // c2, as in the room); failed, refresh stays.
+          final centreShown = shown || paused || buffering || failed;
+          final centreBusy = status == MiniStatus.loading || status == MiniStatus.reconnecting;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              _fade(
+                shown: shown,
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: _MiniButton(
+                      key: const ValueKey('mini-back'),
+                      tooltip: i18n('mini_window_back_to_room'),
+                      icon: AppIcons.backToRoom,
+                      onPressed: widget.onBackToRoom,
+                    ),
+                  ),
+                ),
+              ),
+              _fade(
+                shown: shown,
+                child: Align(
+                  alignment: Alignment.topRight,
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // A07.24: mute next to close; not on a small window,
+                        // where it crowded the centre button (K90 check).
+                        if (!compact) ...[
+                          ListenableSelector<bool>(
+                            listenable: _room,
+                            selector: () => _room.volume <= 0,
+                            builder: (context, muted, _) => _MiniButton(
+                              key: const ValueKey('mini-mute'),
+                              tooltip: i18n(muted ? 'live_play_unmute' : 'live_play_mute'),
+                              icon: muted ? AppIcons.volumeMuted : AppIcons.volumeHigh,
+                              onPressed: _toggleMute,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                        ],
+                        _MiniButton(
+                          key: const ValueKey('mini-close'),
+                          tooltip: i18n('close'),
+                          icon: AppIcons.close,
+                          onPressed: widget.onClose,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              // A07.24: whose room it is, between the top buttons, when the
+              // window is wide enough to say it.
+              if (size.width >= miniTitleMinWidth)
+                _fade(
+                  shown: shown,
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(miniButtonSize + 12, 18, miniButtonSize * 2 + 16, 0),
+                      child: Text(
+                        _room.room.nick.isNotEmpty ? _room.room.nick : _room.room.title,
+                        key: const ValueKey('mini-title'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelLarge
+                            ?.copyWith(color: OnVideoColors.foreground, shadows: OnVideoColors.shadows),
+                      ),
+                    ),
+                  ),
+                ),
+              // A07.24: the danmaku switch and picture-in-picture along the
+              // bottom left (the grip is at the bottom right), when the window
+              // is tall enough.
+              if (size.height >= miniBottomRowMinHeight && size.width >= miniBottomRowMinWidth)
+                ValueListenableBuilder<MiniGripCorner?>(
+                  valueListenable: widget.resizeGrip ?? _noGrip,
+                  builder: (context, grip, _) => _fade(
+                    shown: shown,
+                    child: Align(
+                      alignment: Alignment.bottomLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            StreamBuilder<Object?>(
+                              stream: _room.store.settings.changes.where(
+                                (setting) => setting.key == Settings.enablePipDanmaku.key,
+                              ),
+                              builder: (context, _) {
+                                final on = _room.store.settings.get(Settings.enablePipDanmaku);
+                                return _MiniButton(
+                                  key: const ValueKey('mini-danmaku-switch'),
+                                  tooltip: i18n(on ? 'live_play_hide_danmaku' : 'show_danmaku'),
+                                  iconWidget: DanmakuIcon(on ? DanmakuIconKind.on : DanmakuIconKind.off, size: 22),
+                                  onPressed: _toggleDanmaku,
+                                );
+                              },
+                            ),
+                            if (widget.onPip != null) ...[
+                              const SizedBox(width: 4),
+                              _MiniButton(
+                                key: const ValueKey('mini-pip'),
+                                tooltip: i18n('mini_window_system_pip'),
+                                icon: AppIcons.floatWindow,
+                                onPressed: widget.onPip,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              if (!centreBusy)
+                _fade(
+                  shown: centreShown,
+                  child: Center(
+                    child: Padding(
+                      padding: EdgeInsets.only(top: failed ? 16 : 0),
+                      child: failed
+                          ? VideoCentreButton(
+                              key: const ValueKey('mini-retry'),
+                              tooltip: i18n('retry'),
+                              icon: AppIcons.refresh,
+                              size: compact ? miniButtonSize : miniCentreSize,
+                              onPressed: _room.retry,
+                            )
+                          : VideoCentreButton(
+                              key: const ValueKey('mini-play-pause'),
+                              tooltip: i18n(
+                                buffering
+                                    ? 'live_play_buffering'
+                                    : paused
+                                    ? 'multiview_play'
+                                    : 'multiview_pause',
+                              ),
+                              icon: paused ? AppIcons.play : AppIcons.pause,
+                              busy: buffering,
+                              size: compact ? miniButtonSize : miniCentreSize,
+                              onPressed: _togglePlay,
+                            ),
+                    ),
+                  ),
+                ),
+              if (widget.resizeGrip case final grip?)
+                ValueListenableBuilder<MiniGripCorner?>(
+                  valueListenable: grip,
+                  builder: (context, corner, _) => corner == null
+                      ? const SizedBox.shrink()
+                      : _fade(
+                          shown: shown,
+                          // A07.25 c2, c3: always in the bottom right corner
+                          // itself; [corner] is only the way it grows.
+                          child: Align(
+                            alignment: Alignment.bottomRight,
+                            child: _ResizeGrip(onStart: _onGripStart, onUpdate: _onGripUpdate, onEnd: _onGripEnd),
+                          ),
+                        ),
+                ),
+              if (_desktop)
+                _fade(
+                  shown: shown,
+                  child: Align(
+                    alignment: Alignment.bottomRight,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: _PinButton(pinned: widget.pinned, canPin: widget.canPin, onPressed: widget.onPin),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      );
+    },
+  );
+
+  Widget _volumeBar(BuildContext context) => Align(
+    alignment: Alignment.bottomCenter,
+    child: Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: IgnorePointer(
+        child: AnimatedOpacity(
+          opacity: _volumeShown ? 1 : 0,
+          duration: const Duration(milliseconds: 150),
+          child: _volumeShown
+              ? DecoratedBox(
+                  key: const ValueKey('mini-volume'),
+                  decoration: BoxDecoration(color: OnVideoColors.scrim, borderRadius: BorderRadius.circular(14)),
+                  child: SizedBox(
+                    height: 28,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 8, right: 12),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _room.volume <= 0 ? AppIcons.volumeMute : AppIcons.volumeUp,
+                            size: 18,
+                            color: OnVideoColors.foreground,
+                            semanticLabel: i18n('multiview_volume'),
+                          ),
+                          const SizedBox(width: 6),
+                          SizedBox(
+                            width: 72,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(2),
+                              child: LinearProgressIndicator(
+                                value: _room.volume.clamp(0.0, 1.0),
+                                minHeight: 4,
+                                backgroundColor: OnVideoColors.track,
+                                color: OnVideoColors.foreground,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                )
+              : const SizedBox.shrink(),
+        ),
+      ),
+    ),
+  );
+
+  /// A button layer fading in and out; hidden ones take no taps and are not
+  /// painted.
+  Widget _fade({required bool shown, required Widget child}) => IgnorePointer(
+    ignoring: !shown,
+    child: AnimatedOpacity(opacity: shown ? 1 : 0, duration: const Duration(milliseconds: 200), child: child),
+  );
+}
+
+/// A corner button on the picture: white on a 45 % black disc (U.2j c2;
+/// the centre one is the room's [VideoCentreButton]).
+class _MiniButton extends StatelessWidget {
+  const new({required this.tooltip, required this.onPressed, this.icon, this.iconWidget, super.key})
+    : assert(icon != null || iconWidget != null, 'an icon');
+
+  final String tooltip;
+  final IconData? icon;
+
+  /// A picture instead of [icon] (the danmaku switch's 3.x picture).
+  final Widget? iconWidget;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) => SizedBox.square(
+    dimension: miniButtonSize,
+    child: IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      iconSize: 20,
+      padding: EdgeInsets.zero,
+      style: IconButton.styleFrom(
+        backgroundColor: OnVideoColors.button,
+        foregroundColor: OnVideoColors.foreground,
+        disabledBackgroundColor: OnVideoColors.button,
+        disabledForegroundColor: OnVideoColors.disabled,
+        fixedSize: const Size.square(miniButtonSize),
+        minimumSize: const Size.square(miniButtonSize),
+      ),
+      icon: iconWidget ?? Icon(icon),
+    ),
+  );
+}
+
+/// The floating window's resize grip (A07.22, A07.25 c3): a quarter disc in
+/// the window's bottom right corner with a corner bracket in it, unlike the
+/// round buttons (a round one read as a button and a tap "did nothing");
+/// dragging it sizes the window, the picture's shape kept, and a tap says
+/// so. 48 to touch (A04).
+class _ResizeGrip extends StatelessWidget {
+  const new({required this.onStart, required this.onUpdate, required this.onEnd});
+
+  final GestureDragStartCallback onStart;
+  final GestureDragUpdateCallback onUpdate;
+  final VoidCallback onEnd;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: i18n('mini_window_resize'),
+    child: Tooltip(
+      message: i18n('mini_window_resize'),
+      excludeFromSemantics: true,
+      // A tap says what it is for (it only drags; a tap did nothing).
+      triggerMode: TooltipTriggerMode.tap,
+      child: GestureDetector(
+        key: const ValueKey('mini-resize'),
+        behavior: HitTestBehavior.opaque,
+        onPanStart: onStart,
+        onPanUpdate: onUpdate,
+        onPanEnd: (_) => onEnd(),
+        onPanCancel: onEnd,
+        child: const SizedBox.square(
+          dimension: miniButtonSize,
+          child: CustomPaint(painter: _GripPainter()),
+        ),
+      ),
+    ),
+  );
+}
+
+/// [_ResizeGrip]'s picture: a 44 quarter disc on [OnVideoColors.button] in
+/// the bottom right corner, a white bracket inside it.
+class _GripPainter extends CustomPainter {
+  const new();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const radius = 44.0;
+    final corner = size.bottomRight(Offset.zero);
+    final disc = Path()
+      ..moveTo(corner.dx, corner.dy)
+      ..lineTo(corner.dx - radius, corner.dy)
+      ..arcToPoint(Offset(corner.dx, corner.dy - radius), radius: const Radius.circular(radius))
+      ..close();
+    canvas.drawPath(disc, Paint()..color = OnVideoColors.button);
+    const inset = 9.0;
+    const arm = 15.0;
+    final bracket = Path()
+      ..moveTo(corner.dx - inset - arm, corner.dy - inset)
+      ..lineTo(corner.dx - inset, corner.dy - inset)
+      ..lineTo(corner.dx - inset, corner.dy - inset - arm);
+    canvas.drawPath(
+      bracket,
+      Paint()
+        ..color = OnVideoColors.foreground
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_GripPainter oldDelegate) => false;
+}
+
+/// The desktop mini window's pin (c3): the theme's primary colour while on
+/// top; grey where the desktop does not allow it (c5).
+class _PinButton extends StatelessWidget {
+  const new({required this.pinned, required this.canPin, required this.onPressed});
+
+  final bool pinned;
+  final bool canPin;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final on = pinned && canPin;
+    final button = SizedBox.square(
+      dimension: miniButtonSize,
+      child: IconButton(
+        key: const ValueKey('mini-pin'),
+        tooltip: canPin ? i18n(on ? 'mini_window_unpin' : 'mini_window_pin') : null,
+        onPressed: canPin ? onPressed : null,
+        iconSize: 20,
+        padding: EdgeInsets.zero,
+        isSelected: on,
+        style: IconButton.styleFrom(
+          backgroundColor: on ? colors.primary : OnVideoColors.button,
+          foregroundColor: on ? colors.onPrimary : OnVideoColors.foreground,
+          disabledBackgroundColor: OnVideoColors.button,
+          disabledForegroundColor: OnVideoColors.disabled,
+          fixedSize: const Size.square(miniButtonSize),
+        ),
+        icon: Icon(on ? AppIcons.pinned : AppIcons.unpinned),
+      ),
+    );
+    if (canPin) return button;
+    return Tooltip(message: i18n('mini_window_pin_unsupported'), child: button);
+  }
+}
+
+/// The audio-only room in a mini window (c8, M7): the streamer's picture and
+/// "纯音频模式", small enough for a 124 high window.
+class _MiniAudioCover extends StatelessWidget {
+  const new({required this.room, required this.voiceLive});
+
+  final LiveRoom room;
+
+  /// A07.20: a stream without a real picture, not the audio-only mode.
+  final bool voiceLive;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme.labelMedium?.emphasis.copyWith(color: OnVideoColors.foreground);
+    return Stack(
+      key: const ValueKey('mini-audio-only'),
+      fit: StackFit.expand,
+      children: [
+        const ColoredBox(color: OnVideoColors.ground),
+        if (room.cover.trim().isNotEmpty)
+          LiveNetworkImage(
+            url: room.cover,
+            placeholder: (_) => const SizedBox.shrink(),
+            error: (_) => const SizedBox.shrink(),
+          ),
+        const ColoredBox(color: OnVideoColors.coverDim),
+        Center(
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CommonAvatar(avatarUrl: room.avatar, radius: 22, fallbackName: room.nick),
+                const SizedBox(height: 8),
+                DecoratedBox(
+                  decoration: BoxDecoration(color: OnVideoColors.chip, borderRadius: BorderRadius.circular(12)),
+                  child: SizedBox(
+                    height: 24,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(AppIcons.audioOnly, size: 14, color: OnVideoColors.foreground),
+                          const SizedBox(width: 4),
+                          Text(i18n(voiceLive ? 'live_play_voice_live' : 'audio_only_mode'), style: text),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Loading, buffering, reconnecting and failure over a mini window's picture
+/// (c8): small, no buttons of their own (the surface's centre button
+/// retries). Where the surface has its centre button ([centre]), that
+/// button turns while buffering instead (B02 c2); picture-in-picture keeps
+/// the plain spinner.
+class _MiniStatusLayer extends StatelessWidget {
+  const new({required this.controller, required this.reconnect, required this.centre});
+
+  final LiveRoomController controller;
+  final ReconnectWatch reconnect;
+  final bool centre;
+
+  @override
+  Widget build(BuildContext context) => StreamBuilder<PlaybackState>(
+    stream: controller.session.states,
+    initialData: controller.session.state,
+    builder: (context, snapshot) => ListenableSelector<(MiniStatus, String)>(
+      listenable: Listenable.merge([controller, reconnect]),
+      selector: () {
+        final status = miniStatusOf(
+          stage: controller.stage,
+          playback: (snapshot.data ?? controller.session.state).status,
+          reconnecting: reconnect.reconnecting,
+        );
+        final reason = controller.stage == RoomStage.offline
+            ? offlineText(controller.room)
+            : i18n('multiview_play_failed');
+        return (status, reason);
+      },
+      builder: (context, value, _) {
+        final (status, reason) = value;
+        final style = Theme.of(context).textTheme.bodySmall
+            ?.copyWith(color: OnVideoColors.foreground, shadows: OnVideoColors.shadows);
+        const spinner = SizedBox.square(
+          dimension: 22,
+          child: CircularProgressIndicator(strokeWidth: 2.5, color: OnVideoColors.foreground),
+        );
+        return IgnorePointer(
+          child: switch (status) {
+            MiniStatus.playing || MiniStatus.paused => const SizedBox.shrink(),
+            MiniStatus.loading => const ColoredBox(
+              key: ValueKey('mini-loading'),
+              color: OnVideoColors.ground,
+              child: Center(child: spinner),
+            ),
+            MiniStatus.buffering =>
+              centre ? const SizedBox.shrink() : const Center(key: ValueKey('mini-buffering'), child: spinner),
+            MiniStatus.reconnecting => ColoredBox(
+              key: const ValueKey('mini-reconnecting'),
+              color: OnVideoColors.dim,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    spinner,
+                    const SizedBox(height: 6),
+                    Text(i18n('mini_window_reconnecting'), style: style),
+                  ],
+                ),
+              ),
+            ),
+            MiniStatus.failed => ColoredBox(
+              key: const ValueKey('mini-failed'),
+              color: OnVideoColors.dim,
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 10, left: 8, right: 8),
+                  child: Text(reason, style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+              ),
+            ),
+          },
+        );
+      },
+    ),
+  );
+}

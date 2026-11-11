@@ -1,0 +1,150 @@
+name: pure_live
+description: Pure Live, a third-party live stream aggregator (docs/specs/ENGINEERING.md). The app shell (M12) - entry, routes, home, languages, Android and Windows.
+publish_to: none
+# 3.x's version until the first v4 release (AGENTS.md: changed only when releasing).
+version: 5.6.5+5144
+
+environment:
+  sdk: ^3.13.0
+  flutter: ">=3.47.0"
+
+resolution: workspace
+
+dependencies:
+  # Opens the recording folder in the system file manager on Android (a
+  # document-folder intent, as 3.x did; M8.1).
+  android_intent_plus: ^6.1.0
+  # The live room's system media notification and media buttons while it
+  # plays in the background (3.x's engine; the Android activity is its
+  # AudioServiceActivity, which keeps the engine cached).
+  audio_service: ^0.18.19
+  # The room's audio focus (G05.1, 3.x's engine): a call pauses and resumes,
+  # a prompt lowers the volume, unplugged headphones pause. audio_service
+  # already brought it in (same version); now it is used directly.
+  audio_session: ^0.2.4
+  # mDNS discovery with 3.x devices for device sync (`_purelive-sync._tcp`).
+  bonsoir: ^7.1.6
+  # The flying danmaku's network emoticons through the app's image cache
+  # (Q02.1; live_ui's images use it too).
+  cached_network_image: ^4.0.5
+  # Network type: mobile-data notice, offline precheck, mobile-data quality.
+  connectivity_plus: ^7.3.1
+  # Streams SHA-256 over final update packages; already locked by the workspace.
+  crypto: 3.0.8
+  # The IPTV tables in live_store's database (M12.1).
+  drift: ^2.35.3
+  # Windows DPAPI and the GBK code page (no plugin needed for either).
+  ffi: ^2.2.0
+  # FFmpeg of the recorder (3.x's engine; M8's FfmpegRunner). Keep this exact:
+  # its build hook pins the native API (1.0.0: FFmpegKit 0.11.2), and the
+  # native bundle must be built for that API — 0.11.2 changed the global log
+  # and statistics callbacks' arguments under the same function names, so a
+  # 0.11.1 bundle crashes the first recording. The bundle (our FFmpeg 9.0.2
+  # build for 0.11.2, Z01.2) is chosen by `ffmpeg_kit_extended_config` in the
+  # workspace pubspec, where the plugin's build hook reads it; it is never
+  # committed.
+  ffmpeg_kit_extended_flutter: 1.0.0
+  # System file and folder pickers (IPTV import, backups, record folder);
+  # Android uses the system document picker (no all-files access).
+  file_picker: ^13.3.0
+  flutter:
+    sdk: flutter
+  # The image cache (covers, avatars, emoticons) downloading through the app
+  # proxy (Q02.1); settings: clear image cache, refresh covers.
+  flutter_cache_manager: ^3.4.5
+  # In-app web search, Bilibili web (SMS) login and Twitch's WebView transport
+  # (M12.3). Pinned to the newest release, a beta (the line 3.x used): the
+  # stable 6.1.5's Android part (1.1.3) uses getDefaultProguardFile
+  # ('proguard-android.txt'), which AGP 9 rejects; 1.2.0-beta.3 does not.
+  flutter_inappwebview: 6.2.0-beta.3
+  # Material's own words (dialogs, pickers) in Chinese and English.
+  flutter_localizations:
+    sdk: flutter
+  # State and routes (docs/specs/ENGINEERING.md §4).
+  flutter_riverpod: ^3.4.3
+  # Local, explicitly authorized screen capture and peer-to-peer LAN mirroring.
+  flutter_webrtc: 1.6.3
+  go_router: ^18.1.1
+  # The image cache's download client (IOClient over a proxied HttpClient).
+  http: ^1.6.0
+  # DLNA casting from the live room (M10).
+  live_cast: any
+  live_core: any
+  live_danmaku: any
+  live_iptv: any
+  live_media: any
+  live_net: any
+  live_player: any
+  live_record: any
+  live_store: any
+  live_ui: any
+  live_vod: any
+  # QR codes of device sync and TV sync.
+  mobile_scanner: ^7.4.2
+  # tray_manager 0.8's own types (the Mac's menu bar icon size); the version
+  # tray_manager depends on.
+  nativeapi: ^0.5.2
+  # Opens local files on Android (playlist copies, downloaded installers).
+  open_filex: ^5.0.0
+  path: ^1.9.1
+  # The data folder and 3.x's folders.
+  path_provider: ^2.1.6
+  # Whether the remembered window place is still on a display.
+  screen_retriever: ^0.3.0
+  # The system share sheet of the room menu.
+  share_plus: ^13.3.0
+  # Reads 3.x's IPTV database (pure_live_tv.db) for the import (M12.1).
+  sqlite3: ^3.8.0
+  # The Windows tray (3.x).
+  tray_manager: ^0.8.0
+  # CC's official entries open in the browser (3.x AppNavigator.toCategoryDetail).
+  url_launcher: ^6.3.2
+  # 3.x's install folders from the uninstall entries (the 3.x data import)
+  # and the Windows start-up entry.
+  win32_registry: ^3.0.3
+  # The Windows window: title bar, size and place, close, full screen (3.x).
+  window_manager: ^0.5.2
+
+dev_dependencies:
+  # The host side of `flutter drive` for the frame benchmarks (P05): it
+  # writes what integration_test/perf_test.dart reports to build/.
+  flutter_driver:
+    sdk: flutter
+  flutter_test:
+    sdk: flutter
+  # The frame benchmarks in profile mode on a phone (P05, UI_PLAN §9.4).
+  integration_test:
+    sdk: flutter
+  very_good_analysis: ^11.0.0
+
+flutter:
+  # The shell and live_ui's widgets use Material icons.
+  uses-material-design: true
+  assets:
+    # The interface languages, one file each (AppLanguage.code).
+    - assets/translations/
+    - assets/icons/icon.png
+    - assets/icons/tray_template.png
+    - assets/icons/tray_recording.png
+    # Mozilla's CA bundle for FFmpeg's OpenSSL on Android and Linux (3.x).
+    - assets/certificates/
+    # The cloud font list of the font manager (3.x).
+    - assets/fonts/fonts-manifest.json
+    # The WebDAV help page's screenshots (3.x).
+    - assets/webdav/
+    # 3.x's emoticon lists and the pictures they name, for the chat (M13.16).
+    - assets/emo/json/
+    - assets/emo/images/bilibili/
+    - assets/emo/images/douyin/
+    - assets/emo/images/douyu/
+    - assets/emo/images/huya/
+    - assets/emo/images/kuaishou/
+    # The emoji font's licence and origin (U.2k), shown on the licences page.
+    - assets/fonts/emoji/OFL.txt
+  fonts:
+    # The local interaction's gift and badge emoji (U.2k choice K4): a Noto
+    # Color Emoji subset, so they look the same everywhere and never fall to
+    # boxes on systems without a colour emoji font.
+    - family: PureLiveEmoji
+      fonts:
+        - asset: assets/fonts/emoji/NotoColorEmoji-Subset.ttf

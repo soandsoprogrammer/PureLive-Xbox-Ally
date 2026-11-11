@@ -1,0 +1,23 @@
+# G02.10 验证
+
+已完成调度、真实页面、多画面及设置回归。
+
+待原生：隔离Windows实际设置开关、单间自动进入候选、电视及多画面播放；同源Android测试包验证。每步保留实际截图和源提交，不将生成素材验证外推为所有平台和设备故障验收。
+
+
+2026-10-27最终功能候选9acb70021原生复验通过：Windows真实mpv播放本地生成视频，普通/电视a下播后切到b；多画面a/busy切成b/busy，第二格音源与零音量保留。共享设置默认关闭→开启→恢复关闭；离开播放页后会话已释放，测试进程退出。六张截图逐张查看并保存于G02.10的verify目录。此为本地原生页面验证，不冒充真实平台故障或物理电视遥控器验证。145项相关回归、27项设置与存储测试通过；完整门禁和5.4.19安装包验收继续。
+
+![native-windows-v3-multi](verify/native-windows-v3-multi.jpg)
+
+![native-windows-v3-restored](verify/native-windows-v3-restored.jpg)
+
+![native-windows-v3-settings-off](verify/native-windows-v3-settings-off.jpg)
+
+![native-windows-v3-settings-on](verify/native-windows-v3-settings-on.jpg)
+
+![native-windows-v3-single](verify/native-windows-v3-single.jpg)
+
+![native-windows-v3-tv](verify/native-windows-v3-tv.jpg)
+
+
+2026-10-28同源Windows与隔离Android模拟器已完成实际mpv换台验证，设置默认关闭并恢复；全量跨平台证据见[5.4.19验收](../../../Y-发布和运营/Y01-版本签名和发布/Y01.30-发布5.4.19关注列表自动换台/verify.md)。K90、原电视及iPhone真机未补齐，状态保留待真机。

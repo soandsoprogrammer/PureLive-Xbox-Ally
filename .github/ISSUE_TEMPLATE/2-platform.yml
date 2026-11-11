@@ -1,0 +1,183 @@
+name: 直播平台失效 / Platform broken
+description: 某个直播平台打不开、播不了、没弹幕、搜不到、分区空白、登录失败。
+title: "[平台] "
+labels: ["平台失效", "待分类"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎反馈已有功能与公开回放的bug。新功能请使用功能需求表单，无需先提交PR；详见[维护方针](https://github.com/wzgrx/PureLive/blob/master/MAINTENANCE.md)。
+  - type: markdown
+    attributes:
+      value: |
+        平台的接口时常变化，这类问题修得最快的前提是：**直播间链接**、**应用里的提示原文**和**日志**。带红色星号的都必须填写；信息不全会标“需要补充信息”，14 天没有补充会关闭。
+
+        - 一个 issue 只写一个平台。
+        - 海外平台在中国大陆一般要代理（设置 → 自定义网络代理），请先确认网络能打开平台官网。
+        - **不要**贴 Cookie、令牌、账号。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经在 [Issues](https://github.com/wzgrx/PureLive/issues?q=is%3Aissue) 里搜索过这个平台（包括已关闭的），没有相同的问题
+          required: true
+        - label: 我用的是[最新版本](https://github.com/wzgrx/PureLive/releases/latest)，问题仍然存在
+          required: true
+        - label: 这个 issue 只写了一个平台
+          required: true
+        - label: 我贴出的内容里没有 Cookie、令牌、账号密码等敏感信息
+          required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台
+      options:
+        - 哔哩哔哩
+        - 斗鱼
+        - 虎牙
+        - 抖音
+        - 快手
+        - YY
+        - 网易CC
+        - AcFun 直播
+        - 猫耳 FM
+        - 映客
+        - 克拉克拉
+        - 小红书
+        - 微博直播
+        - 京东直播
+        - 酷狗直播
+        - 百度直播
+        - 六间房直播
+        - LOOK 直播
+        - Twitch
+        - SOOP
+        - YouTube Live
+        - TikTok LIVE
+        - Kick
+        - niconico
+        - SHOWROOM
+        - TwitCasting
+        - CHZZK
+        - PandaTV
+        - Picarto
+        - Bigo Live
+        - LiveMe
+        - FC2 Live
+        - Steam Broadcasts
+        - 17LIVE
+        - 网络电视（IPTV）
+        - 其他（写在下面）
+    validations:
+      required: true
+  - type: dropdown
+    id: broken
+    attributes:
+      label: 哪里不行
+      multiple: true
+      options:
+        - 打不开直播间或播放失败
+        - 能播但卡顿、断流、花屏
+        - 清晰度或线路不对
+        - 没有弹幕或弹幕断开
+        - 搜索不到
+        - 分区或推荐列表空白
+        - 关注里的开播状态不对
+        - 登录失败或登录后无效
+        - 礼物、醒目留言不显示
+        - 录制失败
+    validations:
+      required: true
+  - type: input
+    id: room
+    attributes:
+      label: 直播间链接
+      description: 出问题的直播间；搜索、分区问题写搜索词或分区名。
+      placeholder: https://www.douyu.com/9999
+    validations:
+      required: true
+  - type: textarea
+    id: message
+    attributes:
+      label: 应用里的提示原文
+      description: 例如“平台拒绝了请求”“需要登录才能观看”；没有提示就写“没有提示，一直转圈”这样的现象。
+    validations:
+      required: true
+  - type: dropdown
+    id: official
+    attributes:
+      label: 在平台官网或官方 App 里能正常看吗
+      options:
+        - 能正常看
+        - 也不能看
+        - 没有试
+    validations:
+      required: true
+  - type: dropdown
+    id: login
+    attributes:
+      label: 这个平台的登录状态
+      options:
+        - 没有登录
+        - 用应用里的官方登录登录了
+        - 用 Cookie 登录了
+        - 平台不支持登录
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: 网络
+      options:
+        - 中国大陆，直连
+        - 中国大陆，用了代理或 VPN
+        - 中国大陆以外
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本
+      description: 在“设置 → 关于”里看。
+      placeholder: 5.4.4（5108）
+    validations:
+      required: true
+  - type: dropdown
+    id: client
+    attributes:
+      label: 使用的端
+      options:
+        - Android 手机
+        - Android 平板或折叠屏
+        - Android 电视或盒子
+        - Windows
+        - Linux
+        - macOS
+        - iPhone
+        - iPad
+    validations:
+      required: true
+  - type: input
+    id: since
+    attributes:
+      label: 从什么时候开始
+      description: 大概的日期；以前一直正常、突然不行的，请写上最后一次正常的时间。
+      placeholder: 2026-10-18 起；10-17 还正常
+    validations:
+      required: false
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志
+      description: |
+        设置 → 日志管理 →“记录等级”选“调试”→ 重新打开出问题的直播间（或重新搜索、登录）→ 回到日志管理点“导出/分享”。日志较长时作为附件上传。
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: 截图和其他信息
+    validations:
+      required: false

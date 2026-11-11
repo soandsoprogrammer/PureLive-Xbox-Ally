@@ -1,0 +1,2123 @@
+// The room's mini windows of U.2j (docs/A-界面设计/A07-直播间界面/A07.8-小窗/README.md): the
+// in-app floating window, Android's picture-in-picture and the desktop mini
+// window share one player and one set of buttons.
+import 'dart:async';
+import 'dart:ui';
+
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
+import 'package:live_core/live_core.dart';
+import 'package:live_danmaku/live_danmaku.dart';
+import 'package:live_media/live_media.dart';
+import 'package:live_player/live_player.dart';
+import 'package:live_store/live_store.dart';
+import 'package:live_ui/live_ui.dart';
+import 'package:pure_live/app/desktop/desktop_window.dart';
+import 'package:pure_live/app/desktop/mini_window.dart';
+import 'package:pure_live/app/services.dart';
+import 'package:pure_live/app/vod.dart';
+import 'package:pure_live/features/live_play/live_play_page.dart';
+import 'package:pure_live/features/live_play/logic/background_playback.dart';
+import 'package:pure_live/features/live_play/logic/mini_window.dart';
+import 'package:pure_live/features/live_play/logic/room_controller.dart';
+import 'package:pure_live/features/live_play/logic/room_orientation.dart';
+import 'package:pure_live/features/live_play/logic/room_runtime.dart';
+import 'package:pure_live/features/live_play/mini/floating_window.dart';
+import 'package:pure_live/features/live_play/mini/mini_player.dart';
+import 'package:pure_live/features/live_play/player/player_view.dart';
+import 'package:pure_live/platform/overlay_window.dart';
+import 'package:pure_live/platform/system_gestures.dart';
+import 'package:pure_live/routes/app_navigator.dart';
+import 'package:pure_live/routes/app_router.dart';
+import 'package:pure_live/routes/route_args.dart';
+import 'package:pure_live/routes/route_observer.dart';
+import 'package:pure_live/routes/route_path.dart';
+import 'package:pure_live/shared/danmaku/danmaku_overlay.dart';
+import 'package:pure_live/shared/danmaku/emotes.dart';
+import 'package:pure_live/shared/rooms/archive/archive_recording.dart';
+
+import '../../support.dart';
+import '../replay/replay_test_support.dart' as replay;
+import 'live_play_support.dart';
+
+/// A platform whose detail can be held back ([hold]) to see the room load.
+class _GatedSite extends FakeSite {
+  new(super.room);
+
+  Completer<void>? hold;
+
+  @override
+  Future<LiveRoom> getRoomDetail({required String roomId}) async {
+    await hold?.future;
+    return await super.getRoomDetail(roomId: roomId);
+  }
+}
+
+final class _App {
+  new(this.services, this.site, this.engines, this.toasts, this.router, this.danmakus);
+
+  final AppServices services;
+  final FakeSite site;
+  final List<FakeEngine> engines;
+  final List<String> toasts;
+  final GoRouter router;
+  final List<FakeDanmaku> danmakus;
+
+  FakeEngine get engine => engines.last;
+
+  FakeDanmaku get danmaku => danmakus.last;
+}
+
+/// "小窗用系统画中画" for the next [_app] (the picture-in-picture tests).
+bool _systemPip = false;
+
+/// The app's shape: a home page, the room and multi-view, with the floating
+/// window over them (as `PureLiveApp` puts it).
+Future<_App> _app(
+  WidgetTester tester, {
+  Size size = const Size(393, 852),
+  bool floatPlay = true,
+  FakeSite? site,
+  FakeEngine Function()? createEngine,
+  List<Override> overrides = const [],
+}) async {
+  tester.view
+    ..physicalSize = size
+    ..devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  RoomOrientationChoice.clearSession();
+  final services = (await tester.runAsync(testServices))!;
+  await tester.runAsync(loadStrings);
+  await tester.runAsync(() => services.store.settings.set(Settings.floatPlay, floatPlay));
+  await tester.runAsync(() => services.store.settings.set(Settings.useSystemPip, _systemPip));
+  final engines = <FakeEngine>[];
+  final danmakus = <FakeDanmaku>[];
+  final toasts = <String>[];
+  final previousToast = AppNavigator.toast;
+  AppNavigator.toast = toasts.add;
+  addTearDown(() => AppNavigator.toast = previousToast);
+  final platform = site ?? FakeSite(liveRoom(startedAt: DateTime.now().subtract(const Duration(minutes: 30))));
+  final router = GoRouter(
+    initialLocation: RoutePath.kInitial,
+    observers: [liveRouteObserver],
+    routes: [
+      GoRoute(
+        path: RoutePath.kInitial,
+        pageBuilder: (context, state) => MaterialPage<Object?>(
+          key: state.pageKey,
+          name: RoutePath.kInitial,
+          child: const Scaffold(body: Center(child: Text('首页'))),
+        ),
+      ),
+      GoRoute(
+        path: RoutePath.kLivePlay,
+        pageBuilder: (context, state) => liveRoomPage(
+          key: state.pageKey,
+          arguments: state.extra,
+          child: LivePlayPage(route: RouteArgs(RoutePath.kLivePlay, arguments: state.extra)),
+        ),
+      ),
+      GoRoute(
+        path: RoutePath.kMultiview,
+        pageBuilder: (context, state) => MaterialPage<Object?>(
+          key: state.pageKey,
+          name: RoutePath.kMultiview,
+          child: const Scaffold(body: Text('多画面')),
+        ),
+      ),
+    ],
+  );
+  AppNavigator.router = router;
+  addTearDown(() => AppNavigator.router = null);
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        appServicesProvider.overrideWithValue(services),
+        sitesProvider.overrideWithValue(SiteRegistry({SiteIds.bilibili: () => platform})),
+        danmakuProvider.overrideWithValue(
+          DanmakuRegistry({
+            SiteIds.bilibili: () {
+              final danmaku = FakeDanmaku();
+              danmakus.add(danmaku);
+              return danmaku;
+            },
+          }),
+        ),
+        playbackSessionFactoryProvider.overrideWithValue(({config}) {
+          final engine = createEngine?.call() ?? FakeEngine();
+          engines.add(engine);
+          return fakeSession(engine);
+        }),
+        ...overrides,
+      ],
+      child: MaterialApp.router(
+        routerConfig: router,
+        theme: const LiveTheme().light,
+        builder: (context, child) => Stack(
+          fit: StackFit.expand,
+          children: [
+            child!,
+            const Positioned.fill(child: FloatingRoomLayer()),
+          ],
+        ),
+      ),
+    ),
+  );
+  await _settle(tester);
+  return _App(services, platform, engines, toasts, router, danmakus);
+}
+
+Future<void> _settle(WidgetTester tester, {int rounds = 5}) async {
+  for (var i = 0; i < rounds; i++) {
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+}
+
+Future<void> _openRoom(WidgetTester tester, [LiveRoom? room]) async {
+  await AppNavigator.toLiveRoomDetail(
+    liveRoom: room ?? LiveRoom(platform: SiteIds.bilibili, roomId: '6', nick: '主播'),
+  );
+  await tester.pump();
+  await tester.pump(const Duration(seconds: 1));
+  await _settle(tester);
+}
+
+Future<void> _leaveRoom(WidgetTester tester, _App app) async {
+  app.router.pop();
+  await tester.pump();
+  await tester.pump(const Duration(seconds: 1));
+  await _settle(tester);
+  await _glided(tester);
+}
+
+/// Lets the window's glide (A07.25 M1, M8) finish: a ticker's first frame is
+/// its start, so one long frame and one to draw the end.
+Future<void> _glided(WidgetTester tester) async {
+  await tester.pump(const Duration(seconds: 1));
+  await tester.pump();
+}
+
+Future<void> _close(WidgetTester tester, _App app) async {
+  await tester.pumpWidget(const SizedBox.shrink());
+  await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+  await tester.pump(const Duration(seconds: 5));
+  await tester.runAsync(app.services.close);
+}
+
+final Finder _window = find.byKey(const ValueKey('floating-window'));
+
+Finder _inWindow(Finder finder) => find.descendant(of: _window, matching: finder);
+
+Finder _inKey(String key, Finder finder) => find.descendant(of: find.byKey(ValueKey(key)), matching: finder);
+
+double _opacityOf(WidgetTester tester, String key) => tester
+    .widget<AnimatedOpacity>(find.ancestor(of: find.byKey(ValueKey(key)), matching: find.byType(AnimatedOpacity)).first)
+    .opacity;
+
+/// A window system that does what it is asked (the desktop mini window).
+final class _FakeHost implements MiniWindowHost {
+  final List<String> calls = [];
+  @override
+  bool canPin = true;
+
+  @override
+  Future<void> enter({required double aspectRatio, required bool onTop}) async =>
+      calls.add('enter ${aspectRatio.toStringAsFixed(2)} onTop=$onTop');
+
+  @override
+  Future<void> exit() async => calls.add('exit');
+
+  @override
+  Future<void> setOnTop({required bool onTop}) async => calls.add('onTop=$onTop');
+
+  @override
+  Future<void> hide() async => calls.add('hide');
+
+  @override
+  Future<void> minimize() async => calls.add('minimize');
+
+  @override
+  Future<void> startDragging() async => calls.add('drag');
+
+  @override
+  Future<void> saveGeometry() async => calls.add('save');
+}
+
+void main() {
+  testWidgets('issue 194: keep the engine-owning notification until native video retirement completes', (tester) async {
+    final gate = Completer<void>();
+    final engine = FakeEngine()..onDispose = () => gate.future;
+    final app = await _app(tester, createEngine: () => engine);
+    await _openRoom(tester);
+    await _leaveRoom(tester, app);
+    final runtime = FloatingRoom.instance.runtime!;
+    final events = <String>[];
+    RoomMediaNotification.debugLog = events.add;
+    addTearDown(() => RoomMediaNotification.debugLog = null);
+    final retirement = runtime.retireTask();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await _settle(tester);
+    await tester.pump(const Duration(seconds: 5));
+    await _settle(tester);
+    final hiddenBeforeVideoReleased = events.contains('hide');
+    gate.complete();
+    await tester.pump();
+    await _settle(tester);
+    await retirement;
+    expect(hiddenBeforeVideoReleased, isFalse, reason: 'audio_service may destroy the Flutter engine at idle');
+    expect(engine.disposed, isTrue);
+    expect(events, contains('hide'), reason: 'the notification must still be removed after actual retirement');
+    await _close(tester, app);
+  });
+
+  testWidgets('replay floats and restores the original session with pause, position and rate', (tester) async {
+    final app = await _app(tester, overrides: [bilibiliReplayProvider.overrideWithValue(replay.FakeBiliReplay())]);
+    await _openRoom(tester);
+    final controller = FloatingRoomProbe.controllerOf(tester);
+    final session = controller.session;
+    final entering = controller.playArchive(
+      ArchiveSelection(
+        recording: const ArchiveRecording(
+          replay.archive,
+          title: 'Replay',
+          cover: '',
+          date: null,
+          duration: Duration(hours: 5),
+        ),
+        room: controller.room,
+      ),
+    );
+    await _settle(tester, rounds: 10);
+    await entering;
+    await _settle(tester);
+    await tester.runAsync(() async {
+      await controller.archive!.setRate(2);
+      app.engine.emit(const EnginePosition(Duration(seconds: 42)));
+      await controller.session.pause();
+    });
+    await _settle(tester);
+    expect(app.engines, hasLength(1));
+    expect(app.engine.opens, hasLength(2));
+    await _leaveRoom(tester, app);
+    expect(FloatingRoom.instance.runtime?.session, same(session));
+    expect(FloatingRoom.instance.runtime?.controller.archive?.rate, 2);
+    expect(session.state.status, PlaybackStatus.paused);
+    await _openRoom(tester);
+    final restored = FloatingRoomProbe.controllerOf(tester);
+    expect(restored, same(controller));
+    expect(restored.session, same(session));
+    expect(restored.archive?.rate, 2);
+    expect(restored.session.state.status, PlaybackStatus.paused);
+    expect(restored.session.state.position, const Duration(seconds: 42));
+    expect(app.engines, hasLength(1));
+    expect(app.engine.opens, hasLength(2));
+    expect(tester.takeException(), isNull);
+    await _close(tester, app);
+  });
+  tearDown(() async {
+    PictureInPicture.active.value = false;
+    PictureInPicture.debugAndroid = null;
+    DesktopWindow.miniHost = null;
+    DesktopWindow.mini.value = false;
+  });
+
+  group('rules', () {
+    test('c6: the in-app window is the short side × 0.56 within 220–360; portrait pictures 1.2 × high', () {
+      expect(inAppMiniSize(screen: const Size(393, 852), aspectRatio: 16 / 9).width, closeTo(220.08, 0.01));
+      expect(inAppMiniSize(screen: const Size(360, 640), aspectRatio: 16 / 9), const Size(220, 220 / (16 / 9)));
+      expect(inAppMiniSize(screen: const Size(852, 393), aspectRatio: 16 / 9).width, closeTo(220.08, 0.01));
+      expect(inAppMiniSize(screen: const Size(1280, 800), aspectRatio: 16 / 9), const Size(360, 202.5));
+      expect(inAppMiniSize(screen: const Size(1920, 1080), aspectRatio: 16 / 9).width, 360);
+      // 3.x: a 9:16 picture on a phone is 149 × 264.
+      final portrait = inAppMiniSize(screen: const Size(360, 640), aspectRatio: 9 / 16);
+      expect(portrait.height, 264);
+      expect(portrait.width, closeTo(148.5, 0.01));
+    });
+
+    test('A07.22: "小窗大小" is 0.8, 1 and 1.25 × c6; medium unresized is c6 exactly', () {
+      const phone = Size(393, 852);
+      for (final ratio in [16 / 9, 9 / 16, 4 / 3]) {
+        expect(
+          inAppMiniWindowSize(screen: phone, aspectRatio: ratio),
+          inAppMiniSize(screen: phone, aspectRatio: ratio),
+          reason: '$ratio',
+        );
+      }
+      expect(inAppMiniWindowSize(screen: phone, aspectRatio: 16 / 9, size: 'small').width, closeTo(176.06, 0.01));
+      expect(inAppMiniWindowSize(screen: phone, aspectRatio: 16 / 9, size: 'large').width, closeTo(275.1, 0.01));
+      expect(inAppMiniWindowSize(screen: const Size(1280, 800), aspectRatio: 16 / 9, size: 'large').width, 450);
+      // A portrait picture's window keeps 120 at least.
+      expect(inAppMiniWindowSize(screen: const Size(360, 640), aspectRatio: 9 / 16, size: 'small').width, 120);
+      expect(
+        inAppMiniWindowSize(screen: phone, aspectRatio: 16 / 9, size: 'other'),
+        inAppMiniSize(screen: phone, aspectRatio: 16 / 9),
+      );
+    });
+
+    test('A07.24: a resize keeps the long side 160 (portrait 120 wide) and goes, stepless, up to the full width', () {
+      const phone = Size(393, 852);
+      // 220 wide on a phone: up to the phone's width (A07.22 stopped at
+      // 393 × 0.9), down to 160, any size between.
+      expect(inAppMiniScale(screen: phone, aspectRatio: 16 / 9, scale: 3), closeTo(393 / 220.08, 0.0001));
+      expect(inAppMiniScale(screen: phone, aspectRatio: 16 / 9, scale: 0.1), closeTo(160 / 220.08, 0.0001));
+      expect(inAppMiniScale(screen: phone, aspectRatio: 16 / 9, scale: 1.2), 1.2);
+      expect(inAppMiniScale(screen: phone, aspectRatio: 16 / 9, scale: 1.537), 1.537);
+      expect(inAppMiniWindowSize(screen: phone, aspectRatio: 16 / 9, scale: 1.5).width, closeTo(330.12, 0.01));
+      final room = inAppMiniRoom(area: phone, topClearance: 40, bottomClearance: 120);
+      expect(room, const Size(393, 852 - 40 - 120));
+      expect(inAppMiniWindowSize(screen: phone, aspectRatio: 16 / 9, scale: 9, room: room).width, closeTo(393, 0.001));
+      // 9:16 is 264 high; the smallest is 120 wide (213 high); the largest
+      // as high as the room.
+      final narrow = inAppMiniWindowSize(screen: const Size(360, 640), aspectRatio: 9 / 16, scale: 0.1);
+      expect(narrow.width, closeTo(120, 0.001));
+      expect(narrow.height, closeTo(213.33, 0.01));
+      expect(inAppMiniWindowSize(screen: phone, aspectRatio: 9 / 16, scale: 9, room: room).height, closeTo(692, 0.001));
+      // A short room (a landscape phone's home) caps it; the size itself is
+      // never cut, so 1 stays 1.
+      const short = Size(820, 150);
+      expect(
+        inAppMiniWindowSize(screen: const Size(852, 393), aspectRatio: 16 / 9, scale: 2, room: short).height,
+        closeTo(150, 0.001),
+      );
+      expect(inAppMiniScale(screen: phone, aspectRatio: 16 / 9, scale: 3, room: const Size(100, 50)), 1);
+      expect(inAppMiniScale(screen: phone, aspectRatio: 16 / 9, scale: 1, size: 'small'), 1);
+      expect(inAppMiniScale(screen: phone, aspectRatio: 16 / 9, scale: double.nan), 1);
+    });
+
+    test('A07.24: as wide as the area it keeps no side margin; tucked into a side, 40 of it shows', () {
+      const area = Size(393, 852);
+      const full = Size(393, 221);
+      expect(inAppMiniOffset(area: area, window: full, bottomClearance: 16, topClearance: 40).dx, 0);
+      const almost = Size(380, 214);
+      final left = inAppMiniOffset(
+        area: area,
+        window: almost,
+        bottomClearance: 16,
+        topClearance: 40,
+        dragged: const Offset(-30, 300),
+      );
+      expect(left.dx, 0);
+      expect(
+        inAppMiniOffset(
+          area: area,
+          window: almost,
+          bottomClearance: 16,
+          topClearance: 40,
+          dragged: const Offset(90, 300),
+        ).dx,
+        13,
+      );
+      const window = Size(220, 124);
+      expect(
+        inAppMiniOffset(area: area, window: window, bottomClearance: 16, topClearance: 40, dock: MiniDock.left).dx,
+        40 - 220,
+      );
+      expect(
+        inAppMiniOffset(area: area, window: window, bottomClearance: 16, topClearance: 40, dock: MiniDock.right).dx,
+        393 - 40,
+      );
+      // While a finger moves it, it may go past a side, 40 kept on screen.
+      expect(
+        inAppMiniDragOffset(
+          area: area,
+          window: window,
+          wanted: const Offset(-500, 300),
+          topClearance: 40,
+          bottomClearance: 16,
+        ),
+        const Offset(40 - 220, 300),
+      );
+      expect(
+        inAppMiniDragOffset(
+          area: area,
+          window: window,
+          wanted: const Offset(900, 2000),
+          topClearance: 40,
+          bottomClearance: 16,
+        ),
+        const Offset(393 - 40, 852 - 16 - 124),
+      );
+    });
+
+    test('A07.25 c5, c6: a fifth of a tucked window shows, at least 56 and 32 past the back strip; '
+        'its middle is kept from back; after a restart it opens untucked', () {
+      expect(inAppMiniPeekFor(gestureInset: 0, width: 220), 56);
+      expect(inAppMiniPeekFor(gestureInset: 0, width: 393), closeTo(78.6, 0.01));
+      expect(inAppMiniPeekFor(gestureInset: 30, width: 220), 62);
+      const tall = Rect.fromLTWH(-200, 100, 249, 442);
+      expect(inAppMiniExclusion(tall), const Rect.fromLTWH(-200, 221, 249, 200));
+      const short = Rect.fromLTWH(337, 400, 220, 124);
+      expect(inAppMiniExclusion(short), short);
+      const area = Size(393, 852);
+      expect(inAppMiniUntucked(dock: MiniDock.left, top: 300, area: area), const Offset(0, 300));
+      expect(inAppMiniUntucked(dock: MiniDock.right, top: 300, area: area), const Offset(393, 300));
+    });
+
+    test('A07.24: released, it carries on with the fling, then goes to the nearer side or tucks into one', () {
+      const area = Size(393, 852);
+      ({Offset offset, MiniDock? dock}) settle(Rect window, Offset velocity) =>
+          inAppMiniSettle(area: area, window: window, velocity: velocity, topClearance: 40, bottomClearance: 16);
+      // Let go a little left of the middle: to the left side, same height.
+      var settled = settle(const Rect.fromLTWH(60, 300, 220, 124), Offset.zero);
+      expect(settled, (offset: const Offset(16, 300), dock: null));
+      // A fling to the right carries it over the middle: the right side,
+      // 0.18 s of the speed lower down.
+      settled = settle(const Rect.fromLTWH(60, 300, 220, 124), const Offset(800, 500));
+      expect(settled, (offset: const Offset(393 - 16 - 220, 390), dock: null));
+      // More than half past the left edge: tucked in there.
+      settled = settle(const Rect.fromLTWH(-120, 300, 220, 124), Offset.zero);
+      expect(settled, (offset: const Offset(40 - 220, 300), dock: MiniDock.left));
+      // A hard fling to the right from the middle tucks it into the right.
+      settled = settle(const Rect.fromLTWH(150, 300, 220, 124), const Offset(2000, 0));
+      expect(settled.dock, MiniDock.right);
+      // As wide as the area: it stays in the middle.
+      settled = settle(const Rect.fromLTWH(0, 300, 393, 221), const Offset(300, 0));
+      expect(settled, (offset: const Offset(0, 300 + 0.18 * 0), dock: null));
+    });
+
+    test('A07.25 c6: the place kept across restarts is a fraction of the screen, or a side and a height', () {
+      const area = Size(400, 800);
+      expect(encodeMiniPlacement(offset: null, dock: null, area: area), '', reason: 'the corner');
+      expect(encodeMiniPlacement(offset: const Offset(100, 200), dock: null, area: area), '0.2500,0.2500');
+      expect(encodeMiniPlacement(offset: const Offset(-180, 400), dock: MiniDock.left, area: area), 'left,0.5000');
+      expect(decodeMiniPlacement('0.2500,0.2500', const Size(800, 400)), (offset: const Offset(200, 100), dock: null));
+      expect(decodeMiniPlacement('right,0.5000', area), (offset: const Offset(0, 400), dock: MiniDock.right));
+      for (final broken in ['', 'x', '1,2,3', 'up,0.5', '0.1,nope']) {
+        expect(decodeMiniPlacement(broken, area), isNull, reason: broken);
+      }
+    });
+
+    test('A07.22: the grip on the bottom corner towards the middle; outwards grows; the far top corner stays', () {
+      const area = Size(393, 852);
+      const right = Rect.fromLTWH(157, 632, 220, 124);
+      expect(inAppMiniGripCorner(window: right, area: area), MiniGripCorner.bottomLeft);
+      expect(inAppMiniGripCorner(window: right.shift(const Offset(-140, 0)), area: area), MiniGripCorner.bottomRight);
+      // Leftwards on a left grip grows, rightwards shrinks, the picture's
+      // shape kept; up does not count: up and to the left (towards the
+      // middle, from the bottom-right corner) grows it. A07.25 c2: down
+      // grows it too when it went further that way.
+      expect(
+        inAppMiniGripExtent(from: right.size, corner: MiniGripCorner.bottomLeft, moved: const Offset(-50, 4)),
+        270,
+      );
+      expect(inAppMiniGripExtent(from: right.size, corner: MiniGripCorner.bottomLeft, moved: const Offset(30, 0)), 190);
+      expect(
+        inAppMiniGripExtent(from: right.size, corner: MiniGripCorner.bottomLeft, moved: const Offset(-40, -60)),
+        260,
+      );
+      expect(
+        inAppMiniGripExtent(from: right.size, corner: MiniGripCorner.bottomRight, moved: const Offset(5, 31)),
+        closeTo(220 + 31 * 220 / 124, 0.001),
+      );
+      expect(
+        inAppMiniGripExtent(from: right.size, corner: MiniGripCorner.bottomLeft, moved: const Offset(8, 40)),
+        closeTo(220 + 40 * 220 / 124, 0.001),
+        reason: 'against the left edge: straight down grows it',
+      );
+      const portrait = Size(149, 264);
+      expect(
+        inAppMiniGripExtent(from: portrait, corner: MiniGripCorner.bottomRight, moved: const Offset(20, 0)),
+        closeTo(264 + 20 * 264 / 149, 0.001),
+      );
+      expect(
+        inAppMiniResizedOffset(from: right, size: const Size(300, 169), anchor: MiniResizeAnchor.topRight),
+        const Offset(77, 632),
+      );
+      expect(
+        inAppMiniResizedOffset(from: right, size: const Size(300, 169), anchor: MiniResizeAnchor.topLeft),
+        right.topLeft,
+      );
+      expect(
+        inAppMiniResizedOffset(from: right, size: const Size(330, 186), anchor: MiniResizeAnchor.centre),
+        right.center - const Offset(165, 93),
+      );
+    });
+
+    test('c6: bottom-right, above the home bar on narrow home pages, 16 from the edges; kept on screen', () {
+      expect(inAppMiniBottomClearance(route: RoutePath.kInitial, width: 393, safeBottom: 24), 24 + 80 + 16);
+      expect(inAppMiniBottomClearance(route: RoutePath.kInitial, width: 852, safeBottom: 0), 16);
+      expect(inAppMiniBottomClearance(route: RoutePath.kSettings, width: 393, safeBottom: 0), 16);
+      const window = Size(220, 124);
+      expect(
+        inAppMiniOffset(area: const Size(393, 852), window: window, bottomClearance: 96, topClearance: 40),
+        const Offset(393 - 16 - 220, 852 - 96 - 124),
+      );
+      // Dragged out of a window that then shrank: back inside.
+      expect(
+        inAppMiniOffset(
+          area: const Size(852, 393),
+          window: window,
+          bottomClearance: 16,
+          topClearance: 16,
+          dragged: const Offset(700, 800),
+        ),
+        const Offset(852 - 16 - 220, 393 - 16 - 124),
+      );
+      expect(
+        inAppMiniOffset(
+          area: const Size(852, 393),
+          window: window,
+          bottomClearance: 16,
+          topClearance: 16,
+          dragged: const Offset(-50, -50),
+        ),
+        const Offset(16, 16),
+      );
+    });
+
+    test('c7: the danmaku keeps 10 or more with automatic scaling, three lanes in a 220 window', () {
+      final phone = CompactDanmakuMetrics.resolve(width: 220, autoScale: true, fontSize: 12, speed: 90);
+      expect(phone.fontSize, 10, reason: '3.x: 12 × 0.65 = 7.8');
+      expect((124 * 0.5 / phone.laneHeight).floor(), 3);
+      // D03.3 c3: wider than 350 they grow with the window (upstream
+      // b2cca41c7; 3.x stopped at 1×): 360 wide is 12 × 360 / 350.
+      expect(
+        CompactDanmakuMetrics.resolve(width: 360, autoScale: true, fontSize: 12, speed: 90).fontSize,
+        closeTo(12 * 360 / 350, 0.001),
+      );
+      // The user's own smaller size stays.
+      expect(CompactDanmakuMetrics.resolve(width: 220, autoScale: true, fontSize: 8, speed: 90).fontSize, 8);
+      expect(CompactDanmakuMetrics.resolve(width: 220, autoScale: false, fontSize: 12, speed: 90).fontSize, 12);
+      expect(CompactDanmakuMetrics.resolve(width: 220, autoScale: true, fontSize: 12, speed: 90).speed, 90 * 0.65);
+    });
+
+    test('D03.3 c3: a window wider than 350 enlarges them up to twice the settings; lanes up to 88', () {
+      final half = CompactDanmakuMetrics.resolve(width: 700, autoScale: true, fontSize: 12, speed: 90);
+      expect(half.fontSize, 24);
+      expect(half.speed, 180);
+      expect(half.laneHeight, closeTo(24 * 1.8, 0.001));
+      final wide = CompactDanmakuMetrics.resolve(width: 1000, autoScale: true, fontSize: 12, speed: 90);
+      expect((wide.fontSize, wide.speed), (24, 180), reason: 'at most twice');
+      expect(CompactDanmakuMetrics.maxScale, 2);
+      // The largest setting at twice: 48, its lane 86.4; the lane stops at 88.
+      final largest = CompactDanmakuMetrics.resolve(width: 1000, autoScale: true, fontSize: 24, speed: 90);
+      expect(largest.fontSize, 48);
+      expect(largest.laneHeight, closeTo(48 * 1.8, 0.001));
+      expect(CompactDanmakuMetrics.resolve(width: 1000, autoScale: true, fontSize: 30, speed: 90).laneHeight, 88);
+      // Without automatic scaling nothing changes.
+      final fixed = CompactDanmakuMetrics.resolve(width: 1000, autoScale: false, fontSize: 12, speed: 90);
+      expect((fixed.fontSize, fixed.speed), (12, 90));
+    });
+
+    test('the danmaku frame rate: 30, 60 or the display; a manual rate stays', () {
+      int fps(String mode, {bool automatic = true}) =>
+          compactDanmakuFps(automatic: automatic, configured: 45, mode: mode, maxRefreshRate: 120);
+      expect(fps('powerSaving'), 30);
+      expect(fps('balanced'), 60);
+      expect(fps('performance'), 120);
+      expect(fps('performance', automatic: false), 45);
+    });
+
+    test('c8: the status a mini window shows', () {
+      MiniStatus of(RoomStage stage, PlaybackStatus playback, {bool reconnecting = false}) =>
+          miniStatusOf(stage: stage, playback: playback, reconnecting: reconnecting);
+      expect(of(RoomStage.loading, PlaybackStatus.idle), MiniStatus.loading);
+      expect(of(RoomStage.playing, PlaybackStatus.opening), MiniStatus.loading);
+      expect(of(RoomStage.playing, PlaybackStatus.playing), MiniStatus.playing);
+      expect(of(RoomStage.playing, PlaybackStatus.paused), MiniStatus.paused);
+      expect(of(RoomStage.playing, PlaybackStatus.buffering), MiniStatus.buffering);
+      expect(of(RoomStage.playing, PlaybackStatus.buffering, reconnecting: true), MiniStatus.reconnecting);
+      expect(of(RoomStage.playing, PlaybackStatus.error, reconnecting: true), MiniStatus.failed);
+      expect(of(RoomStage.offline, PlaybackStatus.idle), MiniStatus.failed);
+      expect(of(RoomStage.unplayable, PlaybackStatus.idle), MiniStatus.failed);
+    });
+
+    test('appendix A 8: only a playing room floats, not on purpose, not under another room', () {
+      bool float({
+        bool enabled = true,
+        RoomStage stage = RoomStage.playing,
+        bool suppressed = false,
+        String top = '/home',
+      }) => shouldFloatOnLeave(enabled: enabled, stage: stage, suppressed: suppressed, topRoute: top);
+      expect(float(), isTrue);
+      expect(float(enabled: false), isFalse);
+      expect(float(stage: RoomStage.failed), isFalse);
+      expect(float(stage: RoomStage.offline), isFalse);
+      expect(float(suppressed: true), isFalse);
+      expect(float(top: RoutePath.kLivePlay), isFalse);
+      expect(float(top: RoutePath.kMultiview), isFalse);
+    });
+
+    test('J1: leaving enters picture-in-picture only while the picture plays on top', () {
+      bool auto({
+        bool enabled = true,
+        bool onTop = true,
+        PlaybackStatus status = PlaybackStatus.playing,
+        bool audioOnly = false,
+        RoomStage stage = RoomStage.playing,
+      }) => shouldAutoEnterPip(enabled: enabled, onTop: onTop, stage: stage, status: status, audioOnly: audioOnly);
+      expect(auto(), isTrue);
+      expect(auto(enabled: false), isFalse, reason: 'off by default');
+      expect(auto(onTop: false), isFalse);
+      expect(auto(status: PlaybackStatus.paused), isFalse);
+      expect(auto(audioOnly: true), isFalse);
+      expect(auto(stage: RoomStage.offline), isFalse);
+    });
+
+    test('the desktop mini window: 3.x sizes, bottom-right 20 from the edges, remembered place kept on screen', () {
+      expect(miniWindowSize(16 / 9), const Size(360, 202.5));
+      expect(miniWindowSize(9 / 16), const Size(380 * 9 / 16, 380));
+      expect(miniWindowSize(1), const Size(280, 280));
+      const work = Rect.fromLTWH(0, 0, 1280, 752);
+      expect(
+        resolveMiniWindowBounds(defaultSize: const Size(360, 202.5), primaryWorkArea: work, workAreas: [work]),
+        const Rect.fromLTWH(1280 - 20 - 360, 752 - 20 - 202.5, 360, 202.5),
+      );
+      // A monitor that is gone: back on the one there is.
+      expect(
+        resolveMiniWindowBounds(
+          defaultSize: const Size(360, 202.5),
+          primaryWorkArea: work,
+          workAreas: [work],
+          saved: const Rect.fromLTWH(3000, 100, 400, 225),
+        ),
+        const Rect.fromLTWH(1280 - 400, 100, 400, 225),
+      );
+    });
+
+    test("text only leaves the platform's picture codes out", () {
+      expect(withoutEmoteCodes('好耶[doge][doge]', ['[doge]']), '好耶');
+      expect(withoutEmoteCodes('[doge]', ['[doge]']), '');
+    });
+  });
+
+  group('in-app floating window', () {
+    testWidgets('appendix A 8, c2, c6, c10: leaving a playing room floats it bottom-right with the same player', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      expect(app.engines, hasLength(1));
+      expect(app.engine.opens, hasLength(1));
+      await _leaveRoom(tester, app);
+
+      expect(find.text('首页'), findsOneWidget);
+      expect(_window, findsOneWidget);
+      final rect = tester.getRect(_window);
+      expect(rect.width, closeTo(220.08, 0.01));
+      expect(rect.right, 393 - 16);
+      expect(rect.bottom, closeTo(852 - 80 - 16, 0.01), reason: "above the home page's bottom bar");
+      expect(app.engine.disposed, isFalse, reason: 'the player plays on');
+      expect(_inWindow(find.byType(LiveVideoView)), findsOneWidget);
+      // c10: square corners and a floating shadow, nothing clipped.
+      final frame = tester.widget<DecoratedBox>(
+        find.ancestor(of: find.byType(MiniPlayerSurface), matching: find.byType(DecoratedBox)).first,
+      );
+      expect((frame.decoration as BoxDecoration).borderRadius, isNull);
+      expect((frame.decoration as BoxDecoration).boxShadow, OnVideoColors.floatingShadow);
+      expect(_inWindow(find.byType(ClipRRect)), findsNothing);
+
+      // c2: back top left, close top right, pause in the centre; 45 % black.
+      expect(_inKey('mini-back', find.byIcon(AppIcons.backToRoom)), findsOneWidget);
+      expect(_inKey('mini-close', find.byIcon(AppIcons.close)), findsOneWidget);
+      expect(_inKey('mini-play-pause', find.byIcon(AppIcons.pause)), findsOneWidget);
+      final back = tester.getRect(find.byKey(const ValueKey('mini-back')));
+      final close = tester.getRect(find.byKey(const ValueKey('mini-close')));
+      final centre = tester.getRect(find.byKey(const ValueKey('mini-play-pause')));
+      expect(back.topLeft - rect.topLeft, const Offset(4, 4));
+      expect(back.size, const Size(48, 48));
+      expect(rect.right - close.right, closeTo(4, 0.01));
+      expect(close.top - rect.top, 4);
+      expect(centre.center.dx, closeTo(rect.center.dx, 0.01));
+      expect(centre.size, const Size(48, 48), reason: 'A07.24: 48 on a small window (58 on a larger one)');
+      final style = tester.widget<IconButton>(_inKey('mini-close', find.byType(IconButton))).style!;
+      expect(style.backgroundColor!.resolve({}), OnVideoColors.button);
+      expect(OnVideoColors.button.a, closeTo(0.45, 0.01));
+
+      // The buttons go after 3 s; a tap brings them and another hides them
+      // (A07.24: no longer back to the room); a double tap goes back to the
+      // room, which plays on (no new player).
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(_opacityOf(tester, 'mini-back'), 0);
+      await tester.tapAt(rect.topLeft + const Offset(60, 100));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(_opacityOf(tester, 'mini-back'), 1);
+      await tester.tapAt(rect.topLeft + const Offset(60, 100));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(_opacityOf(tester, 'mini-back'), 0);
+      expect(_window, findsOneWidget, reason: 'a single tap stays in the window');
+      await tester.tapAt(rect.topLeft + const Offset(60, 100));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(rect.topLeft + const Offset(60, 100));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await _settle(tester);
+      expect(_window, findsNothing);
+      expect(find.byKey(const ValueKey('live-play-portrait-stack')), findsOneWidget);
+      expect(app.engines, hasLength(1), reason: 'the same player');
+      expect(app.engine.opens, hasLength(1), reason: 'not opened again');
+
+      // ✕ stops it.
+      await _leaveRoom(tester, app);
+      expect(_window, findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('mini-close')));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(_window, findsNothing);
+      expect(app.engine.disposed, isTrue);
+      await _close(tester, app);
+    });
+
+    testWidgets('c8: paused keeps the play button; audio only fits; a drop dims and says "正在重连"', (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final engine = app.engine;
+
+      // B02 c2: the room's play mark, on the same 45 % disc.
+      await tester.tap(find.byKey(const ValueKey('mini-play-pause')));
+      await _settle(tester);
+      expect(_inKey('mini-play-pause', find.byIcon(AppIcons.play)), findsOneWidget);
+      expect(tester.widget<VideoCentreButton>(find.byKey(const ValueKey('mini-play-pause'))).size, miniButtonSize);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(_opacityOf(tester, 'mini-play-pause'), 1, reason: 'paused: always shown');
+      expect(_opacityOf(tester, 'mini-back'), 0);
+      await tester.tap(find.byKey(const ValueKey('mini-play-pause')));
+      await _settle(tester);
+      expect(_inKey('mini-play-pause', find.byIcon(AppIcons.pause)), findsOneWidget);
+
+      // B02 c2, c4: a stream that buffers is no drop; the centre turns.
+      engine
+        ..emit(const EngineVideoSize(1920, 1080))
+        ..emit(const EngineBuffering(buffering: true));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('mini-reconnecting')), findsNothing);
+      expect(_inKey('mini-play-pause', find.byKey(const ValueKey('video-centre-busy'))), findsOneWidget);
+      expect(_opacityOf(tester, 'mini-play-pause'), 1);
+      engine.emit(const EngineBuffering(buffering: false));
+      await tester.pump();
+      expect(_inKey('mini-play-pause', find.byKey(const ValueKey('video-centre-busy'))), findsNothing);
+
+      // A playing stream that drops: the session's recovery (its reopening
+      // hangs here).
+      final hang = Completer<void>();
+      engine
+        ..onOpen = ((_) => hang.future)
+        ..emit(const EngineError(PlayerException(message: 'reset', type: PlayerErrorType.network, code: 'drop')));
+      await _settle(tester);
+      expect(find.byKey(const ValueKey('mini-reconnecting')), findsOneWidget);
+      expect(_inKey('mini-reconnecting', find.text('正在重连')), findsOneWidget);
+      engine.onOpen = null;
+      hang.complete();
+      engine
+        ..emit(const EngineBuffering(buffering: false))
+        ..emit(const EnginePlaying(playing: true));
+      await _settle(tester);
+      expect(find.byKey(const ValueKey('mini-reconnecting')), findsNothing);
+
+      // A07.20 c2: a placeholder track (16 × 16) gets the cover and "语音直播".
+      engine.emit(const EngineVideoSize(16, 16));
+      await tester.pump();
+      expect(_inKey('mini-audio-only', find.text('语音直播')), findsOneWidget);
+      engine.emit(const EngineVideoSize(1920, 1080));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('mini-audio-only')), findsNothing);
+
+      // Audio only: the streamer's picture and "纯音频模式", inside 124.
+      await tester.runAsync(() => FloatingRoom.instance.runtime!.controller.setAudioOnly(enabled: true));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('mini-audio-only')), findsOneWidget);
+      expect(_inKey('mini-audio-only', find.text('纯音频模式')), findsOneWidget);
+      final chip = tester.getRect(_inKey('mini-audio-only', find.text('纯音频模式')));
+      expect(tester.getRect(_window).contains(chip.bottomCenter - const Offset(0, 1)), isTrue);
+      await _close(tester, app);
+    });
+
+    testWidgets("c7: the floating window's danmaku is 10 high in three lanes, six at most, 30 frames", (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final overlay = tester.widget<DanmakuOverlay>(_inWindow(find.byType(DanmakuOverlay)));
+      expect(overlay.look.fontSize, 10);
+      expect(overlay.look.laneHeight, 20);
+      expect(overlay.maxVisible, 6);
+      expect(overlay.fps, 30);
+      expect(overlay.color, isNull, reason: "the platform's colours by default");
+      await tester.runAsync(() => app.services.store.settings.set(Settings.enablePipDanmaku, false));
+      await _settle(tester);
+      expect(tester.widget<DanmakuOverlay>(_inWindow(find.byType(DanmakuOverlay))).visible, isFalse);
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.10 on K90: the mini danmaku are clipped to the window', (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final overlay = _inWindow(find.byType(DanmakuOverlay));
+      final clip = find.ancestor(of: overlay, matching: find.byType(ClipRect)).first;
+      expect(tester.getRect(clip), tester.getRect(overlay));
+      await _close(tester, app);
+    });
+
+    testWidgets('D03.3 c1: the mini danmaku use the danmaku font; the default is the system one', (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      DanmakuOverlay overlay() => tester.widget<DanmakuOverlay>(_inWindow(find.byType(DanmakuOverlay)));
+      DanmakuOverlayState layer() => tester.state<DanmakuOverlayState>(_inWindow(find.byType(DanmakuOverlay)));
+      expect(overlay().look.fontFamily, isNull);
+      await tester.runAsync(() => app.services.store.settings.set(Settings.danmakuFontFamilyName, 'LXGW'));
+      await _settle(tester);
+      expect(overlay().look.fontFamily, 'LXGW');
+      app.danmaku.chat('换了字体');
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(layer().lastTextStyle?.fontFamily, 'LXGW');
+      await _close(tester, app);
+    });
+
+    testWidgets("E06.2 c2: the mini window's danmaku keep the name colour, badges and source room", (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      DanmakuOverlayState layer() => tester.state<DanmakuOverlayState>(_inWindow(find.byType(DanmakuOverlay)));
+      const message = LiveMessage(
+        type: LiveMessageType.chat,
+        userName: '观众4',
+        message: '带徽章',
+        color: LiveMessageColor.white,
+        messageId: 'marked',
+        nameColor: LiveMessageColor(0x9e, 0x7b, 0xff),
+        badges: [LiveBadge(url: 'https://cdn.17app.co/a.png', id: 'vip')],
+        sourceRoomId: '5138284',
+      );
+      app.danmaku.emit(const DanmakuReceived(message));
+      await tester.pump(const Duration(milliseconds: 500));
+      final flown = layer().debugFlying.lastWhere((f) => f.$1.messageId == 'marked').$1;
+      expect((flown.nameColor, flown.badges, flown.sourceRoomId), (message.nameColor, message.badges, '5138284'));
+      await _close(tester, app);
+    });
+
+    testWidgets('A08.12: the mini window follows "飞行弹幕显示礼物"; a gift keeps its gold under the one colour', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await tester.runAsync(() => app.services.store.settings.set(Settings.pipDanmakuUseOriginalColor, false));
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      DanmakuOverlayState layer() => tester.state<DanmakuOverlayState>(_inWindow(find.byType(DanmakuOverlay)));
+      LiveMessage gift(String user, {String id = ''}) => LiveMessage(
+        type: LiveMessageType.gift,
+        userName: user,
+        userId: user,
+        message: '火箭 ×1',
+        color: LiveMessageColor.white,
+        messageId: id,
+        data: const LiveGift(name: '火箭', totalValue: 500000, unit: LiveGiftUnit.goldSeed),
+      );
+      List<String> gifts() => [
+        for (final (message, _) in layer().debugFlying)
+          if (message.type == LiveMessageType.gift) message.message,
+      ];
+      // Off (the default): as before, no gift flies.
+      app.danmaku.emit(DanmakuReceived(gift('甲', id: 'g1')));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(gifts(), isEmpty);
+
+      await tester.runAsync(() => app.services.store.settings.set(Settings.danmakuShowGifts, true));
+      await _settle(tester);
+      app.danmaku.emit(DanmakuReceived(gift('乙', id: 'g2')));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(gifts(), ['乙 送出 火箭 ×1']);
+      // The mini window's opacity goes into it, as into the chat.
+      expect(layer().lastTextStyle?.color?.withValues(alpha: 1), LivePalettes.danmakuGift);
+      expect(tester.widget<DanmakuOverlay>(_inWindow(find.byType(DanmakuOverlay))).color, isNotNull);
+      await _close(tester, app);
+    });
+
+    testWidgets('D03.3 c2: bundled emoticons fly as pictures in the mini window; text only drops them', (tester) async {
+      // The app's lists read from the files, as the room's library does.
+      final library = EmoteLibrary(bundle: FileAssetBundle());
+      final bilibili = (await tester.runAsync(() => library.load(SiteIds.bilibili)))!;
+      expect(bilibili.codes, contains('[dog]'));
+      final app = await _app(tester, overrides: [emoteLibraryProvider.overrideWithValue(library)]);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      DanmakuOverlay overlay() => tester.widget<DanmakuOverlay>(_inWindow(find.byType(DanmakuOverlay)));
+      DanmakuOverlayState layer() => tester.state<DanmakuOverlayState>(_inWindow(find.byType(DanmakuOverlay)));
+      expect(overlay().emotes, same(bilibili));
+      expect(overlay().look.textOnly, isFalse);
+
+      // Text only: the code goes too, so a danmaku of only an emoticon does
+      // not fly; the text of another still does.
+      await tester.runAsync(() => app.services.store.settings.set(Settings.pipDanmakuNoEmojiMode, true));
+      await _settle(tester);
+      expect(overlay().look.textOnly, isTrue);
+      app.danmaku.chat('[dog]');
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(layer().flyingCount, 0);
+      final plain = layer().debugFlying.length;
+      app.danmaku.chat('好[dog]', id: 'text');
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(layer().debugFlying.length, plain + 1);
+      final textOnly = layer().debugFlying.last.$2.width;
+
+      // Off: the picture, about 1.3 × the text.
+      await tester.runAsync(() => app.services.store.settings.set(Settings.pipDanmakuNoEmojiMode, false));
+      await _settle(tester);
+      app.danmaku.chat('好[dog]', id: 'picture');
+      for (var i = 0; i < 20 && layer().debugFlying.where((f) => f.$1.messageId == 'picture').isEmpty; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      final picture = layer().debugFlying.firstWhere((f) => f.$1.messageId == 'picture').$2.width;
+      expect(picture, greaterThan(textOnly + 8), reason: 'a picture in place of "[dog]"');
+      await _close(tester, app);
+    });
+
+    testWidgets('B02 c3: its danmaku stand while paused, or fly on as "暂停时的弹幕" says', (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      DanmakuOverlay overlay() => tester.widget<DanmakuOverlay>(_inWindow(find.byType(DanmakuOverlay)));
+      DanmakuOverlayState layer() => tester.state<DanmakuOverlayState>(_inWindow(find.byType(DanmakuOverlay)));
+      expect(overlay().running, isTrue);
+      app.danmaku.chat('播放时飞');
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(layer().flyingCount, 1);
+
+      await tester.tap(find.byKey(const ValueKey('mini-play-pause')));
+      await _settle(tester);
+      expect(overlay().running, isFalse, reason: 'with the video, the default');
+      app.danmaku
+        ..chat('暂停时不飞')
+        ..chat('也不排队');
+      await tester.pump(const Duration(seconds: 1));
+      expect((layer().flyingCount, layer().pendingCount), (1, 0), reason: 'the one before the pause stands');
+
+      await tester.runAsync(() => app.services.store.settings.set(Settings.danmakuPausedBehavior, 'continue'));
+      await _settle(tester);
+      expect(overlay().running, isTrue);
+      app.danmaku.chat('暂停时照飞');
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(layer().flyingCount, 2);
+      await _close(tester, app);
+    });
+
+    testWidgets('appendix A 8: menus and dialogs hide it, it plays on; multi-view and other rooms close it', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      expect(_window, findsOneWidget);
+
+      unawaited(
+        showDialog<void>(
+          context: AppNavigator.navigatorContext!,
+          builder: (context) => const AlertDialog(content: Text('对话框')),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(_window, findsNothing);
+      expect(find.byKey(const ValueKey('floating-window'), skipOffstage: false), findsOneWidget);
+      expect(app.engine.disposed, isFalse);
+      Navigator.of(tester.element(find.text('对话框'))).pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(_window, findsOneWidget);
+
+      // Another room: the floating one stops, the new room has its own player.
+      final first = app.engine;
+      await _openRoom(tester, LiveRoom(platform: SiteIds.bilibili, roomId: '7', nick: '另一位'));
+      expect(first.disposed, isTrue);
+      expect(app.engines, hasLength(2));
+
+      // Multi-view closes it too.
+      await _leaveRoom(tester, app);
+      expect(_window, findsOneWidget);
+      unawaited(AppNavigator.toMultiview());
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(app.engine.disposed, isTrue);
+      expect(find.byKey(const ValueKey('floating-window'), skipOffstage: false), findsNothing);
+      await _close(tester, app);
+    });
+
+    testWidgets('appendix A 8: off, or a room that does not play, leaves nothing behind', (tester) async {
+      final app = await _app(tester, floatPlay: false);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      expect(_window, findsNothing);
+      // F.1d: with "播放器强制销毁" off (3.x's default) the stopped player
+      // waits 45 s for the next room, then goes.
+      expect(app.engine.disposed, isFalse);
+      await tester.pump(const Duration(seconds: 46));
+      expect(app.engine.disposed, isTrue);
+      await _close(tester, app);
+
+      final offline = await _app(tester, site: FakeSite(liveRoom(status: LiveStatus.offline)));
+      await _openRoom(tester);
+      await _leaveRoom(tester, offline);
+      expect(_window, findsNothing);
+      await _close(tester, offline);
+    });
+
+    testWidgets(
+      'c6: landscape and wide windows put it 16 from the corner; 360 wide on a tablet; drags stay on screen',
+      (tester) async {
+        final app = await _app(tester, size: const Size(852, 393));
+        await _openRoom(tester);
+        await _leaveRoom(tester, app);
+        var rect = tester.getRect(_window);
+        expect(rect.width, closeTo(220.08, 0.01));
+        expect(rect.right, 852 - 16);
+        expect(rect.bottom, 393 - 16, reason: 'no bottom bar beside a side rail');
+
+        // Dragged up and left, then the window turns. P05: the video stays
+        // opaque while dragged (3.x showed it at 80 %, an offscreen layer
+        // every frame of the drag).
+        final gesture = await tester.startGesture(rect.topLeft + const Offset(60, 100));
+        await gesture.moveBy(const Offset(-30, 0));
+        await gesture.moveBy(const Offset(-300, -150));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 200));
+        final video = find.descendant(of: _window, matching: find.byType(LiveVideoView));
+        expect(video, findsOneWidget);
+        for (final see in [AnimatedOpacity, FadeTransition]) {
+          expect(
+            find.ancestor(of: video, matching: find.byType(see)),
+            findsNothing,
+            reason: '$see over the video',
+          );
+        }
+        // A07.25 M2, M3: the leaving fade's Opacity stays in the tree, fully
+        // opaque (a full Opacity draws no layer).
+        for (final fade in tester.widgetList<Opacity>(find.ancestor(of: video, matching: find.byType(Opacity)))) {
+          expect(fade.opacity, 1, reason: 'the video is not see-through while dragged');
+        }
+        await gesture.up();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        final moved = tester.getRect(_window);
+        expect(moved.left, lessThan(rect.left - 200));
+        tester.view.physicalSize = const Size(393, 852);
+        await tester.pump();
+        rect = tester.getRect(_window);
+        expect(rect.left, greaterThanOrEqualTo(16));
+        expect(rect.right, lessThanOrEqualTo(393 - 16));
+        await _close(tester, app);
+
+        final wide = await _app(tester, size: const Size(1280, 800));
+        await _openRoom(tester);
+        await _leaveRoom(tester, wide);
+        rect = tester.getRect(_window);
+        expect(rect.size, const Size(360, 202.5));
+        expect(rect.bottomRight, const Offset(1280 - 16, 800 - 16));
+        await _close(tester, wide);
+      },
+    );
+
+    testWidgets('A07.24: the grip pulls it, stepless, as wide as the phone; a drag never rebuilds the picture', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final grip = tester.getRect(find.byKey(const ValueKey('mini-resize')));
+      final gesture = await tester.startGesture(grip.center);
+      await gesture.moveBy(const Offset(-40, 0));
+      for (var i = 0; i < 12; i++) {
+        await gesture.moveBy(const Offset(-30, 0));
+        await tester.pump();
+      }
+      await gesture.up();
+      await tester.pump();
+      await _settle(tester);
+      var rect = tester.getRect(_window);
+      expect(rect.width, closeTo(393, 0.01), reason: 'A07.22 stopped at 393 × 0.9');
+      expect(rect.left, 0);
+      expect(app.services.store.settings.get(Settings.floatWindowLandscapeScale), closeTo(393 / 220.08, 0.0001));
+
+      // Any size between: back to 250 wide (as wide as the phone, the grip
+      // is on the bottom-right corner; inwards shrinks it).
+      expect(_inKey('mini-resize', find.byType(CustomPaint)), findsOneWidget);
+      final grip2 = tester.getRect(find.byKey(const ValueKey('mini-resize')));
+      final shrink = await tester.startGesture(grip2.center);
+      await shrink.moveBy(const Offset(-40, 0));
+      await shrink.moveBy(const Offset(-143, 0));
+      await tester.pump();
+      await shrink.up();
+      await tester.pump();
+      await _settle(tester);
+      rect = tester.getRect(_window);
+      expect(rect.width, closeTo(250, 0.01));
+
+      // A drag moves the frame only: the same surface, the same player.
+      final surface = tester.widget<MiniPlayerSurface>(_inWindow(find.byType(MiniPlayerSurface)));
+      final drag = await tester.startGesture(rect.topLeft + const Offset(70, 100));
+      for (var i = 0; i < 10; i++) {
+        await drag.moveBy(const Offset(-8, -20));
+        await tester.pump();
+        expect(identical(tester.widget<MiniPlayerSurface>(_inWindow(find.byType(MiniPlayerSurface))), surface), isTrue);
+      }
+      await drag.up();
+      await tester.pump();
+      await _settle(tester);
+      expect(app.engines, hasLength(1));
+      expect(app.engine.opens, hasLength(1));
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.24: a small window keeps its buttons apart; larger, mute, the name and the danmaku switch', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final controller = FloatingRoom.instance.runtime!.controller;
+      // 220 × 124, a small window: back, close, the grip and a 48 centre
+      // button, none on another; no mute, no name, no bottom buttons.
+      expect(find.byKey(const ValueKey('mini-mute')), findsNothing);
+      expect(find.byKey(const ValueKey('mini-title')), findsNothing);
+      expect(find.byKey(const ValueKey('mini-danmaku-switch')), findsNothing);
+      expect(tester.getSize(find.byKey(const ValueKey('mini-play-pause'))), const Size(48, 48));
+      final parts = [
+        for (final key in ['mini-back', 'mini-close', 'mini-play-pause', 'mini-resize'])
+          tester.getRect(find.byKey(ValueKey(key))),
+      ];
+      for (var a = 0; a < parts.length; a++) {
+        for (var b = a + 1; b < parts.length; b++) {
+          expect(parts[a].overlaps(parts[b]), isFalse, reason: '${parts[a]} and ${parts[b]}');
+        }
+      }
+      final volume = controller.volume;
+      // As wide as the phone (393 × 221): the streamer's name and the
+      // danmaku switch, away from the grip.
+      final grip = tester.getRect(find.byKey(const ValueKey('mini-resize')));
+      final pull = await tester.startGesture(grip.center);
+      await pull.moveBy(const Offset(-40, 0));
+      await pull.moveBy(const Offset(-300, 0));
+      await tester.pump();
+      await pull.up();
+      await tester.pump();
+      await _settle(tester);
+      await tester.tapAt(tester.getRect(_window).topLeft + const Offset(150, 100));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('mini-title')), findsOneWidget);
+      expect(tester.widget<Text>(find.byKey(const ValueKey('mini-title'))).data, controller.room.nick);
+      expect(find.byKey(const ValueKey('mini-danmaku-switch')), findsOneWidget);
+      expect(find.byKey(const ValueKey('mini-pip')), findsNothing, reason: 'not on this platform');
+      expect(tester.getSize(find.byKey(const ValueKey('mini-play-pause'))), const Size(58, 58));
+      // Mute beside close, and back.
+      expect(_inKey('mini-mute', find.byIcon(AppIcons.volumeHigh)), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('mini-mute')));
+      await tester.pump();
+      expect(controller.volume, 0);
+      expect(_inKey('mini-mute', find.byIcon(AppIcons.volumeMuted)), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('mini-mute')));
+      await tester.pump();
+      expect(controller.volume, volume);
+      final settings = app.services.store.settings;
+      final on = settings.get(Settings.enablePipDanmaku);
+      await tester.tap(find.byKey(const ValueKey('mini-danmaku-switch')));
+      await tester.pump();
+      expect(settings.get(Settings.enablePipDanmaku), !on);
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.24: let go, it slides to the nearer side; flung off a side it tucks in, a tap brings it back', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      var rect = tester.getRect(_window);
+      // Dropped left of the middle: slides to the left side (16 in).
+      var drag = await tester.startGesture(rect.topLeft + const Offset(70, 100));
+      await drag.moveBy(const Offset(-40, 0));
+      await drag.moveBy(const Offset(-200, -100));
+      await tester.pump(const Duration(seconds: 1));
+      await drag.up();
+      await tester.pump();
+      await _settle(tester);
+      rect = tester.getRect(_window);
+      expect(rect.left, 16);
+      // Pulled past the left edge and let go: tucked in, a fifth of it and at
+      // least 56 shows (A07.25 c5), with its handle.
+      drag = await tester.startGesture(rect.topLeft + const Offset(70, 100));
+      await drag.moveBy(const Offset(-40, 0));
+      await drag.moveBy(const Offset(-120, 0));
+      await tester.pump(const Duration(seconds: 1));
+      await drag.up();
+      await tester.pump();
+      await _settle(tester);
+      rect = tester.getRect(_window);
+      expect(rect.right, 56);
+      expect(find.byKey(const ValueKey('floating-window-tucked')), findsOneWidget);
+      final handle = tester.getRect(find.byKey(const ValueKey('floating-window-handle')));
+      expect(handle.right, 56 - inAppMiniHandleInset, reason: 'on the strip, away from the edge');
+      expect(tester.widget<AnimatedOpacity>(find.byKey(const ValueKey('floating-window-handle'))).opacity, 1);
+      expect(app.engine.opens, hasLength(1), reason: 'it plays on');
+      // A tap on the strip brings it back.
+      await tester.tapAt(Offset(20, rect.center.dy));
+      await tester.pump();
+      await _settle(tester);
+      rect = tester.getRect(_window);
+      expect(rect.left, 16);
+      expect(find.byKey(const ValueKey('floating-window-tucked')), findsNothing);
+      // The next floating window opens where this one was left.
+      await tester.tap(find.byKey(const ValueKey('mini-close')));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      expect(tester.getRect(_window).left, 16);
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.25 M1, M3: it comes out of the picture and glides to its corner; ✕ fades it before it stops', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      final picture = tester.getRect(find.byType(LiveVideoView).first);
+      app.router.pop();
+      Rect? first;
+      for (var i = 0; i < 6 && first == null; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        if (_window.evaluate().isNotEmpty) first = tester.getRect(_inWindow(find.byType(MiniPlayerSurface)));
+      }
+      final corner = tester.getRect(_window);
+      expect(first, isNotNull);
+      expect(first!.width, greaterThan(corner.width), reason: 'drawn where the picture was, as large');
+      expect(first.center.dy, closeTo(picture.center.dy, 1));
+      await _settle(tester);
+      await _glided(tester);
+      expect(tester.getRect(_inWindow(find.byType(MiniPlayerSurface))), corner, reason: 'arrived, drawn as laid out');
+
+      // ✕: smaller and fading first, then the room stops.
+      await tester.tap(find.byKey(const ValueKey('mini-close')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 90));
+      expect(_window, findsOneWidget);
+      final fade = tester.widget<Opacity>(
+        find.ancestor(of: find.byType(MiniPlayerSurface), matching: find.byType(Opacity)).first,
+      );
+      expect(fade.opacity, inExclusiveRange(0, 1));
+      expect(app.engine.disposed, isFalse);
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump(const Duration(seconds: 1));
+      expect(_window, findsNothing);
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.25 c8: back from over other apps, the window is where and as large as it was left there', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      OverlayWindow.placed.value = (rect: const Rect.fromLTWH(-200, 300, 260, 146.25), tucked: 'left');
+      await tester.pump();
+      await _settle(tester);
+      final rect = tester.getRect(_window);
+      expect(rect.width, closeTo(260, 0.5));
+      expect(rect.right, 56 * 260 / 220 > 56 ? closeTo(inAppMiniPeekFor(gestureInset: 0, width: 260), 0.5) : 56);
+      expect(rect.top, closeTo(300, 0.5));
+      expect(find.byKey(const ValueKey('floating-window-tucked')), findsOneWidget);
+      expect(app.services.store.settings.get(Settings.floatWindowLandscapeScale), closeTo(260 / 220.08, 0.001));
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.25 K90 check: flicked hard into a side it tucks in and can be pulled out again', (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      await tester.pump(const Duration(seconds: 4));
+      var rect = tester.getRect(_window);
+      // A fast flick to the right edge, the finger lifting at the edge.
+      await tester.flingFrom(rect.center, const Offset(380, 0), 3000);
+      await tester.pump();
+      await _settle(tester);
+      await _glided(tester);
+      rect = tester.getRect(_window);
+      expect(rect.left, closeTo(393 - 56, 0.5), reason: 'tucked into the right side');
+      expect(find.byKey(const ValueKey('floating-window-tucked')), findsOneWidget);
+      expect(tester.widget<AnimatedOpacity>(find.byKey(const ValueKey('floating-window-handle'))).opacity, 1);
+      // Pulled out by its handle.
+      final handle = tester.getCenter(find.byKey(const ValueKey('floating-window-handle')));
+      final drag = await tester.startGesture(handle);
+      await drag.moveBy(const Offset(-30, 0));
+      await drag.moveBy(const Offset(-200, 0));
+      await tester.pump(const Duration(milliseconds: 500));
+      await drag.up();
+      await tester.pump();
+      await _settle(tester);
+      await _glided(tester);
+      rect = tester.getRect(_window);
+      expect(rect.right, closeTo(393 - 16, 0.5), reason: 'out, against the right side');
+      expect(find.byKey(const ValueKey('floating-window-tucked')), findsNothing);
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.25 c6: the place the user left it in is kept across a restart', (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final corner = tester.getRect(_window);
+      final drag = await tester.startGesture(corner.topLeft + const Offset(70, 100));
+      await drag.moveBy(const Offset(-40, 0));
+      await drag.moveBy(const Offset(-200, -300));
+      await tester.pump(const Duration(seconds: 1));
+      await drag.up();
+      await tester.pump();
+      await _settle(tester);
+      final left = tester.getRect(_window);
+      expect(left.left, 16);
+      expect(app.services.store.settings.get(Settings.floatWindowPosition), isNotEmpty);
+      // A restart: the run's memory is gone, the setting stays.
+      await tester.tap(find.byKey(const ValueKey('mini-close')));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      FloatingRoom.instance.placement = null;
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final back = tester.getRect(_window).topLeft;
+      expect(back.dx, closeTo(left.left, 0.5));
+      expect(back.dy, closeTo(left.top, 0.5));
+      await _close(tester, app);
+    });
+
+    testWidgets('K90 report: full-screen gestures: a tucked window shows past the back strip and is kept out of it', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      // The system's back gesture takes 30 of each side.
+      tester.view.systemGestureInsets = const FakeViewPadding(left: 30, right: 30);
+      addTearDown(tester.view.resetSystemGestureInsets);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      var rect = tester.getRect(_window);
+      // A07.25: while the buttons show, only the grip in the corner is kept
+      // out of the back gesture (against an edge it lies in the strip).
+      expect(SystemGestureExclusion.current, [
+        Rect.fromLTRB(rect.right - miniButtonSize, rect.bottom - miniButtonSize, rect.right, rect.bottom),
+      ]);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump();
+      expect(SystemGestureExclusion.current, isEmpty, reason: 'the buttons went');
+      final drag = await tester.startGesture(rect.topLeft + const Offset(70, 100));
+      await drag.moveBy(const Offset(-40, 0));
+      await drag.moveBy(const Offset(-600, 0));
+      await tester.pump(const Duration(seconds: 1));
+      await drag.up();
+      await tester.pump();
+      await _settle(tester);
+      rect = tester.getRect(_window);
+      expect(rect.right, 62, reason: 'A07.25 c5: 32 past the 30 the back gesture takes: a finger can grab it outside');
+      final handle = tester.getRect(find.byKey(const ValueKey('floating-window-handle')));
+      expect(handle.left, greaterThan(30), reason: 'the handle is outside the back strip');
+      await tester.pump();
+      expect(SystemGestureExclusion.current, [inAppMiniExclusion(rect)], reason: 'pulling it out does not go back');
+      // Brought back: the edge is the back gesture's again.
+      await tester.tapAt(Offset(50, rect.center.dy));
+      await tester.pump();
+      await _settle(tester);
+      await tester.pump();
+      expect(SystemGestureExclusion.current, isEmpty);
+      await _close(tester, app);
+    });
+
+    testWidgets('K90 report: dragged, it goes up to the status bar and down to the gesture bar', (tester) async {
+      final app = await _app(tester);
+      tester.view.padding = const FakeViewPadding(top: 40, bottom: 20);
+      tester.view.viewPadding = const FakeViewPadding(top: 40, bottom: 20);
+      addTearDown(tester.view.resetPadding);
+      addTearDown(tester.view.resetViewPadding);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final area = tester.getSize(find.byType(MaterialApp));
+      var rect = tester.getRect(_window);
+      expect(rect.bottom, lessThan(area.height - 20 - 16), reason: 'it first shows above the margins');
+      var drag = await tester.startGesture(rect.topLeft + const Offset(70, 100));
+      await drag.moveBy(const Offset(0, -40));
+      await drag.moveBy(const Offset(0, -2000));
+      await tester.pump(const Duration(seconds: 1));
+      await drag.up();
+      await tester.pump();
+      await _settle(tester);
+      expect(tester.getRect(_window).top, 40, reason: 'right under the status bar');
+      rect = tester.getRect(_window);
+      drag = await tester.startGesture(rect.topLeft + const Offset(70, 100));
+      await drag.moveBy(const Offset(0, 40));
+      await drag.moveBy(const Offset(0, 3000));
+      await tester.pump(const Duration(seconds: 1));
+      await drag.up();
+      await tester.pump();
+      await _settle(tester);
+      expect(tester.getRect(_window).bottom, area.height - 20, reason: 'right above the gesture bar');
+      await _close(tester, app);
+    });
+
+    testWidgets("A07.24: let go, it springs on at the finger's speed; caught on the way, it stays under the finger", (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final home = tester.getRect(_window);
+      // Flung left from the right side: it goes on moving the very next
+      // frame, faster than a slide from rest would start.
+      await tester.flingFrom(home.topLeft + const Offset(70, 100), const Offset(-40, 0), 1200);
+      final released = tester.getRect(_window).left;
+      await tester.pump(const Duration(milliseconds: 16));
+      final next = tester.getRect(_window).left;
+      expect(next, lessThan(released - 15), reason: 'about 1200 px/s, 16 ms');
+      await tester.pump(const Duration(milliseconds: 40));
+      // Caught on the way: it follows the finger from where it is.
+      final caught = tester.getRect(_window);
+      expect(caught.left, lessThan(next), reason: 'still on the way');
+      final hold = await tester.startGesture(caught.topLeft + const Offset(70, 100));
+      await hold.moveBy(const Offset(0, 30));
+      await hold.moveBy(const Offset(0, 10));
+      await tester.pump(const Duration(milliseconds: 100));
+      final held = tester.getRect(_window);
+      expect(held.left, closeTo(caught.left, 0.5), reason: 'stopped under the finger');
+      expect(held.top, greaterThan(caught.top));
+      await hold.up();
+      await tester.pump();
+      await _settle(tester);
+      // Let go without a fling: back to the nearer side, at rest.
+      final rest = tester.getRect(_window);
+      expect(rest.left, anyOf(16, home.left));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.getRect(_window), rest);
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.22: the grip at the bottom right pulls it larger towards the middle, kept for next time', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      var rect = tester.getRect(_window);
+      expect(rect.width, closeTo(220.08, 0.01));
+
+      // Shown with the buttons: A07.25 c3, a quarter disc with a bracket
+      // drawn in the bottom right corner itself, 48 to touch.
+      final grip = find.byKey(const ValueKey('mini-resize'));
+      expect(_inWindow(grip), findsOneWidget);
+      expect(_inKey('mini-resize', find.byType(CustomPaint)), findsOneWidget);
+      final gripRect = tester.getRect(grip);
+      expect(gripRect.size, const Size(48, 48));
+      // Always at the bottom right (the user, 2026-10-17); against the right
+      // edge it grows leftwards.
+      expect(gripRect.bottomRight, rect.bottomRight);
+      expect(_opacityOf(tester, 'mini-resize'), 1);
+
+      // 80 to the left (past the drag slop): 300 wide, its right edge and
+      // its bottom stay; the buttons stay while the grip is held.
+      final gesture = await tester.startGesture(gripRect.center);
+      await gesture.moveBy(const Offset(-40, 0));
+      await gesture.moveBy(const Offset(-80, 0));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 4));
+      expect(_opacityOf(tester, 'mini-resize'), 1);
+      await gesture.up();
+      await tester.pump();
+      await _settle(tester);
+      rect = tester.getRect(_window);
+      expect(rect.width, closeTo(300.08, 0.01));
+      expect(rect.height, closeTo(300.08 * 9 / 16, 0.01));
+      expect(rect.right, 393 - 16);
+      expect(rect.bottom, closeTo(852 - 80 - 16, 0.01));
+      expect(app.engines, hasLength(1), reason: 'the same player');
+      expect(app.engine.opens, hasLength(1), reason: 'not opened again');
+      expect(_window, findsOneWidget);
+      // The danmaku follow the window (D03.3).
+      expect(
+        tester.widget<DanmakuOverlay>(_inWindow(find.byType(DanmakuOverlay))).look.fontSize,
+        closeTo(12 * 300.08 / 350, 0.01),
+      );
+      expect(app.services.store.settings.get(Settings.floatWindowLandscapeScale), closeTo(300.08 / 220.08, 0.0001));
+      expect(app.services.store.settings.get(Settings.floatWindowPortraitScale), 1);
+
+      // Grown from its corner, it stays the corner one: turned, it goes to
+      // the new bottom-right corner (a dragged one would stay at its place).
+      tester.view.physicalSize = const Size(852, 393);
+      await tester.pump();
+      rect = tester.getRect(_window);
+      expect(rect.width, closeTo(300.08, 0.01));
+      expect(rect.right, closeTo(852 - 16, 0.01));
+      expect(rect.bottom, closeTo(393 - 16, 0.01));
+      tester.view.physicalSize = const Size(393, 852);
+      await tester.pump();
+
+      // Next time it comes back at that size.
+      await tester.tap(find.byKey(const ValueKey('mini-close')));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(_window, findsNothing);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      expect(tester.getRect(_window).width, closeTo(300.08, 0.01));
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.22: two fingers resize it around its middle; portrait pictures apart; "小窗大小" follows', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      // The buttons gone (as most of the time): it is all picture.
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump(const Duration(milliseconds: 300));
+      final rect = tester.getRect(_window);
+      final first = await tester.startGesture(rect.center - const Offset(80, 0), pointer: 1);
+      final second = await tester.startGesture(rect.center + const Offset(80, 0), pointer: 2);
+      await first.moveBy(const Offset(-20, 0));
+      await second.moveBy(const Offset(20, 0));
+      await tester.pump();
+      // 160 apart → 180, where the pinch is recognized and counts from
+      // (the first finger left the tap's slop) → 200: 200 / 180 ×; kept on
+      // screen.
+      var now = tester.getRect(_window);
+      const pinched = 220.08 * 200 / 180;
+      expect(now.width, closeTo(pinched, 0.01));
+      expect(now.right, lessThanOrEqualTo(393 - 16 + 0.01));
+      expect(now.bottom, lessThanOrEqualTo(852 - 80 - 16 + 0.01));
+      await first.up();
+      await second.up();
+      await tester.pump();
+      await _settle(tester);
+      expect(_window, findsOneWidget, reason: 'not a tap: still floating');
+      expect(app.services.store.settings.get(Settings.floatWindowLandscapeScale), closeTo(200 / 180, 0.0001));
+      expect(app.engine.opens, hasLength(1));
+
+      // A portrait picture's window has its own size: 1.2 × high as before.
+      app.engine.emit(const EngineVideoSize(720, 1280));
+      await tester.pump();
+      expect(tester.getRect(_window).height, closeTo(264.1, 0.1));
+      app.engine.emit(const EngineVideoSize(1920, 1080));
+      await tester.pump();
+      expect(tester.getRect(_window).width, closeTo(pinched, 0.01));
+
+      // "小窗大小": a pick in the settings drops the resize (the row writes
+      // the three together).
+      await tester.runAsync(
+        () => app.services.store.settings.setAll({
+          Settings.floatWindowSize: 'small',
+          Settings.floatWindowLandscapeScale: 1.0,
+          Settings.floatWindowPortraitScale: 1.0,
+        }),
+      );
+      await _settle(tester);
+      now = tester.getRect(_window);
+      expect(now.width, closeTo(176.06, 0.01));
+      expect(now.right, lessThanOrEqualTo(393 - 16 + 0.01));
+      await _close(tester, app);
+    });
+
+    testWidgets('c8: loading on black, the end of a broadcast with refresh, a portrait picture 1.2 × high', (
+      tester,
+    ) async {
+      final site = _GatedSite(liveRoom(startedAt: DateTime.now().subtract(const Duration(minutes: 30))));
+      final app = await _app(tester, site: site);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      final controller = FloatingRoom.instance.runtime!.controller;
+
+      // A portrait stream: 149 × 264 as 3.x.
+      app.engine.emit(const EngineVideoSize(720, 1280));
+      await tester.pump();
+      final portrait = tester.getRect(_window);
+      expect(portrait.height, closeTo(264.1, 0.1));
+      expect(portrait.width, closeTo(148.6, 0.1));
+      expect(portrait.right, 393 - 16);
+
+      // Reloading: a spinner on black, no centre button.
+      site.hold = Completer();
+      unawaited(controller.load());
+      await tester.pump();
+      expect(find.byKey(const ValueKey('mini-loading')), findsOneWidget);
+      expect(find.byKey(const ValueKey('mini-play-pause')), findsNothing);
+      // The broadcast ended meanwhile: dimmed, the reason, refresh in the
+      // centre (always shown).
+      site.room = liveRoom(status: LiveStatus.offline);
+      site.hold!.complete();
+      await _settle(tester);
+      expect(find.byKey(const ValueKey('mini-failed')), findsOneWidget);
+      expect(_inKey('mini-retry', find.byIcon(AppIcons.refresh)), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(_opacityOf(tester, 'mini-retry'), 1);
+      expect(_opacityOf(tester, 'mini-close'), 0);
+      await _close(tester, app);
+    });
+
+    testWidgets('a mouse shows the buttons while it hovers and a double click goes back to the room', (tester) async {
+      final app = await _app(tester, size: const Size(1280, 800));
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump(const Duration(milliseconds: 300));
+      final rect = tester.getRect(_window);
+      expect(_opacityOf(tester, 'mini-back'), 0);
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      addTearDown(mouse.removePointer);
+      await mouse.moveTo(rect.topLeft + const Offset(80, 150));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(_opacityOf(tester, 'mini-back'), 1);
+      // One click does nothing; two go back.
+      await tester.tapAt(rect.topLeft + const Offset(80, 150), kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(_window, findsOneWidget);
+      await tester.tapAt(rect.topLeft + const Offset(80, 150), kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await _settle(tester);
+      expect(_window, findsNothing);
+      expect(find.byKey(const ValueKey('live-play-desktop-split')), findsOneWidget);
+      expect(app.engines, hasLength(1));
+      await _close(tester, app);
+    });
+  });
+
+  group('desktop mini window', () {
+    testWidgets('c2-c4, J2, J3: the window shrinks; back, close, pause, pin, wheel volume, Esc', (tester) async {
+      final host = _FakeHost();
+      DesktopWindow.miniHost = host;
+      final app = await _app(tester, size: const Size(1280, 800));
+      await _openRoom(tester);
+      final button = find.byKey(const ValueKey('live-play-pip'));
+      expect(button, findsOneWidget, reason: 'the desktop has the mini window');
+      await tester.tap(button);
+      await _settle(tester);
+      expect(host.calls, ['enter 1.78 onTop=false']);
+      expect(DesktopWindow.mini.value, isTrue);
+      final surface = tester.widget<MiniPlayerSurface>(find.byType(MiniPlayerSurface));
+      expect(surface.kind, MiniKind.desktop);
+      expect(find.byKey(const ValueKey('live-play-desktop-split')), findsNothing, reason: 'only the picture');
+
+      // The pin at the bottom right; on: the theme's primary colour.
+      final view = tester.getRect(find.byType(MiniPlayerSurface));
+      final pin = tester.getRect(find.byKey(const ValueKey('mini-pin')));
+      expect(view.bottomRight - pin.bottomRight, const Offset(4, 4));
+      expect(_inKey('mini-pin', find.byIcon(AppIcons.unpinned)), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('mini-pin')));
+      await _settle(tester);
+      expect(app.services.store.settings.get(Settings.windowsPipAlwaysOnTop), isTrue);
+      expect(host.calls.last, 'onTop=true');
+      expect(_inKey('mini-pin', find.byIcon(AppIcons.pinned)), findsOneWidget);
+      final scheme = Theme.of(tester.element(find.byType(MiniPlayerSurface))).colorScheme;
+      final pinStyle = tester.widget<IconButton>(find.byKey(const ValueKey('mini-pin'))).style!;
+      expect(pinStyle.backgroundColor!.resolve({}), scheme.primary);
+
+      // c4: the wheel changes the room's volume and shows the bar.
+      final controller = FloatingRoomProbe.controllerOf(tester);
+      final before = controller.volume;
+      tester.binding.handlePointerEvent(PointerScrollEvent(position: view.center, scrollDelta: const Offset(0, 20)));
+      await tester.pump();
+      await _settle(tester, rounds: 2);
+      expect(controller.volume, closeTo(before - 0.05, 0.001));
+      expect(find.byKey(const ValueKey('mini-volume')), findsOneWidget);
+
+      // Esc goes back to the room (c4).
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _settle(tester);
+      expect(host.calls.last, 'exit');
+      expect(find.byKey(const ValueKey('live-play-desktop-split')), findsOneWidget);
+      expect(DesktopWindow.mini.value, isFalse);
+
+      // ✕ (J3): stops, back to the page before the room, down to the taskbar;
+      // no floating window even with "退出小窗播放" on.
+      await tester.tap(find.byKey(const ValueKey('live-play-pip')));
+      await _settle(tester);
+      expect(host.calls.last, 'enter 1.78 onTop=true', reason: 'the pin is remembered');
+      await tester.tap(find.byKey(const ValueKey('mini-close')));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await _settle(tester);
+      expect(host.calls.sublist(host.calls.length - 3), ['hide', 'exit', 'minimize']);
+      expect(find.text('首页'), findsOneWidget);
+      expect(_window, findsNothing);
+      // F.1d: the stopped player waits 45 s for the next room ("播放器强制销毁"
+      // off), then goes.
+      await tester.pump(const Duration(seconds: 46));
+      expect(app.engine.disposed, isTrue);
+      await _close(tester, app);
+    });
+
+    testWidgets('c5: a desktop that refuses "on top" greys the pin and says why', (tester) async {
+      final host = _FakeHost()..canPin = false;
+      DesktopWindow.miniHost = host;
+      final app = await _app(tester, size: const Size(1280, 800));
+      await _openRoom(tester);
+      await tester.tap(find.byKey(const ValueKey('live-play-pip')));
+      await _settle(tester);
+      expect(tester.widget<IconButton>(find.byKey(const ValueKey('mini-pin'))).onPressed, isNull);
+      expect(find.byTooltip('这个桌面不支持置顶'), findsOneWidget);
+      // Back by a double click.
+      final view = tester.getRect(find.byType(MiniPlayerSurface));
+      await tester.tapAt(view.topLeft + const Offset(100, 150), kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tapAt(view.topLeft + const Offset(100, 150), kind: PointerDeviceKind.mouse);
+      await _settle(tester);
+      expect(host.calls.last, 'exit');
+      await _close(tester, app);
+    });
+  });
+
+  group('Android picture-in-picture', () {
+    late List<MethodCall> calls;
+    late String status;
+    late String entry;
+
+    setUp(() {
+      calls = [];
+      status = 'allowed';
+      entry = 'entered';
+      // These are about the system's picture-in-picture, which the user
+      // switches on (D-042).
+      _systemPip = true;
+      PictureInPicture.debugAndroid = true;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('pure_live/pip'),
+        (call) async {
+          calls.add(call);
+          return switch (call.method) {
+            'isSupported' => true,
+            'status' => status,
+            'enter' => () {
+              if (entry == 'entered') PictureInPicture.active.value = true;
+              return entry;
+            }(),
+            'openSettings' => true,
+            _ => null,
+          };
+        },
+      );
+    });
+
+    tearDown(() {
+      _systemPip = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('pure_live/pip'),
+        null,
+      );
+    });
+
+    testWidgets('A07.25 c7-c9: the mini window button shrinks the room into the in-app window and the app stays; '
+        'leaving takes it over other apps when allowed, else a toast says so once', (tester) async {
+      _systemPip = false;
+      final overlay = <MethodCall>[];
+      var permitted = false;
+      OverlayWindow.debugAndroid = true;
+      addTearDown(() {
+        OverlayWindow.debugAndroid = null;
+        OverlayWindow.permitted.value = false;
+      });
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('pure_live/overlay'), (
+        call,
+      ) async {
+        overlay.add(call);
+        return switch (call.method) {
+          'status' => permitted,
+          'openSettings' => true,
+          _ => null,
+        };
+      });
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel('pure_live/overlay'),
+          null,
+        ),
+      );
+      final shown = <AppToast>[];
+      final previous = AppNavigator.showToast;
+      AppNavigator.showToast = shown.add;
+      addTearDown(() => AppNavigator.showToast = previous);
+      final app = await _app(tester);
+      await _openRoom(tester);
+      // c7: no permission asked, no system picture-in-picture: the room page
+      // closes into the in-app window, on the same player.
+      await tester.tap(find.byKey(const ValueKey('live-play-pip')));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await _settle(tester);
+      await _glided(tester);
+      expect(find.text('首页'), findsOneWidget);
+      expect(_window, findsOneWidget);
+      expect(app.engines, hasLength(1));
+      expect(app.engine.opens, hasLength(1), reason: 'the same player plays on');
+      expect(shown, isEmpty);
+      expect(calls.where((call) => call.method == 'enter'), isEmpty, reason: 'not the system picture-in-picture');
+      final rect = tester.getRect(_window);
+      expect(rect.right, 393 - 16);
+      expect(rect.bottom, closeTo(852 - 80 - 16, 0.01));
+
+      // External behavior is opt-in, even after the inside-app mini button.
+      await tester.runAsync(() => app.services.store.settings.set(Settings.autoPipOnLeave, true));
+      await _settle(tester);
+      // c9: not allowed, leaving the app arms nothing; back, a toast says
+      // the window can stay over other apps, once ever.
+      await tester.pump();
+      expect(overlay.where((call) => call.method == 'arm' && (call.arguments as Map)['enabled'] == true), isEmpty);
+      Future<void> leaveAndComeBack() async {
+        for (final state in const [
+          AppLifecycleState.inactive,
+          AppLifecycleState.hidden,
+          AppLifecycleState.paused,
+          AppLifecycleState.hidden,
+          AppLifecycleState.inactive,
+          AppLifecycleState.resumed,
+        ]) {
+          tester.binding.handleAppLifecycleStateChanged(state);
+          await tester.pump();
+        }
+      }
+
+      await leaveAndComeBack();
+      expect(shown.single.message, '小窗可以留在其他应用上面播放');
+      expect(shown.single.actionLabel, '去开启');
+      shown.single.onAction!();
+      await tester.pump();
+      expect(overlay.last.method, 'openSettings');
+      await leaveAndComeBack();
+      expect(shown, hasLength(1), reason: 'once ever');
+
+      // c8: allowed, leaving the app takes this window along where it is,
+      // while "离开应用时自动小窗" is enabled.
+      permitted = true;
+      // Given in the system settings; looked at again on the way back.
+      OverlayWindow.permitted.value = true;
+      await tester.pump();
+      await _settle(tester);
+      final armed = overlay.lastWhere((call) => call.method == 'arm').arguments as Map;
+      expect(armed['enabled'], isTrue);
+      expect(armed['x'], (rect.left * tester.view.devicePixelRatio).round());
+      expect(armed['width'], (rect.width * tester.view.devicePixelRatio).round());
+      await _close(tester, app);
+    });
+
+    testWidgets('c9: turned off in the system settings: a toast with "去设置" and ✕, no dialog (B09 c8)', (tester) async {
+      status = 'disabled';
+      final shown = <AppToast>[];
+      final previous = AppNavigator.showToast;
+      AppNavigator.showToast = shown.add;
+      addTearDown(() => AppNavigator.showToast = previous);
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await tester.tap(find.byKey(const ValueKey('live-play-pip')));
+      await _settle(tester);
+      // The room is often in fullscreen: nothing in the middle of the picture.
+      expect(find.byType(AppDialog), findsNothing);
+      final toast = shown.single;
+      expect(toast.message, '无法打开画中画：系统设置里关掉了“纯粹直播”的画中画');
+      expect(toast.actionLabel, '去设置');
+      expect(toast.persistent, isTrue, reason: 'one to answer: it waits for "去设置" or ✕');
+      toast.onAction!();
+      await _settle(tester);
+      expect(calls.map((call) => call.method), contains('openSettings'));
+      expect(calls.map((call) => call.method), isNot(contains('enter')));
+      await _close(tester, app);
+    });
+
+    testWidgets('the picture alone with the danmaku and no buttons of ours; a refusal says so', (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await tester.tap(find.byKey(const ValueKey('live-play-pip')));
+      await _settle(tester);
+      expect(calls.where((call) => call.method == 'enter'), hasLength(1));
+      final surface = tester.widget<MiniPlayerSurface>(find.byType(MiniPlayerSurface));
+      expect(surface.kind, MiniKind.systemPip);
+      expect(find.byKey(const ValueKey('mini-back')), findsNothing);
+      expect(find.byKey(const ValueKey('mini-close')), findsNothing);
+      expect(find.byKey(const ValueKey('live-play-fullscreen')), findsNothing);
+      expect(
+        find.descendant(of: find.byType(MiniPlayerSurface), matching: find.byType(DanmakuOverlay)),
+        findsOneWidget,
+      );
+      PictureInPicture.active.value = false;
+      await _settle(tester);
+      expect(find.byType(MiniPlayerSurface), findsNothing);
+
+      entry = 'failed';
+      await tester.tap(find.byKey(const ValueKey('live-play-pip')));
+      await _settle(tester);
+      expect(app.toasts, contains('打开画中画失败，请重试'));
+      expect(find.byType(MiniPlayerSurface), findsNothing);
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.24: the window grows out of the picture, says the streamer, follows a new ratio, mutes', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      await tester.tap(find.byKey(const ValueKey('live-play-pip')));
+      await _settle(tester);
+      final methods = calls.map((call) => call.method).toList();
+      expect(methods.indexOf('update'), lessThan(methods.indexOf('enter')), reason: 'the title first');
+      final title = calls.firstWhere((call) => call.method == 'update').arguments as Map;
+      final controller = FloatingRoomProbe.controllerOf(tester);
+      expect(title['title'], controller.room.nick);
+      final enter = calls.firstWhere((call) => call.method == 'enter').arguments as Map;
+      final hint = (enter['hint'] as List).cast<int>();
+      expect(hint, hasLength(4));
+      expect(hint[2] - hint[0], greaterThan(0), reason: 'the picture, not the page');
+      expect(hint[3] - hint[1], lessThan(852 / 2), reason: 'only the picture: the page is taller');
+      // A portrait first frame: the window follows (before, only an armed
+      // automatic picture-in-picture did).
+      calls.clear();
+      app.engine.emit(const EngineVideoSize(720, 1280));
+      await _settle(tester);
+      final update = calls.lastWhere((call) => call.method == 'update').arguments as Map;
+      expect((update['width'], update['height']), (720, 1280));
+      // The window's mute action (A07.24) is offered and mutes the player.
+      final volume = controller.volume;
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
+        'pure_live/pip',
+        const StandardMethodCodec().encodeMethodCall(const MethodCall('toggleMute')),
+        (_) {},
+      );
+      await _settle(tester);
+      expect(controller.volume, 0);
+      expect((calls.lastWhere((call) => call.method == 'setPlaying').arguments as Map)['muted'], isTrue);
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
+        'pure_live/pip',
+        const StandardMethodCodec().encodeMethodCall(const MethodCall('toggleMute')),
+        (_) {},
+      );
+      await _settle(tester);
+      expect(controller.volume, volume);
+      PictureInPicture.active.value = false;
+      await _settle(tester);
+      await _close(tester, app);
+    });
+
+    testWidgets('issue 194: the in-app mini respects the external auto-window switch and hot updates', (tester) async {
+      final app = await _app(tester);
+      final settings = app.services.store.settings;
+      expect(settings.get(Settings.autoPipOnLeave), isFalse);
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      await _settle(tester);
+      bool armed() => calls
+          .where((call) => call.method == 'setAutoEnter')
+          .any((call) => (call.arguments as Map)['enabled'] == true);
+      expect(find.byType(MiniPlayerSurface), findsOneWidget);
+      expect(armed(), isFalse, reason: 'inside-app mini must not opt into external picture-in-picture');
+      calls.clear();
+      await tester.runAsync(() => settings.set(Settings.autoPipOnLeave, true));
+      await _settle(tester);
+      expect((calls.lastWhere((call) => call.method == 'setAutoEnter').arguments as Map)['enabled'], isTrue);
+      calls.clear();
+      await tester.runAsync(() => settings.set(Settings.autoPipOnLeave, false));
+      await _settle(tester);
+      expect((calls.lastWhere((call) => call.method == 'setAutoEnter').arguments as Map)['enabled'], isFalse);
+      expect(app.engine.opens, hasLength(1), reason: 'a policy change never reopens the stream');
+      final runtime = FloatingRoom.instance.runtime!;
+      expect(runtime.background.onTaskRemoved, isNotNull);
+      final first = runtime.background.onTaskRemoved!();
+      final duplicate = runtime.background.onTaskRemoved!();
+      expect(identical(first, duplicate), isTrue, reason: 'task removal retires the native owner once');
+      // Stream done events are delivered in the widget test's fake zone.
+      // Pump that zone before awaiting the real retirement future.
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 5));
+      await _settle(tester);
+      await first;
+      await runtime.retirement;
+      expect(runtime.disposed, isTrue);
+      expect(app.engine.disposed, isTrue);
+      expect(app.danmaku.isConnected, isFalse);
+      await _close(tester, app);
+    });
+
+    testWidgets('A07.24: the floating window turns into picture-in-picture: its button, or leaving the app', (
+      tester,
+    ) async {
+      final app = await _app(tester);
+      await tester.runAsync(() => app.services.store.settings.set(Settings.autoPipOnLeave, true));
+      await _openRoom(tester);
+      await _leaveRoom(tester, app);
+      await _settle(tester);
+      // Armed by the window (the room page has gone), out of its place.
+      final arm = calls.lastWhere((call) => call.method == 'setAutoEnter').arguments as Map;
+      expect(arm['enabled'], isTrue);
+      final window = tester.getRect(_window);
+      final hint = (arm['hint'] as List).cast<int>();
+      expect(hint, [window.left.round(), window.top.round(), window.right.round(), window.bottom.round()]);
+      // As wide as the phone, its button shows; it enters from there.
+      final grip = tester.getRect(find.byKey(const ValueKey('mini-resize')));
+      final pull = await tester.startGesture(grip.center);
+      await pull.moveBy(const Offset(-40, 0));
+      await pull.moveBy(const Offset(-300, 0));
+      await tester.pump();
+      await pull.up();
+      await tester.pump();
+      await _settle(tester);
+      await tester.tapAt(tester.getRect(_window).topLeft + const Offset(150, 100));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.byKey(const ValueKey('mini-pip')));
+      await _settle(tester);
+      expect(calls.where((call) => call.method == 'enter'), hasLength(1));
+      // In picture-in-picture: the whole screen, the picture alone.
+      expect(PictureInPicture.active.value, isTrue);
+      expect(tester.getRect(_window), Offset.zero & const Size(393, 852));
+      expect(tester.widget<MiniPlayerSurface>(_inWindow(find.byType(MiniPlayerSurface))).kind, MiniKind.systemPip);
+      expect(find.byKey(const ValueKey('mini-close')), findsNothing);
+      expect(app.engine.opens, hasLength(1), reason: 'the same player');
+      // Back: the window again, where it was.
+      PictureInPicture.active.value = false;
+      await _settle(tester);
+      expect(tester.getRect(_window).width, closeTo(393, 0.01));
+      expect(tester.widget<MiniPlayerSurface>(_inWindow(find.byType(MiniPlayerSurface))).kind, MiniKind.inApp);
+      // Closed: no longer armed.
+      await tester.tap(find.byKey(const ValueKey('mini-close')));
+      await _settle(tester);
+      expect((calls.lastWhere((call) => call.method == 'setAutoEnter').arguments as Map)['enabled'], isFalse);
+      await _close(tester, app);
+    });
+
+    testWidgets('J1: "离开应用时自动小窗" arms leaving only while the picture plays', (tester) async {
+      final app = await _app(tester);
+      await _openRoom(tester);
+      List<bool> armed() => [
+        for (final call in calls)
+          if (call.method == 'setAutoEnter') (call.arguments as Map)['enabled'] as bool,
+      ];
+      expect(armed().where((value) => value), isEmpty, reason: 'off by default');
+      await tester.runAsync(() => app.services.store.settings.set(Settings.autoPipOnLeave, true));
+      await _settle(tester);
+      expect(armed().last, isTrue);
+      final controller = FloatingRoomProbe.controllerOf(tester);
+      await tester.runAsync(controller.session.pause);
+      await _settle(tester);
+      expect(armed().last, isFalse, reason: 'paused');
+      await tester.runAsync(controller.session.resume);
+      await _settle(tester);
+      expect(armed().last, isTrue);
+      await tester.runAsync(() => controller.setAudioOnly(enabled: true));
+      await _settle(tester);
+      expect(armed().last, isFalse, reason: 'audio only');
+      await _leaveRoom(tester, app);
+      expect(armed().last, isFalse, reason: 'left the room');
+      await _close(tester, app);
+    });
+  });
+}
+
+/// Reaches the room's controller through the page's player.
+abstract final class FloatingRoomProbe {
+  static LiveRoomController controllerOf(WidgetTester tester) {
+    final runtime = FloatingRoom.instance.runtime;
+    if (runtime != null) return runtime.controller;
+    return tester.widget<RoomPlayer>(find.byType(RoomPlayer).first).controller;
+  }
+}

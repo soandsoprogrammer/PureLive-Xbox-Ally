@@ -1,0 +1,164 @@
+{
+  "source_commit": "f053ffc90e9d0a8ad4e69d72fe153c28d6f809cc",
+  "source_tree": "9ec52092b1198f6106b1c1e9af6918ca2fe42f6c",
+  "version": "5.4.24",
+  "build": 5128,
+  "release_url": "https://github.com/wzgrx/PureLive/releases/tag/v5.4.24",
+  "apple_run_id": 41090611656,
+  "package_manifest": {
+    "source_commit": "f053ffc90e9d0a8ad4e69d72fe153c28d6f809cc",
+    "source_tree": "9ec52092b1198f6106b1c1e9af6918ca2fe42f6c",
+    "version": "5.4.24",
+    "build": 5128,
+    "apple_run_id": 41090611656,
+    "packages": [
+      {
+        "name": "PureLive-5.4.24-5128-debug-signed-android-arm64-v8a-release.apk",
+        "bytes": 114417676,
+        "sha256": "95253522e89a8f37cb607631c8919aadb1660484543ecde7941f83b0250195e7"
+      },
+      {
+        "name": "PureLive-5.4.24-5128-debug-signed-android-armeabi-v7a-release.apk",
+        "bytes": 102029966,
+        "sha256": "04a502554d86d63e4876ecc0f661db1dbf8a62cd7a54fceed5bf89e3c1d47e71"
+      },
+      {
+        "name": "PureLive-5.4.24-5128-debug-signed-android-x86_64-release.apk",
+        "bytes": 126132207,
+        "sha256": "2abbaa2195d6bba5eeb5b2642e6234e5c9dbc4c888c6e99bc21c1a514735db42"
+      },
+      {
+        "name": "PureLive-5.4.24-5128-linux-x64.tar.gz",
+        "bytes": 57927862,
+        "sha256": "99598416ad7df3a04a6b88f63c5fa3ffc8755c90f0f8759bbc7ad9964630d946"
+      },
+      {
+        "name": "PureLive-5.4.24-5128-windows-x64-portable.zip",
+        "sha256": "51b7ffa0fb21cc08d8507712f9a9ffc0bf18698a3f2b9dc084fb248dc8db549d",
+        "bytes": 69172265
+      },
+      {
+        "name": "PureLive-5.4.24-5128-windows-x64-setup.exe",
+        "sha256": "112633f4f086f3bff9109724590510751d4463e62645c2e18e768cd75a848652",
+        "bytes": 53180994
+      },
+      {
+        "name": "PureLive-5.4.24-5128-ios-trollstore.ipa",
+        "bytes": 47886400,
+        "sha256": "3c2ff9709094f981726282999c0305723e8ba651ce67534b32b87802559976c8"
+      },
+      {
+        "name": "PureLive-5.4.24-5128-ios-unsigned.ipa",
+        "bytes": 47720139,
+        "sha256": "6240764ff8c7764940c9bbfa25849bf3bd5aeb152483bb39accf5aab40bdfeea"
+      },
+      {
+        "name": "PureLive-5.4.24-5128-macos-universal.dmg",
+        "bytes": 101140012,
+        "sha256": "18f39b990c2a5d761c8dfc2e01d46661042b702bb0583d8b7bb517cd60eea612"
+      },
+      {
+        "name": "PureLive-5.4.24-5128-macos-universal.zip",
+        "bytes": 89775255,
+        "sha256": "e4b0619bd86882e04511df745c5218506ca2f7523c5c695219ff2b6aefab1b07"
+      }
+    ],
+    "checksum_file": {
+      "name": "SHA256SUMS.txt",
+      "bytes": 1138,
+      "sha256": "4ae4c1a8d035f4e13832ebb4bfa4c87db77df1ad3e7fd0aff03a8478bbfbea44"
+    }
+  },
+  "receipts_sha256": {
+    "issue47-new-display-report.json": "91160450a9388053033d656981b7c0a1f5f5aade6a286d992f5cef88a8572ee4",
+    "issue47-display-investigation.json": "a4c71b0ca759fef35895fe309ed5f857a153897ab3f9b930bd12d0e9f78c853e",
+    "candidate-source.json": "220c7e39b5c0e9488c9b7b8f1770fcca900a1c4525c8a879b183d35a7d6d9ce2",
+    "release-full-gate.json": "a194886368c41dd8807aac0a102dfffdd17c4a7d51d6d4b989a42af752913c18",
+    "all-package-manifest.json": "b08518910191ef1cb1fbe73ca79a31f535a9ad0f5b46f15f94a40d90c50b33b9",
+    "feature-native-final-verification.json": "ce490db61ed662ca928e2fd850fc76df3bf1cada6039dfc6f33a28dd2856cc70",
+    "projection-working-native-verification.json": "0e5dc741aad8ae403702c6d9f386e4f6a5c2e9d39c98139e48f3a2109dedf785",
+    "issue49-final-public-rooms-native.json": "4dd6d557e3daad280acc3017309469166c33964014ea769b13d919cea2380266",
+    "issue49-final-room-switch-native.json": "5f90a30effe378ca8bd58e6138c1d1fd32381322f6b456d549cf8a652367c123",
+    "issue49-public-room-probes.json": "c9532f779b9f292260aa86ddc5ab835ae741a732d84185e141170f41ec7d0cfa",
+    "issue49-new-phone-report.json": "e3db0c433cc0b0c0b9f49dbf76657dff6762d6dce05af2a7fb48eb9b96d8f73d",
+    "android17-final-permission-verification.json": "ae4817fb31eb5af28e9d0dba6ef98fea762d11466db2969276a3743dae36563a",
+    "access-api37-supervised-exit.json": "cb68ed250d6688da67d19df0f0f13037c51dc0ca6250052da209c08d8d76c7b7",
+    "access-api37-lavapipe-exit.json": "fd06959400ab824e3adee38d06803f579eff9a0cc850b873c921c146d3ca066a",
+    "android-final-package-verification.json": "464a0b4bfb5cef29dc45a6447de6639eeae1014c65a2074f74263eecaa28cf3a",
+    "android-native-cleanup.json": "ec99c7217b11bcc6d78c53c789394008cb14f5c894c3f1056dec68551a07362b",
+    "windows-final-package-verification.json": "aa1805193c57b3cd6ead1536cf9f0aaf0ff462a7b2183567a2eda0873012591c",
+    "windows-native-cleanup.json": "f6b191582e03d0090bf1a5df45ce2b0ffcaf6dc4f26fc72590e74f135692ecd4",
+    "linux-package-smoke.json": "0dc36b663c85961f56a1ab19dfcc31bdea84c8ac7509de5bed5597c27c6a3e57",
+    "apple-manual-frame-review.json": "f0b0dfca4ebdf9dd69ae224fa80fd2682f9bf6b83479b4a5eca1466c19d54cfe",
+    "mac-accepted-visual.json": "99624f039eb14d325ec139369478c80afaaa050f9dde4e364c23bd27c6ec420a",
+    "native-recording-kernels-verification.json": "c2d3451c7ccdca16c7c281cb1190e76b0abc9e1df9ca3a7a9470352beeb42d49",
+    "native-macos-playback-verification.json": "258bf74af4fdd31e2b1b5e0bb4ebd01966d6884744808c58f3240faa86bfdfe6",
+    "public-download-verification.json": "de80e3e642d8683ad77135bc7f701e8306dd059ccfe37a5e3109181c05ad449a",
+    "legacy-gate-verification.json": "3b578aba3631154f50c188fc8889395111f747a5be22a12f11532e86c02e91fb"
+  },
+  "images": [
+    {
+      "caption": "匿名公开房间的真实直播预告与动态；原生检查源码4d53681",
+      "file": "final-douyin-information.jpg",
+      "source_sha256": "2a8f7a32dea7269293e084fa1d798d351ef25aadf709e4903c10aa83feb27148",
+      "sha256": "8c128463dedb7a07c31e2c7a0ae680ffaa4cb97144ba8ed901271ac8f1fb534c"
+    },
+    {
+      "caption": "最终Windows ZIP：同一投屏窗口切回丁，保持全屏；前方为本测试控制窗口",
+      "file": "final4-projection-again-d.jpg",
+      "source_sha256": "b9fa2983103bece6b8475df0b338a8d3e6e1e0debde72305642e8dd5bd040db3",
+      "sha256": "2fa6c53624c5dccafbe8b720fac4a5a29841aa47b5431ae6f38026b6bc9241a2"
+    },
+    {
+      "caption": "最终Android v4dev：局域网接收设置，默认关闭",
+      "file": "final4-remote-off.jpg",
+      "source_sha256": "41752c237c4c0af0988ac321f3f50537b9eba900b47c44a5944d36ade5df8014",
+      "sha256": "48f114e027598d5879f96e8f06bf96a98d59f4b76f30c55dd0c0b4c2a80870ca"
+    },
+    {
+      "caption": "横屏多画面：右侧手势只调整选中格子音量；原生检查源码bce367e4",
+      "file": "multiview-volume-gesture.jpg",
+      "source_sha256": "4bf6dd58a1bd755994ff652044e763ba964ac3af06d5d0dba4bada4476ad834e",
+      "sha256": "104bb18ad7ede4051d94fe9fe2dc28a0cd47933aaba7a9e887d3a0328f59a4d2"
+    },
+    {
+      "caption": "房间独立正分贝增益；原生检查源码bce367e4",
+      "file": "room-gain-positive.jpg",
+      "source_sha256": "52cff7a3e7447ffc278017f0f4e5cad8e323fa39a340a733cee4d85fecdfeae1",
+      "sha256": "a0770fc50ca673b21185da17eee30038bd14ba783b819be3bcd4ab5a10b3c7f0"
+    },
+    {
+      "caption": "斗鱼回看暂停拖动至8:29后切换480P，保留暂停和进度；原生检查源码4d53681",
+      "file": "final-vod-quality-still.jpg",
+      "source_sha256": "3d7a6b46b395575144cc25087c402172f06d2f7d0ed64ceca092486b5f24b8f9",
+      "sha256": "24cb316c5a50bd44c7c2defd5a77e6f7e286f23c51173b5f442ace42f9154bbf"
+    },
+    {
+      "caption": "电视焦点长标题滚动；原生检查源码bce367e4",
+      "file": "tv-room-list-scrolled.jpg",
+      "source_sha256": "59497cc9c60276085ba7dee2a2674da5c393aa263601ebdb491de3c9b95df379",
+      "sha256": "7af2dd1f9b79eb12ab1fd19811ec81ff42cf6b4259997ea75e2efd47a06123d1"
+    },
+    {
+      "caption": "最终Mac ZIP在第二台托管机器第二次启动30秒后的主页",
+      "file": "launch-2-30.jpg",
+      "source_sha256": "66edd5ac62c5f1ab4b9ad738c1de3e996a67fc199f19f6f694c8cabff1d627dc",
+      "sha256": "061dc7981cf0452ad839ee97bf84cadce450544ad76ec2739c2d64df76a6d3a7"
+    },
+    {
+      "caption": "最终Linux TAR在专用显示环境启动后的主页",
+      "file": "linux-home.jpg",
+      "source_sha256": "bb7fcf9f95a067d8c4990f4862ce1bf7ca5fd990ed117873820b2fa04fbb0a5c",
+      "sha256": "c3418bc7fd1dc71541a15f7fe02f9c3f8f052f9444e8cbd3a94ceb8cfe31c7ee"
+    }
+  ],
+  "feed_sha256": {
+    "version.json": "725dbe528c213c60238e512d4e4f5c7172346b243ab2c0be50aad78ecb37e8a6",
+    "releases.json": "9f661d341c365aa41d50650ddbb04b3ba2014dc690b88a28fbd935034023eed2"
+  },
+  "legacy_commit": "81122a0da4b99387a307829ed3d57141a19536d2",
+  "historical_entries_retained": 215,
+  "physical_original_hardware_verified": false,
+  "physical_k90_operated": false,
+  "speaker_audio_verified": false
+}

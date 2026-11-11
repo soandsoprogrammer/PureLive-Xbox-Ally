@@ -1,0 +1,16 @@
+{
+  "base_revision": "737ba8f885dc774b53b442759999a312c9461e4e",
+  "upstream_merged_commit": "b304cf18b6864d141cf08e26a07898901cddb4b5",
+  "patch": "flutter-193372.patch",
+  "patch_sha256": "f5fd56c5a0b6e73b31411f6820dcb4c1eecad672e28ccad8cbb3698eeaaf8dd3",
+  "files": {
+    "packages/flutter/lib/src/semantics/semantics.dart": {
+      "before_lf_sha256": "b76165c41486de81d1b5df499b616064966ec3fc1509b100c42c296829c7590b",
+      "after_lf_sha256": "a2a4da249162739403ed5cd410b8e7241def868f20bd79d2faac8a5275ab690a"
+    },
+    "packages/flutter/test/semantics/semantics_update_test.dart": {
+      "before_lf_sha256": "d6357aa4986af6c3b4fce0624378e9fe8e34034d47f5894c7e5540f8edc11587",
+      "after_lf_sha256": "3b3ec482fa9f3d34886296305932559f3b4fa1e30e6647a8e53bd05a225149a1"
+    }
+  }
+}

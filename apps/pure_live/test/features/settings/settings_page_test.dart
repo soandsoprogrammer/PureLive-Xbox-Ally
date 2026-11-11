@@ -1,0 +1,701 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:live_store/live_store.dart';
+import 'package:live_ui/live_ui.dart';
+import 'package:pure_live/features/backup/backup_page.dart';
+import 'package:pure_live/features/iptv/iptv_page.dart';
+import 'package:pure_live/features/record_settings/record_settings_page.dart';
+import 'package:pure_live/features/settings/settings_catalog.dart';
+import 'package:pure_live/features/settings/settings_editors.dart';
+import 'package:pure_live/features/settings/settings_model.dart';
+import 'package:pure_live/features/settings/settings_page.dart';
+import 'package:pure_live/i18n/i18n.dart';
+import 'package:pure_live/routes/route_path.dart';
+import 'package:pure_live/shared/rooms/paging.dart';
+
+import '../../support.dart';
+import 'settings_harness.dart';
+
+void main() {
+  setUpAll(loadStrings);
+
+  testWidgets('issue 131: a phone settings slider leaves vertically and its pane leaves to the left', (tester) async {
+    final h = await pumpSettings(tester, width: 1280, height: 720, arguments: 'appearance');
+    final row = settingsRow('liquid_glass_frost');
+    await tester.ensureVisible(row);
+    await tester.pumpAndSettle();
+    final slider = find.descendant(of: row, matching: find.byType(Slider));
+    final focus =
+        tester
+              .widgetList<Focus>(find.descendant(of: slider, matching: find.byType(Focus)))
+              .where((widget) => widget.focusNode != null)
+              .last
+              .focusNode!
+          ..requestFocus();
+    await tester.pumpAndSettle();
+    final original = h.settings.get(Settings.liquidGlassFrost);
+    final sliderFocus = FocusManager.instance.primaryFocus;
+    expect(sliderFocus, same(focus));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await settleSettings(tester);
+    expect(
+      h.settings.get(Settings.liquidGlassFrost),
+      original,
+      reason: 'vertical navigation must not change a horizontal setting',
+    );
+    expect(FocusManager.instance.primaryFocus, isNot(sliderFocus));
+    for (var i = 0; i < 8; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+    }
+    final focusContext = FocusManager.instance.primaryFocus!.context!;
+    expect(
+      tester
+          .getRect(find.byKey(const ValueKey('settings-overview')))
+          .contains((focusContext.findRenderObject()! as RenderBox).localToGlobal(Offset.zero)),
+      isTrue,
+      reason: 'the nested settings navigator must let the remote return to the overview',
+    );
+  });
+
+  testWidgets('LAN control can be found by either language and opens its embedded receiver page', (tester) async {
+    await pumpSettings(tester, width: 1200);
+    for (final query in ['遥控', 'remote']) {
+      await searchSettingsFor(tester, query);
+      expect(find.text('局域网遥控'), findsWidgets);
+      expect(find.textContaining('_remote_control'), findsNothing);
+    }
+    await tester.tap(settingsRow('playback_remote'));
+    await settleSettings(tester);
+    expect(find.byKey(const ValueKey('remote-control-enable')), findsOneWidget);
+    expect(find.byKey(const ValueKey('remote-control-address')), findsOneWidget);
+  });
+
+  testWidgets("P02: settings keep Android's stretch at their ends; only refreshable lists bounce", (tester) async {
+    await pumpSettings(tester);
+    expect(find.byType(AppRefreshView), findsNothing);
+    expect(find.byType(StretchingOverscrollIndicator), findsWidgets);
+  });
+
+  group('overview (U.6a)', () {
+    testWidgets('five groups and the 3.x rows in their new order, with their icons', (tester) async {
+      await pumpSettings(tester, height: 2600);
+      expectInOrder(tester, [
+        for (final title in ['界面', '直播来源', '播放', '通用和网络', '数据']) find.text(title),
+      ]);
+      expectInOrder(tester, [for (final section in SettingsSection.values) settingsSection(section)]);
+      expect(SettingsSection.values.map((section) => section.name), [
+        'appearance',
+        'navigation',
+        'platforms',
+        'refresh',
+        'iptv',
+        'video',
+        'danmaku',
+        'pipDanmaku',
+        'playerKernel',
+        'recording',
+        'general',
+        'network',
+        'playbackRemote',
+        'localInteraction',
+        'cache',
+        'backup',
+        'configPreview',
+        'log',
+      ]);
+      // "主题定制" is "外观"; "配置预览" left the app bar for the data group.
+      expect(
+        find.descendant(of: settingsSection(SettingsSection.appearance), matching: find.text('外观')),
+        findsOneWidget,
+      );
+      expect(find.text('本地配置预览'), findsOneWidget);
+      expect(find.widgetWithText(AppBar, '设置'), findsOneWidget);
+      expect(find.byTooltip('配置预览'), findsNothing);
+      // The icons of 3.x's rows; danmaku is 3.x's picture.
+      for (final (section, icon) in [
+        (SettingsSection.appearance, AppIcons.settingsAppearance),
+        (SettingsSection.iptv, AppIcons.settingsIptv),
+        (SettingsSection.video, AppIcons.settingsVideo),
+        (SettingsSection.recording, AppIcons.settingsRecording),
+        (SettingsSection.backup, AppIcons.settingsBackup),
+      ]) {
+        expect(find.descendant(of: settingsSection(section), matching: find.byIcon(icon)), findsOneWidget);
+      }
+      expect(
+        find.descendant(of: settingsSection(SettingsSection.danmaku), matching: find.byType(DanmakuIcon)),
+        findsOneWidget,
+      );
+      // Explanations show up to three lines (3.x cut them at one; A01.4 c2).
+      final explanation = tester.widget<HighlightedText>(
+        find.descendant(of: settingsSection(SettingsSection.appearance), matching: find.byType(HighlightedText)).last,
+      );
+      expect(explanation.maxLines, 3);
+    });
+
+    testWidgets('a row opens its content immediately; system back returns to the overview', (tester) async {
+      final h = await pumpSettings(tester);
+      await tapSettings(tester, settingsSection(SettingsSection.video));
+      expect(find.byKey(const ValueKey('settings-page-video')), findsOneWidget);
+      expect(settingsRow('prefer_resolution'), findsOneWidget);
+      // The danmaku of floating windows has one entry, in the overview.
+      expect(settingsRow('pip_danmaku'), findsNothing);
+      await tester.tap(find.byType(BackButton));
+      await settleSettings(tester);
+      expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
+
+      // Which half of the recorder's "已占用" row cannot finish, and over what
+      // (S01.3): both awaits are bounded, so a stall says so instead of
+      // hanging the test.
+      final probe = await tester.runAsync(() async {
+        try {
+          final storage = h.services.recording!.storage;
+          final root = await storage.recordDirectory().timeout(const Duration(seconds: 3));
+          final entries = await root
+              .list(recursive: true, followLinks: false)
+              .length
+              .timeout(const Duration(seconds: 3));
+          return '${root.path}, $entries entries';
+        } on Object {
+          return 'not resolved';
+        }
+      });
+      for (final (section, pageType) in [
+        (SettingsSection.iptv, IptvPage),
+        (SettingsSection.recording, RecordSettingsPage),
+        (SettingsSection.backup, BackupPage),
+      ]) {
+        await tester.ensureVisible(settingsSection(section));
+        await tester.pumpAndSettle();
+        await tester.tap(settingsSection(section));
+        await tester.pump();
+        expect(h.opened, isEmpty);
+        expect(find.byType(pageType), findsOneWidget);
+        final service = h.services.recording == null ? 'none' : 'there';
+        await settleSettingsFiles(
+          tester,
+          where: '${section.name} opened, recording service: $service, storage: $probe',
+        );
+        await tester.binding.handlePopRoute();
+        await settleSettingsFiles(tester, where: '${section.name} back');
+        expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
+      }
+    });
+
+    testWidgets('the system back closes the open page before leaving (back chain)', (tester) async {
+      await pumpSettings(tester, arguments: 'appearance');
+      expect(find.byKey(const ValueKey('settings-page-appearance')), findsOneWidget);
+      await tapSettings(tester, settingsRow('room_card'));
+      expect(find.text('应用到'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await settleSettings(tester);
+      expect(find.byKey(const ValueKey('settings-page-appearance')), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await settleSettings(tester);
+      expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
+    });
+
+    testWidgets('840 wide and up: the overview at 360 and the page beside it; sub-pages stay there', (tester) async {
+      await pumpSettings(tester, width: 1280, height: 1400);
+      expect(tester.getSize(find.byKey(const ValueKey('settings-overview'))).width, settingsOverviewWidth);
+      final page = find.byKey(const ValueKey('settings-page-appearance'));
+      expect(page, findsOneWidget);
+      expect(tester.getTopLeft(page).dx, greaterThan(settingsOverviewWidth));
+      // The open page is marked in the overview.
+      final selected = tester.widget<SettingsLinkRow>(settingsSection(SettingsSection.appearance));
+      expect(selected.selected, isTrue);
+      // The page body keeps at most 720 at the start.
+      expect(
+        tester.getSize(find.byKey(const ValueKey('settings-section-view-appearance'))).width,
+        lessThanOrEqualTo(1280 - settingsOverviewWidth),
+      );
+
+      await tapSettings(tester, settingsRow('room_card'));
+      expect(find.byKey(const ValueKey('settings-room-card-preview')), findsOneWidget);
+      expect(tester.getTopLeft(find.text('应用到')).dx, greaterThan(settingsOverviewWidth));
+      expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await settleSettings(tester);
+      expect(page, findsOneWidget);
+
+      await tapSettings(tester, settingsSection(SettingsSection.network));
+      expect(find.byKey(const ValueKey('settings-page-network')), findsOneWidget);
+      expect(tester.widget<SettingsLinkRow>(settingsSection(SettingsSection.network)).selected, isTrue);
+    });
+
+    testWidgets('a landscape phone gets two panes and a compact bar; 600–839 one column at most 720', (tester) async {
+      await pumpSettings(tester, width: 852, height: 393);
+      expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
+      expect(tester.getSize(find.byType(AppBar).first).height, 48);
+
+      await pumpSettings(tester, width: 760, height: 1000);
+      expect(find.widgetWithText(AppBar, '设置'), findsOneWidget);
+      expect(tester.getSize(find.byKey(const ValueKey('settings-search'))).width, lessThanOrEqualTo(720));
+      expect(tester.getSize(find.byType(AppBar).first).height, kToolbarHeight);
+    });
+
+    testWidgets('resizing across 840 keeps the open page', (tester) async {
+      await pumpSettings(tester, width: 1280, height: 1400);
+      await tapSettings(tester, settingsSection(SettingsSection.general));
+      tester.view.physicalSize = const Size(500, 1000);
+      await settleSettings(tester);
+      expect(find.byKey(const ValueKey('settings-page-general')), findsOneWidget);
+      tester.view.physicalSize = const Size(1280, 1400);
+      await settleSettings(tester);
+      expect(find.byKey(const ValueKey('settings-page-general')), findsOneWidget);
+      expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
+    });
+  });
+
+  group('search (U.6a c8)', () {
+    testWidgets('results are the rows under "page › group" with the words marked', (tester) async {
+      final h = await pumpSettings(tester);
+      await searchSettingsFor(tester, '字体');
+      expect(find.byKey(const ValueKey('settings-search-results')), findsOneWidget);
+      expect(find.text('外观 › 字体和字号'), findsOneWidget);
+      expect(settingsRow('app_font'), findsOneWidget);
+      expect(settingsRow('text_scale'), findsOneWidget);
+      // The danmaku font is found on the video page (the danmaku page links
+      // to the same font page, F02 c1).
+      expect(settingsRow('video_danmaku_font'), findsOneWidget);
+      expect(tester.widget<SettingsHighlight>(find.byType(SettingsHighlight)).words, ['字体']);
+
+      // A switch works in place.
+      await searchSettingsFor(tester, 'HEVC');
+      await tester.tap(settingsRow('prefer_h264'));
+      await settleSettings(tester);
+      expect(h.settings.get(Settings.preferH264), isFalse);
+
+      // Every word must match.
+      await searchSettingsFor(tester, '弹幕 速度');
+      expect(settingsRow('danmaku_speed'), findsOneWidget);
+      expect(settingsRow('app_proxy'), findsNothing);
+
+      await searchSettingsFor(tester, '完全不存在的设置');
+      expect(find.byKey(const ValueKey('settings-search-empty')), findsOneWidget);
+      expect(find.text('没有找到相关设置'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('settings-search-clear')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
+    });
+
+    testWidgets('a result that opens a page goes to its page and highlights the row', (tester) async {
+      await pumpSettings(tester);
+      await searchSettingsFor(tester, '字体');
+      await tapSettings(tester, settingsRow('app_font'));
+      expect(find.byKey(const ValueKey('settings-page-appearance')), findsOneWidget);
+      // The font page itself did not open.
+      expect(find.text('系统字体'), findsNothing);
+      expect(settingsRow('app_font'), findsOneWidget);
+      // Back returns to the results.
+      await tester.binding.handlePopRoute();
+      await settleSettings(tester);
+      expect(find.byKey(const ValueKey('settings-search-results')), findsOneWidget);
+    });
+
+    testWidgets('Ctrl+F goes to the field, Esc clears it', (tester) async {
+      await pumpSettings(tester, width: 1280, height: 800);
+      await tester.tap(settingsRow('theme_mode'));
+      await tester.pumpAndSettle();
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+      final field = tester.widget<TextField>(find.byKey(const ValueKey('settings-search')));
+      expect(field.focusNode!.hasFocus, isTrue);
+      await searchSettingsFor(tester, '代理');
+      expect(find.byKey(const ValueKey('settings-search-results')), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(field.controller!.text, isEmpty);
+      expect(find.byKey(const ValueKey('settings-overview')), findsOneWidget);
+    });
+  });
+
+  group('appearance (U.6b)', () {
+    testWidgets('four groups, rows in order, values on the rows', (tester) async {
+      await withPlatform(TargetPlatform.android, () async {
+        await pumpSettings(tester, arguments: 'appearance', height: 2200);
+        expectInOrder(tester, [
+          for (final title in ['主题', '房间卡片和列表', '语言和界面', '字体和字号']) find.text(title),
+        ]);
+        expectInOrder(tester, [
+          for (final id in [
+            'theme_mode',
+            'pure_black',
+            'theme_color',
+            'dynamic_color',
+            'loading_style',
+            'room_card',
+            'cross_spacing',
+            'main_spacing',
+            'page_scroll_top',
+            'language',
+            'ui_mode',
+            'app_font',
+            'text_scale',
+            'font_sizes',
+          ])
+            settingsRow(id),
+        ]);
+        expect(find.descendant(of: settingsRow('theme_mode'), matching: find.text('跟随系统')), findsOneWidget);
+        expect(find.descendant(of: settingsRow('language'), matching: find.text('简体中文')), findsOneWidget);
+        expect(find.descendant(of: settingsRow('cross_spacing'), matching: find.text('6 px')), findsOneWidget);
+        expect(find.descendant(of: settingsRow('text_scale'), matching: find.text('100%')), findsOneWidget);
+        expect(find.descendant(of: settingsRow('app_font'), matching: find.text('系统默认')), findsOneWidget);
+        expect(find.text('Default'), findsNothing);
+        // The pager is on computers only (3.x showed it wider than 680).
+        expect(settingsRow('page_settings'), findsNothing);
+        expect(find.byKey(const ValueKey('settings-text-size-preview')), findsOneWidget);
+      });
+    });
+
+    testWidgets('theme mode and language: a dialog without buttons; the pick is stored', (tester) async {
+      final h = await pumpSettings(tester, arguments: 'appearance');
+      await tapSettings(tester, settingsRow('theme_mode'));
+      // One choice dialog everywhere: the current option in the primary
+      // colour with a tick, no radio buttons (UI_PLAN §7, U.6c c7).
+      expect(find.byType(DialogOptionRow), findsNWidgets(3));
+      expect(find.byType(RadioListTile<String>), findsNothing);
+      expect(
+        find.descendant(of: find.byType(DialogOptionRow).first, matching: find.byIcon(AppIcons.selected)),
+        findsOneWidget,
+      );
+      expectInOrder(tester, [find.text('跟随系统').last, find.text('深色模式'), find.text('浅色模式')]);
+      expect(find.text('取消'), findsNothing);
+      await tapSettings(tester, find.text('深色模式'));
+      expect(h.settings.get(Settings.themeMode), 'Dark');
+      expect(find.descendant(of: settingsRow('theme_mode'), matching: find.text('深色模式')), findsOneWidget);
+
+      await tapSettings(tester, settingsRow('language'));
+      expect(find.text('跟随系统'), findsNothing);
+      await tapSettings(tester, find.byKey(const ValueKey('settings-choice-English')));
+      expect(h.settings.get(Settings.language), 'English');
+    });
+
+    testWidgets('pure black: off by default, unusable in light mode with the reason', (tester) async {
+      final h = await pumpSettings(tester, arguments: 'appearance');
+      await tester.tap(find.descendant(of: settingsRow('pure_black'), matching: find.byType(Switch)));
+      await settleSettings(tester);
+      expect(h.settings.get(Settings.pureBlackTheme), isTrue);
+      await tester.runAsync(() => h.settings.set(Settings.themeMode, 'Light'));
+      await settleSettings(tester);
+      expect(find.text(withoutOrphan('浅色模式下不起作用：先把主题模式换成深色或跟随系统')), findsOneWidget);
+      await tester.tap(settingsRow('pure_black'), warnIfMissed: false);
+      await settleSettings(tester);
+      expect(h.settings.get(Settings.pureBlackTheme), isTrue);
+    });
+
+    testWidgets('theme colour: previews while picking, cancel puts it back, the code is checked', (tester) async {
+      final h = await pumpSettings(
+        tester,
+        arguments: 'appearance',
+        seed: (s) => s.set(Settings.themeColorSwitch, 'FF009688'),
+      );
+      await tapSettings(tester, settingsRow('theme_color'));
+      // "推荐" first, the brand blue first in it.
+      expect(find.text('推荐'), findsOneWidget);
+      await tapSettings(tester, find.byKey(const ValueKey('color-recommended-0')));
+      expect(h.settings.get(Settings.themeColorSwitch), 'FF2E6FE0');
+      await tapSettings(tester, find.byKey(const ValueKey('settings-color-cancel')));
+      expect(h.settings.get(Settings.themeColorSwitch), 'FF009688');
+
+      await tapSettings(tester, settingsRow('theme_color'));
+      await tapSettings(tester, find.byKey(const ValueKey('color-tab-1')));
+      await tapSettings(tester, find.byKey(const ValueKey('color-primary-0')));
+      await tester.enterText(find.byKey(const ValueKey('color-code')), '#12');
+      // The main button says what it does (U.1d; not "确认").
+      expect(
+        find.descendant(of: find.byKey(const ValueKey('settings-color-apply')), matching: find.text('保存')),
+        findsOneWidget,
+      );
+      await tapSettings(tester, find.byKey(const ValueKey('settings-color-apply')));
+      expect(find.text('请输入 6 位 RGB 或 8 位 ARGB 十六进制颜色代码'), findsOneWidget);
+      await tester.enterText(find.byKey(const ValueKey('color-code')), '#F44336');
+      await tapSettings(tester, find.byKey(const ValueKey('settings-color-apply')));
+      expect(h.settings.get(Settings.themeColorSwitch), 'FFF44336');
+
+      // Dynamic colour decides while on: the row says so and is not usable.
+      await tester.runAsync(() => h.settings.set(Settings.enableDynamicTheme, true));
+      await settleSettings(tester);
+      expect(find.text(withoutOrphan('动态取色开着，颜色来自壁纸；关掉动态取色后才能选')), findsOneWidget);
+    });
+
+    testWidgets('spacing: − and + by 1 px; the number opens the checked dialog', (tester) async {
+      final h = await pumpSettings(tester, arguments: 'appearance');
+      await tapSettings(tester, find.byKey(const ValueKey('settings-spacing-plus-crossAxisSpacing')));
+      expect(h.settings.get(Settings.crossAxisSpacing), 7);
+      await tapSettings(tester, find.byKey(const ValueKey('settings-spacing-minus-mainAxisSpacing')));
+      expect(h.settings.get(Settings.mainAxisSpacing), 5);
+
+      await tapSettings(tester, find.byKey(const ValueKey('settings-spacing-value-crossAxisSpacing')));
+      await tester.enterText(find.byKey(const ValueKey('settings-spacing-input')), '99');
+      // The main button says what it does (U.1d; not "确认").
+      expect(
+        find.descendant(of: find.byKey(const ValueKey('settings-spacing-save')), matching: find.text('保存')),
+        findsOneWidget,
+      );
+      await tapSettings(tester, find.byKey(const ValueKey('settings-spacing-save')));
+      expect(find.text('请输入 0 到 64 之间的间距'), findsOneWidget);
+      await tapSettings(tester, find.byKey(const ValueKey('settings-spacing-preset-12')));
+      await tapSettings(tester, find.byKey(const ValueKey('settings-spacing-save')));
+      expect(h.settings.get(Settings.crossAxisSpacing), 12);
+    });
+
+    testWidgets('computers: the pager page, its go-to switch and the page sizes', (tester) async {
+      await withPlatform(TargetPlatform.windows, () async {
+        final h = await pumpSettings(tester, arguments: 'appearance');
+        await tapSettings(tester, settingsRow('page_settings'));
+        expect(find.byKey(const ValueKey('settings-section-view-paging')), findsOneWidget);
+        expect(find.text('分页条（电脑）'), findsOneWidget);
+        await tester.tap(find.descendant(of: settingsRow('page_goto'), matching: find.byType(Switch)));
+        await settleSettings(tester);
+        expect(h.settings.get(Settings.pageShowGotoButton), isFalse);
+
+        await tapSettings(tester, settingsRow('page_size_options'));
+        // Nothing chosen yet: the recommended sizes for this width.
+        expect(find.byKey(const ValueKey('settings-page-size-12')), findsOneWidget);
+        await tester.enterText(find.byKey(const ValueKey('settings-page-size-input')), '24');
+        await tapSettings(tester, find.byKey(const ValueKey('settings-page-size-add')));
+        expect(find.text('该单页数量已在列表中'), findsOneWidget);
+        await tester.enterText(find.byKey(const ValueKey('settings-page-size-input')), '0');
+        await tapSettings(tester, find.byKey(const ValueKey('settings-page-size-add')));
+        expect(find.text('请输入 1 至 100 的整数'), findsOneWidget);
+        await tester.enterText(find.byKey(const ValueKey('settings-page-size-input')), '30');
+        await tapSettings(tester, find.byKey(const ValueKey('settings-page-size-add')));
+        // The main button says what it does (U.1d; not "确认").
+        expect(
+          find.descendant(of: find.byKey(const ValueKey('settings-page-sizes-save')), matching: find.text('保存')),
+          findsOneWidget,
+        );
+        await tapSettings(tester, find.byKey(const ValueKey('settings-page-sizes-save')));
+        expect(h.settings.get(Settings.pageSizeOptions), '12,24,30,36,48');
+      });
+    });
+
+    testWidgets('text sizes: an example per size; reset asks first', (tester) async {
+      final h = await pumpSettings(tester, arguments: 'appearance', seed: (s) => s.set(Settings.fontSizeBodySmall, 14));
+      await tapSettings(tester, settingsRow('font_sizes'));
+      final sample = tester.widget<Text>(find.byKey(const ValueKey('settings-font-sample-font_body_small')));
+      expect(sample.style!.fontSize, 14);
+      await tapSettings(tester, find.byKey(const ValueKey('settings-font-sizes-reset')));
+      expect(find.text('将五项精细字号全部恢复为默认值？'), findsOneWidget);
+      await tapSettings(tester, find.byKey(const ValueKey('settings-confirm')));
+      expect(h.settings.get(Settings.fontSizeBodySmall), 12);
+      expect(h.toasts, ['恢复默认']);
+    });
+
+    testWidgets('loading animation: three columns on a phone; restore asks first', (tester) async {
+      final h = await pumpSettings(tester, arguments: 'appearance', seed: (s) => s.set(Settings.loadingStyle, 'wave'));
+      // The gallery keeps playing: frames by time instead of settling.
+      Future<void> frames() async {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(seconds: 1));
+        }
+      }
+
+      await tester.tap(settingsRow('loading_style'));
+      await frames();
+      final keys = LoadingStyles.keys;
+      Offset at(int index) => tester.getTopLeft(find.byKey(ValueKey('settings-loading-style-${keys[index]}')));
+      expect(at(1).dy, at(0).dy);
+      expect(at(2).dy, at(0).dy);
+      expect(at(3).dy, greaterThan(at(0).dy));
+      expect(findWords('现在：跟随主题色'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('settings-loading-restore')));
+      await frames();
+      expect(find.text('恢复默认？'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('settings-confirm')));
+      await frames();
+      await frames();
+      expect(h.settings.get(Settings.loadingStyle), 'default');
+    });
+
+    testWidgets('room cards: names the devices, reset asks first, a change makes it custom', (tester) async {
+      await withPlatform(TargetPlatform.android, () async {
+        final h = await pumpSettings(tester, arguments: 'appearance');
+        await tapSettings(tester, settingsRow('room_card'));
+        expect(find.text('移动端（手机、平板）'), findsOneWidget);
+        expect(find.text('桌面端（电脑）'), findsOneWidget);
+        expect(find.text(withoutOrphan('改了下面任何一项，就显示“当前：自定义”，点一个预设回到它的样子。')), findsOneWidget);
+        await tapSettings(tester, find.byKey(const ValueKey('settings-room-card-avatar')));
+        expect(find.text(withoutOrphan('当前：自定义。点一个预设回到它的样子。')), findsOneWidget);
+        await tapSettings(tester, find.byKey(const ValueKey('settings-room-card-reset')));
+        expect(find.text('“移动端（手机、平板）”的卡片恢复成“标准”预设。'), findsOneWidget);
+        await tapSettings(tester, find.byKey(const ValueKey('settings-confirm')));
+        expect(h.settings.isSet(Settings.roomCardMobilePreset), isFalse);
+      });
+    });
+  });
+
+  group('navigation (U.6b)', () {
+    testWidgets('multi-view on every platform; hidden pages last, at least one stays', (tester) async {
+      await withPlatform(TargetPlatform.android, () async {
+        final h = await pumpSettings(
+          tester,
+          arguments: 'navigation',
+          seed: (s) => s.set(Settings.savedMenuIds, ['favorites', 'areas']),
+        );
+        await tester.tap(find.descendant(of: settingsRow('multiview'), matching: find.byType(Switch)));
+        await settleSettings(tester);
+        expect(h.settings.get(Settings.enableMultiView), isFalse);
+
+        Finder menu(String id) => find.byKey(ValueKey('settings-menu-$id'));
+        expectInOrder(tester, [menu('favorites'), menu('areas'), menu('popular'), menu('record')]);
+        expect(find.descendant(of: menu('popular'), matching: find.text(withoutOrphan('已隐藏'))), findsOneWidget);
+        expect(find.byKey(const ValueKey('settings-menu-handle-popular')), findsNothing);
+        expect(find.byKey(const ValueKey('settings-menu-handle-favorites')), findsOneWidget);
+        expect(find.text(withoutOrphan('按住右侧把手上下拖动可以调整顺序；隐藏的排在最后，至少保留一个。')), findsOneWidget);
+
+        await tapSettings(tester, find.descendant(of: menu('popular'), matching: find.byType(Switch)));
+        expect(h.settings.get(Settings.savedMenuIds), ['favorites', 'areas', 'popular']);
+        await tapSettings(tester, menu('favorites'));
+        await tapSettings(tester, menu('areas'));
+        await tapSettings(tester, menu('popular'));
+        expect(h.settings.get(Settings.savedMenuIds), ['popular']);
+        expect(h.toasts, ['请至少保留一个底部菜单标签页。']);
+      });
+    });
+  });
+
+  group('playback, general and data pages (U.6c–U.6e)', () {
+    testWidgets('choices and numbers with a checked custom value', (tester) async {
+      final h = await pumpSettings(tester, arguments: 'video');
+      expect(find.descendant(of: settingsRow('prefer_resolution'), matching: find.text('原画')), findsOneWidget);
+      await tapSettings(tester, settingsRow('prefer_resolution'));
+      await tapSettings(tester, find.byKey(const ValueKey('settings-choice-超清')));
+      expect(h.settings.get(Settings.preferResolution), '超清');
+
+      await pumpSettings(tester, arguments: 'refresh');
+      await tapSettings(tester, settingsRow('history_limit'));
+      await tester.enterText(find.byKey(const ValueKey('settings-number-input')), '');
+      await tapSettings(tester, find.byKey(const ValueKey('settings-number-save')));
+      expect(find.text('可填写 0～99999'), findsWidgets);
+    });
+
+    testWidgets('platform rows follow the operating system', (tester) async {
+      await withPlatform(TargetPlatform.windows, () async {
+        await pumpSettings(tester, arguments: 'general');
+        expect(settingsRow('window_size'), findsOneWidget);
+        expect(settingsRow('startup'), findsOneWidget);
+        expect(settingsRow('screen_keep_on'), findsNothing);
+      });
+      const windows = SettingsEnv(platform: TargetPlatform.windows);
+      const android = SettingsEnv(platform: TargetPlatform.android);
+      const ios = SettingsEnv(platform: TargetPlatform.iOS);
+      List<String> ids(SettingsEnv env) => [
+        for (final entry in settingsCatalog)
+          if (entry.when(env)) entry.id,
+      ];
+      expect(ids(android), containsAll(['background_play', 'screen_keep_on', 'compat_mode', 'mobile_volume']));
+      expect(ids(android), isNot(contains('page_size_selector')));
+      expect(ids(windows), containsAll(['rtx_vsr', 'pip_on_top', 'desktop_volume', 'new_window', 'page_goto']));
+      expect(ids(ios), isNot(contains('dynamic_color')));
+      // A18.2 c6, c7: a Mac has its menu bar icon switch, no close question,
+      // no new windows; the others have no menu bar icon switch.
+      const mac = SettingsEnv(platform: TargetPlatform.macOS);
+      expect(ids(mac), contains('menu_bar_icon'));
+      expect(ids(mac), isNot(anyOf(contains('close_window'), contains('new_window'))));
+      expect(ids(windows), isNot(contains('menu_bar_icon')));
+      // Ids are unique; the platform accounts row is named "平台账号" (U.10a K1).
+      expect(settingsCatalog.map((entry) => entry.id).toSet(), hasLength(settingsCatalog.length));
+      expect(settingsCatalog.firstWhere((entry) => entry.id == 'accounts').titleText, '平台账号');
+    });
+
+    testWidgets('room card size: the desktop target only, stored from the card page', (tester) async {
+      await withPlatform(TargetPlatform.windows, () async {
+        final h = await pumpSettings(tester, arguments: 'appearance');
+        await tapSettings(tester, settingsRow('room_card'));
+        expect(find.byKey(const ValueKey('settings-room-card-size')), findsOneWidget);
+        await tapSettings(tester, find.byKey(const ValueKey('settings-room-card-size-xxlarge')));
+        expect(h.settings.get(Settings.roomCardSize), 'xxlarge');
+        await tapSettings(tester, find.byKey(const ValueKey('settings-room-card-mobile')));
+        expect(find.byKey(const ValueKey('settings-room-card-size')), findsNothing);
+      });
+    });
+
+    testWidgets('the exit countdown runs while switched on', (tester) async {
+      final h = await pumpSettings(tester, arguments: 'general', seed: (s) => s.set(Settings.autoShutDownTime, 1));
+      expect(AutoExitTimer.instance.remaining.value, isNull);
+      await tapSettings(tester, find.descendant(of: settingsRow('auto_exit'), matching: find.byType(Switch)));
+      expect(h.settings.get(Settings.enableAutoShutDownTime), isTrue);
+      expect(AutoExitTimer.instance.remaining.value, isNotNull);
+      await tapSettings(tester, find.descendant(of: settingsRow('auto_exit'), matching: find.byType(Switch)));
+      expect(AutoExitTimer.instance.remaining.value, isNull);
+    });
+
+    test('local interaction opens its own page (U.2k)', () {
+      expect(SettingsSection.localInteraction.route, RoutePath.kLocalInteraction);
+    });
+  });
+
+  testWidgets('the go-to switch reaches the pager (3.x stored it but never read it, U.6b c7)', (tester) async {
+    Future<void> bar({required bool showGoto}) => tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: PaginationBar(
+            page: 1,
+            lastPage: 5,
+            canNext: true,
+            busy: false,
+            pageSize: 20,
+            pageSizes: const [20, 40],
+            showGoto: showGoto,
+            onPage: (_) {},
+            onPageSize: (_) {},
+            onRefresh: () {},
+          ),
+        ),
+      ),
+    );
+    await bar(showGoto: true);
+    expect(find.byKey(const ValueKey('pager-goto')), findsOneWidget);
+    await bar(showGoto: false);
+    expect(find.byKey(const ValueKey('pager-goto')), findsNothing);
+  });
+
+  test('A01.4 c2: every settings explanation fits 40 characters (three lines at most on a phone)', () {
+    // Chinese characters count one, other letters half.
+    double length(String text) => text.runes.fold(0, (sum, rune) => sum + (rune < 0x2E80 ? 0.5 : 1));
+    final explanations = <String, String>{
+      for (final entry in settingsCatalog) ?entry.description: entry.descriptionText ?? '',
+      for (final section in SettingsSection.values) section.descriptionKey: i18n(section.descriptionKey),
+      // Rows drawn outside the catalogue.
+      for (final key in ['account_douyu_force_renew_desc', 'auto_start_boot_desc', 'record_danmaku_desc'])
+        key: i18n(key),
+    };
+    expect(explanations.length, greaterThan(100));
+    for (final MapEntry(:key, :value) in explanations.entries) {
+      expect(length(value), lessThanOrEqualTo(40), reason: '$key: $value');
+    }
+  });
+
+  test('J01.2: the block page row carries the filters set on that page, as other rows that open a page', () {
+    final block = settingsCatalog.firstWhere((entry) => entry.id == 'video_block_list');
+    expect(block.settings, [
+      Settings.filterDouyuSuspectedAutomatedMessages,
+      Settings.enableDanmakuSimilarityFilter,
+      Settings.danmakuSimilarityThreshold,
+      Settings.danmakuSimilarityCacheDuration,
+      Settings.danmakuSimilarityMaxCacheSize,
+      // D02.2: the content blocks on the same page.
+      Settings.blockEmoteOnlyDanmaku,
+      Settings.blockLongDanmaku,
+      Settings.blockLongDanmakuLength,
+    ]);
+  });
+
+  test('search needs every word and ignores blanks', () {
+    expect(searchSettings(settingsCatalog, '   '), isEmpty);
+    expect(formatMinutes(30), '30 分钟');
+    expect(formatMinutes(90), '1.5 小时');
+    expect(formatMinutes(120), '2 小时');
+    expect(SettingsSection.byName('network'), SettingsSection.network);
+    expect(SettingsSection.byName(SettingsSection.danmaku), SettingsSection.danmaku);
+    expect(SettingsSection.byName('nothing'), isNull);
+  });
+}

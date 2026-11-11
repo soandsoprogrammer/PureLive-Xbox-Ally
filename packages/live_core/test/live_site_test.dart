@@ -1,0 +1,435 @@
+import 'dart:async';
+
+import 'package:live_core/live_core.dart';
+import 'package:live_net/live_net.dart';
+import 'package:test/test.dart';
+
+const _hd = LivePlayQuality(quality: '高清', id: 250);
+const _blue = LivePlayQuality(quality: '蓝光', id: 400);
+final LiveRoom _room = LiveRoom(platform: 'fixture', roomId: '1');
+
+/// A site with only the base calls.
+final class _PlainSite extends LiveSite {
+  @override
+  String get id => 'fixture';
+
+  @override
+  String get name => 'Fixture';
+
+  @override
+  Future<List<String>> getPlayUrls({required LiveRoom detail, required LivePlayQuality quality}) async => [
+    ' https://a.test/1.flv ',
+    '',
+    'https://a.test/1.flv',
+    'https://b.test/1.flv',
+  ];
+
+  @override
+  Future<List<LivePlayQuality>> getPlayQualities({required LiveRoom detail}) async => const [_hd];
+
+  @override
+  Future<List<LiveRoom>> searchRooms(String keyword, {int page = 1, int pageSize = 30}) async => [_room];
+}
+
+/// A site with every optional capability.
+final class _CapableSite extends _PlainSite
+    implements LivePlayUrlResolver, LivePlayRecoveryResolver, LiveCancellableSearch, LiveQualityDiscovery {
+  final List<String> calls = [];
+  Completer<void>? discoveryGate;
+  CancelToken? seenCancel;
+
+  @override
+  Future<LivePlayUrlResolution> resolvePlayUrlsRaw({required LiveRoom detail, required LivePlayQuality quality}) async {
+    calls.add('resolve');
+    return LivePlayUrlResolution(urls: const ['https://c.test/1.flv', 'https://c.test/1.flv'], appliedQualityData: 250);
+  }
+
+  @override
+  Future<LivePlayUrlResolution> resolvePlayUrlsForRecoveryRaw({
+    required LiveRoom detail,
+    required LivePlayQuality quality,
+  }) async {
+    calls.add('recover');
+    return LivePlayUrlResolution(urls: const ['https://fresh.test/1.flv']);
+  }
+
+  @override
+  Future<List<LiveRoom>> searchRoomsCancellable(
+    String keyword, {
+    int page = 1,
+    int pageSize = 30,
+    CancelToken? cancel,
+  }) async {
+    seenCancel = cancel;
+    calls.add('search');
+    return [_room];
+  }
+
+  @override
+  Future<List<LivePlayQuality>> discoverPlayQualitiesRaw({required LiveRoom detail, CancelToken? cancel}) async {
+    seenCancel = cancel;
+    calls.add('discover');
+    await discoveryGate?.future;
+    return const [_hd, _blue];
+  }
+}
+
+final class _Recipe implements LiveInputRecipe {
+  @override
+  String get identity => 'recipe';
+}
+
+void main() {
+  group('play URLs', () {
+    test('a plain site: URLs are cleaned and the requested quality is assumed applied', () async {
+      final resolution = await _PlainSite().resolvePlayUrls(detail: _room, quality: _hd);
+      expect(resolution.urls, ['https://a.test/1.flv', 'https://b.test/1.flv']);
+      expect(resolution.appliedQualityData, 250);
+      expect(resolution.lineCount, 2);
+    });
+
+    test('a resolver confirms the applied quality; recovery asks for fresh URLs', () async {
+      final site = _CapableSite();
+      final resolution = await site.resolvePlayUrls(detail: _room, quality: _blue);
+      expect(resolution.urls, ['https://c.test/1.flv']);
+      final shown = resolveAppliedPlayQuality(qualities: const [_hd, _blue], requested: _blue, resolution: resolution);
+      expect(shown.quality, '高清', reason: 'the platform applied 250');
+      expect(shown.isPlaybackUnconfirmed, isFalse);
+      expect((await site.resolvePlayUrlsForRecovery(detail: _room, quality: _hd)).urls, ['https://fresh.test/1.flv']);
+      expect(site.calls, ['resolve', 'recover']);
+      expect((await _PlainSite().resolvePlayUrlsForRecovery(detail: _room, quality: _hd)).urls, hasLength(2));
+    });
+
+    test('an unconfirmed or unknown applied id marks the requested quality unconfirmed', () {
+      final unknown = resolveAppliedPlayQuality(
+        qualities: const [_hd],
+        requested: _hd,
+        resolution: LivePlayUrlResolution(urls: const ['u'], appliedQualityData: 9999),
+      );
+      expect(unknown.quality, '高清');
+      expect(unknown.isPlaybackUnconfirmed, isTrue);
+      final missing = resolveAppliedPlayQuality(
+        qualities: const [_hd],
+        requested: _hd,
+        resolution: LivePlayUrlResolution(urls: const ['u'], qualityUnconfirmed: true),
+      );
+      expect(missing.isPlaybackUnconfirmed, isTrue);
+      expect(_hd.withPlaybackUnconfirmed(unconfirmed: false), same(_hd));
+    });
+
+    test('G01.3: the codec hint is not part of the identity and survives marking unconfirmed', () {
+      const hevc = LivePlayQuality(quality: '原画', id: 'origin', codec: 'hevc');
+      const plain = LivePlayQuality(quality: '原画', id: 'origin');
+      expect(hevc.selectionId, plain.selectionId);
+      expect(const LivePlayQuality(quality: '原画', codec: 'hevc').selectionId, '原画');
+      expect(plain.codec, isNull);
+      final unconfirmed = hevc.withPlaybackUnconfirmed(unconfirmed: true);
+      expect((unconfirmed.codec, unconfirmed.isPlaybackUnconfirmed, unconfirmed.id), ('hevc', true, 'origin'));
+    });
+
+    group('C01.4: the served quality', () {
+      const original = LivePlayQuality(quality: '原画', id: 10000);
+      const hd = LivePlayQuality(quality: '超清', id: 250);
+
+      test('a confirmed id in the list is that option', () {
+        final served = resolveServedPlayQuality(
+          platform: 'bilibili',
+          qualities: const [original, hd],
+          requested: original,
+          resolution: LivePlayUrlResolution(urls: const ['u'], appliedQualityData: 250),
+        );
+        expect(served, same(hd));
+      });
+
+      test("a confirmed id outside the list is named by the platform's codes and is confirmed", () {
+        final served = resolveServedPlayQuality(
+          platform: 'bilibili',
+          qualities: const [original],
+          requested: original,
+          resolution: LivePlayUrlResolution(urls: const ['u'], appliedQualityData: 250),
+        );
+        expect((served.quality, served.id, served.data, served.isPlaybackUnconfirmed), ('超清', 250, 250, false));
+        expect(served.selectionId, 250);
+      });
+
+      test('a quality the platform did not confirm stays the request, unconfirmed', () {
+        final missing = resolveServedPlayQuality(
+          platform: 'bilibili',
+          qualities: const [original],
+          requested: original,
+          resolution: LivePlayUrlResolution(urls: const ['u'], qualityUnconfirmed: true),
+        );
+        expect((missing.quality, missing.isPlaybackUnconfirmed), ('原画', true));
+        final odd = resolveServedPlayQuality(
+          platform: 'bilibili',
+          qualities: const [original],
+          requested: original,
+          resolution: LivePlayUrlResolution(urls: const ['u'], appliedQualityData: 250, qualityUnconfirmed: true),
+        );
+        expect((odd.quality, odd.isPlaybackUnconfirmed), ('原画', true));
+        final blank = resolveServedPlayQuality(
+          platform: 'bilibili',
+          qualities: const [original],
+          requested: original,
+          resolution: LivePlayUrlResolution(urls: const ['u'], appliedQualityData: ' '),
+        );
+        expect((blank.quality, blank.isPlaybackUnconfirmed), ('原画', true));
+      });
+
+      test('a quality the platform switched to and named is that quality (11-1)', () {
+        const switched = LivePlayQuality(quality: '1080p 60fps', id: 'new');
+        final served = resolveServedPlayQuality(
+          platform: 'youtube',
+          qualities: const [original],
+          requested: original,
+          resolution: LivePlayUrlResolution(urls: const ['u'], appliedQualityData: 'new', appliedQuality: switched),
+        );
+        expect(served, same(switched));
+      });
+    });
+
+    test('11-1: a quality the platform switched to and named is shown confirmed; normalizing keeps it', () {
+      const switched = LivePlayQuality(quality: '1080p 60fps', id: 'new');
+      final resolution = LivePlayUrlResolution(
+        urls: const ['u', 'u'],
+        appliedQualityData: 'new',
+        appliedQuality: switched,
+        start: const Duration(seconds: 754),
+      );
+      final shown = resolveAppliedPlayQuality(qualities: const [_hd], requested: _hd, resolution: resolution);
+      expect((shown.quality, shown.isPlaybackUnconfirmed), ('1080p 60fps', false));
+      final normalized = resolution.normalized();
+      expect(normalized.urls, ['u']);
+      expect((normalized.appliedQuality, normalized.start), (switched, const Duration(seconds: 754)));
+      // A named quality whose id is not the confirmed one is not trusted.
+      final odd = resolveAppliedPlayQuality(
+        qualities: const [_hd],
+        requested: _hd,
+        resolution: LivePlayUrlResolution(urls: const ['u'], appliedQualityData: 'other', appliedQuality: switched),
+      );
+      expect((odd.quality, odd.isPlaybackUnconfirmed), ('高清', true));
+      // A known id still wins over the named quality.
+      final known = resolveAppliedPlayQuality(
+        qualities: const [_hd],
+        requested: _hd,
+        resolution: LivePlayUrlResolution(
+          urls: const ['u'],
+          appliedQualityData: _hd.selectionId,
+          appliedQuality: switched,
+        ),
+      );
+      expect(known, same(_hd));
+    });
+
+    test('source policies must belong to exactly the resolved URLs', () {
+      const url = 'https://cdn.test/live/a/master.m3u8?token=t';
+      final policy = HlsSourceQueryPolicy.fromSource(Uri.parse(url));
+      final resolution = LivePlayUrlResolution.withSourcePolicies(
+        urls: const [url, url],
+        sourceQueryPolicies: {url: policy},
+      );
+      expect(resolution.urls, [url]);
+      expect(resolution.sourceQueryPolicies.keys, [url]);
+      expect(
+        () => LivePlayUrlResolution.withSourcePolicies(
+          urls: const ['https://other.test/x.m3u8'],
+          sourceQueryPolicies: {url: policy},
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('G01.4: variant selectors belong to resolved lines and survive normalizing', () {
+      const url = 'https://cdn.test/live/master.m3u8';
+      final selector = _Selector();
+      final resolution = LivePlayUrlResolution.lines(
+        const [LivePlayLine(url, format: StreamFormat.hls), LivePlayLine(url, format: StreamFormat.hls)],
+        sourceVariantSelectors: {url: selector},
+      );
+      expect(resolution.sourceVariantSelectors, {url: same(selector)});
+      final normalized = resolution.normalized();
+      expect(normalized.urls, [url]);
+      expect(normalized.sourceVariantSelectors[url], same(selector));
+      expect(LivePlayUrlResolution.lines(const [LivePlayLine(url)]).sourceVariantSelectors, isEmpty);
+      expect(LivePlayUrlResolution(urls: const [url]).sourceVariantSelectors, isEmpty);
+      expect(LivePlayUrlResolution.owned(input: _Recipe()).sourceVariantSelectors, isEmpty);
+      expect(
+        () => LivePlayUrlResolution.lines(
+          const [LivePlayLine(url)],
+          sourceVariantSelectors: {'https://other.test/master.m3u8': selector},
+        ),
+        throwsFormatException,
+        reason: 'a selector for a line the resolution does not have',
+      );
+    });
+
+    test('an owned input counts as one line and has no URLs', () {
+      final resolution = LivePlayUrlResolution.owned(input: _Recipe());
+      expect(resolution.urls, isEmpty);
+      expect(resolution.lineCount, 1);
+      expect(resolution.hasSources, isTrue);
+      expect(resolution.normalized(), same(resolution));
+    });
+  });
+
+  group('cancellation', () {
+    test('search forwards the token where the adapter can, and a cancelled token fails first', () async {
+      final site = _CapableSite();
+      final token = CancelToken();
+      expect(await site.searchRoomsWithCancellation('x', cancel: token), [_room]);
+      expect(site.seenCancel, same(token));
+      expect(await _PlainSite().searchRoomsWithCancellation('x'), [_room]);
+      token.cancel();
+      await expectLater(
+        site.searchRoomsWithCancellation('x', cancel: token),
+        throwsA(isA<TransportFailure>().having((f) => f.reason, 'reason', TransportReason.cancelled)),
+      );
+    });
+
+    test('a discovery scope cancels running discoveries and close waits for their cleanup', () async {
+      final site = _CapableSite()..discoveryGate = Completer<void>();
+      final scope = LiveQualityDiscoveryScope();
+      final running = scope.discover(site, _room);
+      await Future<void>.delayed(Duration.zero);
+      var closed = false;
+      final closing = scope.close().then((_) => closed = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(closed, isFalse, reason: 'the discovery still holds its session');
+      site.discoveryGate!.complete();
+      await expectLater(running, throwsA(isA<TransportFailure>()), reason: 'a cancelled result is not passed on');
+      await closing;
+      expect(closed, isTrue);
+      expect(() => scope.checkActive('fixture'), throwsA(isA<TransportFailure>()));
+    });
+
+    test('a plain site discovers through its qualities', () async {
+      expect(await LiveQualityDiscoveryScope().discover(_PlainSite(), _room), [_hd]);
+    });
+  });
+
+  test('base calls have harmless defaults', () async {
+    final site = _BareSite();
+    expect(await site.getCategories(1, 20), isEmpty);
+    expect(await site.searchAnchors('x'), isEmpty);
+    expect(await site.getCategoryRooms(const LiveArea()), isEmpty);
+    expect(await site.getRecommendRooms(), isEmpty);
+    expect(await site.getLiveStatus(roomId: '1'), isFalse);
+    expect(await site.getSuperChatMessage(roomId: '1'), isEmpty);
+  });
+
+  test('super chats: the 10 platforms of V03.5 and Six Rooms, each in its unit (D07.2)', () {
+    expect(_BareSite().hasSuperChats, isFalse);
+    // 3.x's three, the seven V03.5 §2 found reporting them, and Six Rooms'
+    // fly-screens.
+    expect(superChatUnits, {
+      SiteIds.bilibili: LiveGiftUnit.yuan,
+      SiteIds.douyu: LiveGiftUnit.yuan,
+      SiteIds.huya: LiveGiftUnit.yuan,
+      SiteIds.missevan: LiveGiftUnit.diamond,
+      SiteIds.kilakila: LiveGiftUnit.redBean,
+      SiteIds.picarto: LiveGiftUnit.other,
+      SiteIds.chzzk: LiveGiftUnit.cheese,
+      SiteIds.youtube: LiveGiftUnit.other,
+      SiteIds.seventeenLive: LiveGiftUnit.point,
+      SiteIds.kick: LiveGiftUnit.kicks,
+      SiteIds.sixRoom: LiveGiftUnit.sixCoin,
+    });
+    expect(superChatPlatforms, superChatUnits.keys.toSet());
+    expect(() => superChatPlatforms.add(SiteIds.twitch), throwsUnsupportedError);
+    for (final id in superChatUnits.keys) {
+      expect(_IdSite(id).hasSuperChats, isTrue, reason: id);
+    }
+    for (final id in [
+      SiteIds.douyin,
+      SiteIds.kuaishou,
+      SiteIds.cc,
+      SiteIds.twitch,
+      SiteIds.soop,
+      SiteIds.acfun,
+      SiteIds.iptv,
+    ]) {
+      expect(_IdSite(id).hasSuperChats, isFalse, reason: id);
+    }
+  });
+
+  group('super chat prices (D07.2)', () {
+    String? words(LiveGiftUnit unit, int price) => switch (unit) {
+      LiveGiftUnit.yuan => '$price 元',
+      LiveGiftUnit.goldSeed => '$price 金瓜子',
+      LiveGiftUnit.diamond => '$price 钻石',
+      LiveGiftUnit.bits => '$price Bits',
+      LiveGiftUnit.sixCoin => '$price 六币',
+      _ => null,
+    };
+
+    test('the platform text first, then the unit, never ￥', () {
+      expect(superChatPriceLabel(30, LiveGiftUnit.yuan, '', unitText: words), '30 元');
+      expect(superChatPriceLabel(1000, LiveGiftUnit.goldSeed, '', unitText: words), '1000 金瓜子');
+      expect(superChatPriceLabel(50, LiveGiftUnit.diamond, '', unitText: words), '50 钻石');
+      expect(superChatPriceLabel(100, LiveGiftUnit.bits, '', unitText: words), '100 Bits');
+      expect(superChatPriceLabel(1000, LiveGiftUnit.sixCoin, '', unitText: words), '1000 六币');
+      // The platform's own words win over the unit.
+      expect(superChatPriceLabel(50, LiveGiftUnit.diamond, ' 50 钻 ', unitText: words), '50 钻');
+      expect(superChatPriceLabel(1000, LiveGiftUnit.cheese, '1,000 치즈', unitText: words), '1,000 치즈');
+      // YouTube: only the text says it.
+      expect(superChatPriceLabel(5, LiveGiftUnit.other, r'$5.00', unitText: words), r'$5.00');
+      // No words for the unit: the bare number; no price: nothing.
+      expect(superChatPriceLabel(79, LiveGiftUnit.other, '', unitText: words), '79');
+      expect(superChatPriceLabel(79, LiveGiftUnit.yuan, ''), '79');
+      expect(superChatPriceLabel(0, LiveGiftUnit.yuan, '', unitText: words), '');
+    });
+
+    test('the whole amount in a price only written', () {
+      final cases = {
+        r'$5.00': 5,
+        r'CA$2.79': 2,
+        'TRY 550.00': 550,
+        '₫1,000,000': 1000000,
+        '¥3,000': 3000,
+        '₹1,500.00': 1500,
+        '2,50 €': 2,
+        '1.000 kr': 1000,
+        r'NT$75.00': 75,
+        '₩10,000': 10000,
+        "CHF 1'000.00": 1000,
+        '10 000 ₽': 10000,
+        '1\u00a0234,56 €': 1234,
+        'free': 0,
+        '': 0,
+      };
+      for (final MapEntry(:key, :value) in cases.entries) {
+        expect(superChatAmount(key), value, reason: key);
+      }
+    });
+  });
+
+  test('a directory page is unmodifiable', () {
+    final page = LiveDirectoryPage(rooms: [_room], page: 1, hasMore: true, nextCursor: 'c2');
+    expect(() => page.rooms.add(_room), throwsUnsupportedError);
+  });
+}
+
+final class _BareSite extends LiveSite {
+  @override
+  String get id => 'bare';
+
+  @override
+  String get name => 'Bare';
+}
+
+/// A site that is only an id.
+final class _IdSite extends LiveSite {
+  new(this.id);
+
+  @override
+  final String id;
+
+  @override
+  String get name => id;
+}
+
+/// A variant selector that selects nothing (G01.4).
+final class _Selector implements HlsVariantSelector {
+  @override
+  HlsMasterSelection selectIn(String text, {required Uri source}) => throw const FormatException('unused');
+}

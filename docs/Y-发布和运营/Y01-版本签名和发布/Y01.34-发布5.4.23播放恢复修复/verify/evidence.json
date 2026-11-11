@@ -1,0 +1,142 @@
+{
+  "source_commit": "42ba4d0a423a87be6626a6907fc3dc7cd2829670",
+  "source_tree": "569611be25e0b0e5a66373b9a5f3346eb419e834",
+  "version": "5.4.23",
+  "build": 5127,
+  "release_url": "https://github.com/wzgrx/PureLive/releases/tag/v5.4.23",
+  "apple_run_id": 41010801919,
+  "package_manifest": {
+    "source_commit": "42ba4d0a423a87be6626a6907fc3dc7cd2829670",
+    "source_tree": "569611be25e0b0e5a66373b9a5f3346eb419e834",
+    "version": "5.4.23",
+    "build": 5127,
+    "apple_run_id": 41010801919,
+    "packages": [
+      {
+        "name": "PureLive-5.4.23-5127-debug-signed-android-arm64-v8a-release.apk",
+        "bytes": 114131300,
+        "sha256": "26950febe39daa483bcd91f2f8c92363e087ef026c5934bbb225c13a2744e9d0"
+      },
+      {
+        "name": "PureLive-5.4.23-5127-debug-signed-android-armeabi-v7a-release.apk",
+        "bytes": 101694438,
+        "sha256": "e3604dc21ba007bfbf5492cb985babf504e0ee0d247df87c80945e3d36a22389"
+      },
+      {
+        "name": "PureLive-5.4.23-5127-debug-signed-android-x86_64-release.apk",
+        "bytes": 125780295,
+        "sha256": "dae21bf5b61270eb293fbafbb71a824848ad48fd786ca7c18c1b20ad24d9eba8"
+      },
+      {
+        "name": "PureLive-5.4.23-5127-linux-x64.tar.gz",
+        "bytes": 57767124,
+        "sha256": "8d68df82edccfeae20c97eadc211cd7a7a6524d981bd326fc7b3e76c21e0929d"
+      },
+      {
+        "name": "PureLive-5.4.23-5127-windows-x64-portable.zip",
+        "bytes": 69005592,
+        "sha256": "887674b354c963a64e435a7bf3774ad07766aaafdc714ebba8c1c7d5336277ca"
+      },
+      {
+        "name": "PureLive-5.4.23-5127-windows-x64-setup.exe",
+        "bytes": 53079782,
+        "sha256": "c62e02fa77c0d31e2763e8ec9d3054799c9b003767b775fd97755c1f24b1c523"
+      },
+      {
+        "name": "PureLive-5.4.23-5127-ios-trollstore.ipa",
+        "bytes": 47727159,
+        "sha256": "0130adb1e169385ea0b52584c6401353a8e25f637231b6a1abf14b74fec928ab"
+      },
+      {
+        "name": "PureLive-5.4.23-5127-ios-unsigned.ipa",
+        "bytes": 47560904,
+        "sha256": "e580f7850109cdd8e5647d2f9a9e4d378dbbdeee5f957e11bc01fc8b90462325"
+      },
+      {
+        "name": "PureLive-5.4.23-5127-macos-universal.dmg",
+        "bytes": 100538101,
+        "sha256": "a0f91b0a466c75798e4b38316202398c12e9ade7dfcc52379c13782f5edb2395"
+      },
+      {
+        "name": "PureLive-5.4.23-5127-macos-universal.zip",
+        "bytes": 89495210,
+        "sha256": "7bd46cc7b165c5b1a380400e1e553374b5cf939b2dda9578ec93ec687101df1f"
+      }
+    ],
+    "checksum_file": {
+      "name": "SHA256SUMS.txt",
+      "bytes": 1138,
+      "sha256": "6bf885fda4dd114234a94061b4b8bca86e1afd4eb1f49c120cdff74564d5aba0"
+    }
+  },
+  "receipts_sha256": {
+    "candidate-source.json": "d2abb49c2644fb243c09b94118c75261bc93fd9cd61bf32cccaf7e09bf90b089",
+    "release-full-gate.json": "30c6f27092576d9d5c0c4963e9bf79e89722bf5b80de9204d3415d7eb21606b1",
+    "all-package-manifest.json": "dca8588050d987df12f068b1c9b693930078ff849a92acf67068ff15fde0dd14",
+    "issue49-final-native-probe.json": "7624f1a1f15f3b02f1744b4f9df902156c9536e0ea0dfd198cb45d93d7d85545",
+    "android-final-package-verification.json": "77799a41c2e88967857e3b3b97cfdd1998535aa011b8fb5be6c751b0d1b98385",
+    "android-native-cleanup.json": "4f319caf379b29f08791066e43eb4b5fc00ae16ab530966380a5beb23552805c",
+    "windows-final-package-verification.json": "f5742b5239d715f118f2c2016382b05e572ac5f8f39b0ad8fcba1420f958e33e",
+    "windows-native-cleanup.json": "7e7fce5a789cfa0fb70d4dbbc60b273d317fc64f3c3e848350a5f0191f72b529",
+    "linux-package-smoke.json": "d0ef286e5d6b27612f1cb975703693fc491d0485e763d1c6b4a1488d8eaabbb2",
+    "apple-manual-frame-review.json": "29b57e06edfaadcd3ce97f32d053fae0ac61402eeef7abc14e471a4150499171",
+    "mac-accepted-visual.json": "8a48a2a287079c941d5e64eee3b3182cc62d986569f7af36891098b4e29560e4",
+    "native-recording-kernels-verification.json": "92c70ea936107df52451126e809579029aeb273eb259c68a36ee7f1c8d43664a",
+    "native-macos-playback-verification.json": "b26eca2d559b929223ad8f72b0f8df7765c813021cadd2541987bacf756fba51",
+    "public-download-verification.json": "3dfcf75cd0308b3803c3917484f2f6117e2b18a514aea051f992ed548184234d",
+    "legacy-gate-verification.json": "c4c82773e851cf903d89283503138e4ed0ad5014edead24246322bdc5842b4cc"
+  },
+  "images": [
+    {
+      "caption": "Android 9 独立模拟器，电视布局返回正常生成媒体后恢复画面",
+      "file": "android-final-tv-return-a.jpg",
+      "source_sha256": "c5a3220759643e0e32b0459bc6c32d2cb8576f7da5b7ae2a982b383d0d9425bb",
+      "sha256": "29fb303e4b0009db55d74182c86282e2ec539c4220d67822eb18c07a3d965305"
+    },
+    {
+      "caption": "Windows 最终 ZIP，卡住的测试源退出后恢复彩条画面",
+      "file": "windows-final-return-a.jpg",
+      "source_sha256": "bd8360b43c93d016dfe0652b578a2a9705ceb0b77298fb754c5be45032a0a836",
+      "sha256": "a0588c5966e08b03ef23c298071325e6c2a10d34f0d4208d4fc6dcba0271348c"
+    },
+    {
+      "caption": "Windows 实际暂停后保持 21.8 秒位置",
+      "file": "windows-final-paused-held.jpg",
+      "source_sha256": "d445963d79e75b6d8a54684e64bb584ba76678eac6aaca30f757052568dbc616",
+      "sha256": "81ea1d68445b6ab92cf190906405e1b756ba57c000dd98812d300e403dc71ba7"
+    },
+    {
+      "caption": "Windows 主动继续后生成视频推进至 40.04 秒",
+      "file": "windows-final-resumed-advancing.jpg",
+      "source_sha256": "e1a95be5879f611c69c69338c3382baa0c0afbbb1f855a425902ac3f6512ee4e",
+      "sha256": "c1470c41e780214a5cb23da7e6aed514c87217978c7f708437d87b1000989cc5"
+    },
+    {
+      "caption": "Linux 最终包在独立 Xvfb 中显示主页，仅验启动",
+      "file": "linux-home.jpg",
+      "source_sha256": "bb7fcf9f95a067d8c4990f4862ce1bf7ca5fd990ed117873820b2fa04fbb0a5c",
+      "sha256": "c3418bc7fd1dc71541a15f7fe02f9c3f8f052f9444e8cbd3a94ceb8cfe31c7ee"
+    },
+    {
+      "caption": "macOS 最终 ZIP 在第二台托管机器第二次启动 30 秒后的主页",
+      "file": "launch-2-30.jpg",
+      "source_sha256": "ef44dee7c9163774bc12eaae724b485415f2eb3b067d1e133ccc3bee997463b6",
+      "sha256": "4d327b63778b2b256bb028076794b7510e20f603ea9beffa7f074e528660c6fd"
+    },
+    {
+      "caption": "同源 iOS 模拟器主页，不代表真机自签名安装验收",
+      "file": "ios-simulator.jpg",
+      "source_sha256": "d3e60f63a0c760a1c1721fb62e3bd8325e3bb9e5c0e7e58cacf752b093952c8c",
+      "sha256": "e62ac0eb13f7c6909e54d106a4a6fa248d100cd86043c4a52a0061ec9d48a3cd"
+    }
+  ],
+  "feed_sha256": {
+    "version.json": "5a5694cd800adce2f6ffb1b4877210e1096bb12a86fa06911d247cb7b38cc7d4",
+    "releases.json": "dadf4462ae2838bd5315301033487a37b7578887f67d3111f0dc59773ea80cee"
+  },
+  "legacy_commit": "17e358b22b6051de1c3e830e5f002eaf3be614e1",
+  "historical_entries_retained": 214,
+  "physical_sony_honor_verified": false,
+  "physical_k90_operated": false,
+  "speaker_audio_verified": false
+}

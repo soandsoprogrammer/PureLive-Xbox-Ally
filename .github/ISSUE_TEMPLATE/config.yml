@@ -1,0 +1,12 @@
+# 不接受空白 issue：所有反馈都走下面的表单，见 CONTRIBUTING.md。
+blank_issues_enabled: false
+contact_links:
+  - name: 下载最新版本 / Latest release
+    url: https://github.com/wzgrx/PureLive/releases/latest
+    about: 提交前先更新到最新版本，很多问题已经修好了。Please update first.
+  - name: 功能说明和常见问题 / Features and FAQ
+    url: https://github.com/wzgrx/PureLive#功能详解
+    about: 先看看功能是不是已经有了、在哪里设置。
+  - name: 安全漏洞（不要公开提交）/ Security vulnerability
+    url: https://github.com/wzgrx/PureLive/security/advisories/new
+    about: Cookie 泄露、更新通道被劫持这类问题请私下报告，见 SECURITY.md。

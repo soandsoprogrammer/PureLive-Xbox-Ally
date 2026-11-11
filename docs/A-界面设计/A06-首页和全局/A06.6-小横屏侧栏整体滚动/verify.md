@@ -1,0 +1,28 @@
+# A06.6 验证
+
+日期：2026-10-24（北京时间）。候选提交 `8a152c8f567433e8a3e6c2a3fba4bffb7afa992d`。
+
+## 已验证
+
+同提交 profile 测试包保留原有关注、录制条目和设置。小横屏实际向上拖动整条侧栏，四个目的地可见；点击录制中心进入正确页面，反向拖动可重新访问顶部菜单与工具。开始时一次较短拖动未观察到位移，随后使用稳定的 1 秒拖动确认移动，不将首次未生效操作计作通过。原始截图仅在本地保留，仓库图片只裁切侧栏，省略原有关注与录制内容。
+
+## 复核步骤
+
+检查手机自动和原始旋转状态；横屏后在侧栏下部拖动；点击录制中心；反向拖到菜单。回到自动界面并恢复 free / user_rotation=0，恢复前台仍为测试包。
+
+## 截图
+
+![rail-start.png](verify/rail-start.png)
+
+![rail-scrolled-slow.png](verify/rail-scrolled-slow.png)
+
+![rail-record-selected.png](verify/rail-record-selected.png)
+
+![rail-returned-top.png](verify/rail-returned-top.png)
+
+
+## 5.4.10 发布交付
+
+PR #31 合并 `7a823612a836d04a774a575d1e6dee5ff16b18b1`，保留 PR #28 贡献提交；实际构建与标签固定为 `7a20aaa8e04bd095cf4218f04b79f7294c3bf24a`。[5.4.10](https://github.com/wzgrx/PureLive/releases/tag/v5.4.10) 已公开，完整门禁、十包同源和 SHA256SUMS 远端哈希通过，各端首页与同提交 K90 冒烟分别记录于 Y01.21 和本地 outputs/purelive-5.4.10。
+
+最终候选实测覆盖 K90 竖/横屏首页与侧栏拖动、Windows KICK 原生播放与聊天。TV 焦点使用此前 K90 定向回执，相关布局代码在最终候选中未再改变。Sony Android 9、原反馈掌机、真实禁言事件、Apple 真机交互、Windows 覆盖安装和持续长时间播放仍需验证；未覆盖的任务保留待真机。斗鱼受影响账号原故障 #15 继续开放，V02.29 等待首次失败的固定诊断码。

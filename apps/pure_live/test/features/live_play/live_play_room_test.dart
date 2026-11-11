@@ -1,0 +1,1108 @@
+// The portrait live room of U.2a (docs/A-界面设计/A07-直播间界面/A07.1-竖屏普通布局/README.md): the
+// order, icons and states the confirmed design fixes.
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:live_core/live_core.dart';
+import 'package:live_danmaku/live_danmaku.dart';
+import 'package:live_media/live_media.dart';
+import 'package:live_player/live_player.dart';
+import 'package:live_store/live_store.dart';
+import 'package:live_ui/live_ui.dart';
+import 'package:pure_live/app/app_log.dart';
+import 'package:pure_live/app/services.dart';
+import 'package:pure_live/features/live_play/layout/room_details.dart';
+import 'package:pure_live/features/live_play/live_play_page.dart';
+import 'package:pure_live/features/live_play/logic/area_lookup.dart';
+import 'package:pure_live/features/live_play/logic/reconnect_watch.dart';
+import 'package:pure_live/features/live_play/logic/room_backdrop.dart';
+import 'package:pure_live/features/live_play/logic/room_orientation.dart';
+import 'package:pure_live/features/live_play/logic/room_status.dart';
+import 'package:pure_live/features/live_play/player/player_controls.dart';
+import 'package:pure_live/features/live_play/player/player_view.dart';
+import 'package:pure_live/routes/app_navigator.dart';
+import 'package:pure_live/routes/route_args.dart';
+import 'package:pure_live/routes/route_path.dart';
+import 'package:pure_live/shared/rooms/room_texts.dart';
+
+import '../../qa_capture.dart';
+import '../../support.dart';
+import 'live_play_support.dart';
+import 'no_images.dart';
+
+/// A platform whose detail waits for [gate] (the room loading).
+class _SlowSite extends FakeSite {
+  new(super.room);
+
+  final Completer<void> gate = Completer();
+
+  @override
+  Future<LiveRoom> getRoomDetail({required String roomId}) async {
+    await gate.future;
+    return await super.getRoomDetail(roomId: roomId);
+  }
+}
+
+final class _Room {
+  new(this.services, this.engine, this.danmaku, this.toasts);
+
+  final AppServices services;
+  final FakeEngine engine;
+  final FakeDanmaku danmaku;
+  final List<String> toasts;
+}
+
+Future<_Room> _pump(
+  WidgetTester tester, {
+  FakeSite? site,
+  double width = 400,
+  double height = 900,
+  LiveRoom? room,
+  BaseCacheManager? images,
+}) async {
+  tester.view
+    ..physicalSize = Size(width, height)
+    ..devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  RoomOrientationChoice.clearSession();
+  final services = (await tester.runAsync(testServices))!;
+  await tester.runAsync(loadStrings);
+  final engine = FakeEngine();
+  final danmaku = FakeDanmaku();
+  final toasts = <String>[];
+  final previous = AppNavigator.toast;
+  AppNavigator.toast = toasts.add;
+  addTearDown(() => AppNavigator.toast = previous);
+  final platform = site ?? FakeSite(liveRoom(startedAt: DateTime.now().subtract(const Duration(minutes: 30))));
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        appServicesProvider.overrideWithValue(services),
+        sitesProvider.overrideWithValue(SiteRegistry({SiteIds.bilibili: () => platform})),
+        danmakuProvider.overrideWithValue(DanmakuRegistry({SiteIds.bilibili: () => danmaku})),
+        playbackSessionFactoryProvider.overrideWithValue(({config}) => fakeSession(engine)),
+      ],
+      child: MaterialApp(
+        theme: const LiveTheme().light,
+        // With [images], pictures ask that cache (and get none).
+        builder: images == null
+            ? null
+            : (context, child) => LiveUiScope(
+                config: LiveUiConfig(imageCacheManager: images),
+                child: child!,
+              ),
+        home: LivePlayPage(
+          route: RouteArgs(
+            RoutePath.kLivePlay,
+            arguments: room ?? LiveRoom(platform: SiteIds.bilibili, roomId: '6', nick: '主播'),
+          ),
+        ),
+      ),
+    ),
+  );
+  await _settle(tester);
+  return _Room(services, engine, danmaku, toasts);
+}
+
+Future<void> _settle(WidgetTester tester) async {
+  for (var i = 0; i < 5; i++) {
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await tester.pump();
+  }
+}
+
+Future<void> _close(WidgetTester tester, _Room room) async {
+  await tester.pumpWidget(const SizedBox.shrink());
+  await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+  await tester.pump(const Duration(seconds: 5));
+  await tester.runAsync(room.services.close);
+}
+
+/// The keys of [keys] found under [scope], left to right.
+List<String> _order(WidgetTester tester, Finder scope, List<String> keys) {
+  final found =
+      [
+        for (final key in keys)
+          if (find.descendant(of: scope, matching: find.byKey(ValueKey(key))).evaluate().isNotEmpty) key,
+      ]..sort(
+        (a, b) => tester.getCenter(find.byKey(ValueKey(a))).dx.compareTo(tester.getCenter(find.byKey(ValueKey(b))).dx),
+      );
+  return found;
+}
+
+Finder _in(String key, Finder finder) => find.descendant(of: find.byKey(ValueKey(key)), matching: finder);
+
+void main() {
+  for (final kind in ['Brightness', 'Volume']) {
+    testWidgets('issue 41 integration: iPhone fullscreen $kind reaches the gesture and native channel', (tester) async {
+      final writes = <double>[];
+      await AppLog.instance.clear();
+      const channel = MethodChannel('pure_live/device_controls');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'get$kind') return 0.3;
+        if (call.method == 'set$kind') writes.add(((call.arguments as Map)['value'] as num).toDouble());
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+      final room = await _pump(tester, width: 430, height: 932);
+      addTearDown(() => _close(tester, room));
+      await tester.tap(find.byKey(const ValueKey('live-play-fullscreen')));
+      await _settle(tester);
+      tester.view
+        ..physicalSize = const Size(932, 430)
+        ..viewPadding = const FakeViewPadding(left: 59, right: 59, bottom: 21)
+        ..systemGestureInsets = const FakeViewPadding(bottom: 21);
+      await _settle(tester);
+      await tester.pump(const Duration(seconds: 1));
+      final drag = await tester.startGesture(Offset(kind == 'Brightness' ? 200 : 730, 270));
+      await drag.moveBy(const Offset(0, -30));
+      await tester.pump();
+      await drag.moveBy(const Offset(0, -60));
+      await tester.pump();
+      await tester.pump();
+      expect(find.byKey(ValueKey('gesture-level-${kind.toLowerCase()}')), findsOneWidget);
+      await drag.up();
+      expect(writes, isNotEmpty);
+      expect(writes.last, greaterThan(0.3));
+      final messages = AppLog.instance.entries.where((e) => e.tag == 'gesture').map((e) => e.message).toList();
+      expect(messages.any((m) => m.contains('phase=down')), isTrue);
+      expect(messages.any((m) => m.contains('phase=reading')), isTrue);
+      expect(messages.any((m) => m.contains('phase=baseline')), isTrue);
+      expect(messages.where((m) => m.contains('phase=update')), hasLength(1));
+      expect(
+        messages.every(
+          (m) => RegExp(r'^gesture-input phase=[a-z-]+ enabled=(true|false) kind=(-|volume|brightness)$').hasMatch(m),
+        ),
+        isTrue,
+        reason: 'Only fixed labels are logged, without coordinates, native values, room or media identifiers',
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+  }
+
+  testWidgets('issue #23: active super chats open in fullscreen without replacing the playing session', (tester) async {
+    final now = DateTime.now();
+    final site = FakeSite(liveRoom())
+      ..superChats = [
+        LiveSuperChatMessage(
+          userName: '观众',
+          face: '',
+          message: '全屏也能查看',
+          price: 30,
+          startTime: now,
+          endTime: now.add(const Duration(minutes: 5)),
+          backgroundColor: '#EDF5FF',
+          backgroundBottomColor: '#2A60B2',
+        ),
+      ];
+    final room = await _pump(tester, site: site);
+    final entry = find.byKey(const ValueKey('live-play-fullscreen-super-chat'));
+    expect(entry, findsNothing);
+    await tester.tap(find.byKey(const ValueKey('live-play-fullscreen')));
+    await _settle(tester);
+    expect(entry, findsOneWidget);
+    expect(find.byKey(const ValueKey('super-chat-unread-badge')), findsOneWidget);
+    expect(find.descendant(of: entry, matching: find.text('1')), findsOneWidget);
+    await captureQaFrame(tester, 'fullscreen-super-chat-entry');
+    await tester.pump(const Duration(seconds: 5));
+    expect(entry, findsNothing, reason: 'issue207: the entry follows the toolbar');
+    await tester.tapAt(tester.getCenter(find.byType(RoomPlayer)));
+    await _settle(tester);
+    expect(entry, findsOneWidget);
+    expect(find.descendant(of: entry, matching: find.text('1')), findsOneWidget);
+    final opens = room.engine.opens.length;
+    await tester.tap(entry);
+    await _settle(tester);
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.byKey(const ValueKey('panel-super-chats')).hitTestable(), findsOneWidget);
+    expect(find.byKey(const ValueKey('super-chat-unread-badge')), findsNothing);
+    expect(find.text('全屏也能查看'), findsOneWidget);
+    await captureQaFrame(tester, 'fullscreen-super-chat-panel');
+    expect(room.engine.opens, hasLength(opens));
+    await tester.binding.handlePopRoute();
+    await _settle(tester);
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.byKey(const ValueKey('panel-super-chats')), findsNothing);
+    expect(entry, findsOneWidget, reason: 'Back closes the panel before leaving fullscreen');
+    expect(find.byKey(const ValueKey('super-chat-unread-badge')), findsNothing);
+    final next = LiveSuperChatMessage(
+      messageId: 'new-paid-message',
+      userName: '观众',
+      face: '',
+      message: '新留言',
+      price: 30,
+      startTime: now.add(const Duration(seconds: 1)),
+      endTime: now.add(const Duration(minutes: 5)),
+      backgroundColor: '#EDF5FF',
+      backgroundBottomColor: '#2A60B2',
+    );
+    void emitNew() => room.danmaku.emit(
+      DanmakuReceived(
+        LiveMessage(
+          type: LiveMessageType.superChat,
+          userName: next.userName,
+          message: next.message,
+          color: LiveMessageColor.white,
+          data: next,
+        ),
+      ),
+    );
+    emitNew();
+    await _settle(tester);
+    emitNew();
+    await _settle(tester);
+    expect(
+      find.descendant(of: entry, matching: find.text('1')),
+      findsOneWidget,
+      reason: 'only the new event is unread',
+    );
+    const setting = BoolSetting('showFullscreenSuperChat', section: 'danmaku', defaultValue: true);
+    await tester.runAsync(() => room.services.store.settings.set(setting, false));
+    await _settle(tester);
+    expect(entry, findsNothing);
+    await tester.runAsync(() => room.services.store.settings.set(setting, true));
+    await _settle(tester);
+    expect(entry, findsOneWidget);
+    await _close(tester, room);
+  });
+
+  testWidgets('issue #23: an empty fullscreen has no entry and an expired card stays in the open session list', (
+    tester,
+  ) async {
+    final room = await _pump(tester, width: 852, height: 393);
+    await tester.tap(find.byKey(const ValueKey('live-play-fullscreen')));
+    await _settle(tester);
+    final entry = find.byKey(const ValueKey('live-play-fullscreen-super-chat'));
+    expect(entry, findsNothing);
+    final now = DateTime.now();
+    room.danmaku.emit(
+      DanmakuReceived(
+        LiveMessage(
+          type: LiveMessageType.superChat,
+          userName: '观众',
+          message: '本场保留',
+          color: LiveMessageColor.white,
+          data: LiveSuperChatMessage(
+            userName: '观众',
+            face: '',
+            message: '本场保留',
+            price: 30,
+            startTime: now,
+            endTime: now.add(const Duration(seconds: 1)),
+            backgroundColor: '#EDF5FF',
+            backgroundBottomColor: '#2A60B2',
+          ),
+        ),
+      ),
+    );
+    await _settle(tester);
+    expect(entry, findsOneWidget);
+    await tester.tap(entry);
+    await _settle(tester);
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 1200)));
+    await tester.pump(const Duration(seconds: 2));
+    await _settle(tester);
+    expect(entry, findsNothing);
+    expect(find.byKey(const ValueKey('panel-super-chats')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('super-chat-history-toggle')));
+    await _settle(tester);
+    expect(find.text('本场保留'), findsOneWidget);
+    expect(find.text('已结束'), findsOneWidget);
+    await captureQaFrame(tester, 'fullscreen-super-chat-history');
+    await _close(tester, room);
+  });
+
+  testWidgets('header: back, avatar and names, follow, menu; the follow button follows the store', (tester) async {
+    final room = await _pump(tester);
+    final bar = find.byType(AppBar);
+    expect(_order(tester, bar, ['live-play-title', 'live-play-follow', 'live-play-record', 'live-play-menu']), [
+      'live-play-title',
+      'live-play-follow',
+      'live-play-menu',
+    ], reason: 'no FFmpeg in tests: no record button');
+    expect(find.descendant(of: bar, matching: find.byIcon(AppIcons.back)), findsOneWidget);
+    expect(_in('live-play-menu', find.byIcon(AppIcons.roomMenu)), findsOneWidget);
+
+    // Change 1: the name 15 semi-bold, "平台 · 分区" 12 in the secondary colour.
+    final name = tester.widget<Text>(_in('live-play-title', find.text('主播')));
+    expect(name.style?.fontSize, 15);
+    expect(name.style?.fontWeight, FontWeight.w600);
+    final area = tester.widget<Text>(find.text('哔哩哔哩 · 英雄联盟'));
+    expect(area.style?.fontSize, 12);
+    final scheme = Theme.of(tester.element(bar)).colorScheme;
+    expect(area.style?.color, scheme.onSurfaceVariant);
+    expect(tester.getSize(find.byKey(const ValueKey('live-play-title'))).width, greaterThanOrEqualTo(100));
+    // B09 c9 (U.1c c9): the avatar is the app's tappable avatar (darker
+    // under the pointer and pressed, the keyboard frame) and opens the
+    // details like the names.
+    final avatar = tester.widget<CommonAvatar>(find.byKey(const ValueKey('live-play-avatar')));
+    expect(avatar.onTap, isNotNull);
+    expect(avatar.tooltip, '直播间详情');
+    expect(_in('live-play-avatar', find.byType(FocusRing)), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('live-play-avatar')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-play-details')), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-play-details')), findsNothing);
+
+    // Change 12: "＋ 关注" filled, then "✓ 已关注" grey; unfollowing asks.
+    expect(_in('live-play-follow', find.byIcon(AppIcons.follow)), findsOneWidget);
+    expect(_in('live-play-follow', find.text('关注')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('live-play-follow')));
+    await _settle(tester);
+    expect(_in('live-play-follow', find.byIcon(AppIcons.followed)), findsOneWidget);
+    expect(_in('live-play-follow', find.text('已关注')), findsOneWidget);
+    final followed = tester.widget<FilledButton>(find.byKey(const ValueKey('live-play-follow')));
+    expect(followed.style?.backgroundColor?.resolve({}), scheme.surfaceContainerHighest);
+    // U.2n c8: unfollowing asks in a small menu under the button; a tap
+    // outside keeps the follow.
+    await tester.tap(find.byKey(const ValueKey('live-play-follow')));
+    await tester.pumpAndSettle();
+    expect(find.text('取消关注'), findsOneWidget);
+    expect(find.byKey(const ValueKey('app-menu-title')), findsOneWidget);
+    await tester.tapAt(const Offset(4, 400));
+    await tester.pumpAndSettle();
+    expect(find.text('取消关注'), findsNothing);
+    expect(await tester.runAsync(room.services.store.follows.all), hasLength(1));
+    await _close(tester, room);
+  });
+
+  testWidgets('portrait video bars: top title, audio, cast; bottom play to fullscreen', (tester) async {
+    final room = await _pump(tester);
+    final top = find.byKey(const ValueKey('live-play-top-bar'));
+    expect(top, findsOneWidget, reason: 'change 2: the top bar shows in the portrait room too');
+    expect(_in('live-play-top-bar', find.text('今晚开黑')), findsOneWidget);
+    // Picture-in-picture joins on Android devices that offer it (the host
+    // running the tests is not one, see topBarSlots below).
+    expect(_order(tester, top, ['live-play-video-title', 'live-play-audio-only', 'live-play-cast', 'live-play-pip']), [
+      'live-play-video-title',
+      'live-play-audio-only',
+      'live-play-cast',
+    ]);
+    expect(_in('live-play-audio-only', find.byIcon(AppIcons.audioOnly)), findsOneWidget);
+    expect(_in('live-play-cast', find.byIcon(AppIcons.cast)), findsOneWidget);
+    expect(_in('live-play-top-bar', find.byKey(const ValueKey('live-play-back'))), findsNothing);
+
+    final bottom = find.byKey(const ValueKey('live-play-bottom-bar'));
+    const all = [
+      'live-play-pause',
+      'live-play-refresh',
+      'live-play-video-follow',
+      'live-play-danmaku-toggle',
+      'live-play-danmaku-settings',
+      'live-play-quality',
+      'live-play-video-fit',
+      'live-play-orientation',
+      'live-play-fullscreen',
+    ];
+    // Change 4: no "已关注" and no fit on the portrait bar (choice C, change 5).
+    expect(_order(tester, bottom, all), [
+      'live-play-pause',
+      'live-play-refresh',
+      'live-play-danmaku-toggle',
+      'live-play-danmaku-settings',
+      'live-play-orientation',
+      'live-play-fullscreen',
+    ]);
+    expect(_in('live-play-pause', find.byIcon(AppIcons.pause)), findsOneWidget);
+    expect(_in('live-play-refresh', find.byIcon(AppIcons.refresh)), findsOneWidget);
+    expect(
+      tester.widget<DanmakuIcon>(_in('live-play-danmaku-toggle', find.byType(DanmakuIcon))).kind,
+      DanmakuIconKind.on,
+    );
+    expect(
+      tester.widget<DanmakuIcon>(_in('live-play-danmaku-settings', find.byType(DanmakuIcon))).kind,
+      DanmakuIconKind.settings,
+    );
+    expect(_in('live-play-orientation', find.byIcon(AppIcons.orientationAuto)), findsOneWidget);
+    expect(_in('live-play-fullscreen', find.byIcon(AppIcons.fullscreen)), findsOneWidget);
+    // Change 3: 60 % black at the edge, reaching into the picture; taps on
+    // the shade reach the picture.
+    final shade = find.byKey(const ValueKey('live-play-top-shade'));
+    final decoration = tester.widget<DecoratedBox>(shade).decoration as BoxDecoration;
+    expect((decoration.gradient! as LinearGradient).colors.first, OnVideoColors.scrim);
+    expect(tester.getSize(shade).height, greaterThan(controlBarHeight + controlShadeReach - 1));
+    expect(find.ancestor(of: shade, matching: find.byType(IgnorePointer)), findsWidgets);
+
+    // E4: hiding the danmaku says once that the list keeps them.
+    await tester.tap(find.byKey(const ValueKey('live-play-danmaku-toggle')));
+    await _settle(tester);
+    expect(
+      tester.widget<DanmakuIcon>(_in('live-play-danmaku-toggle', find.byType(DanmakuIcon))).kind,
+      DanmakuIconKind.off,
+    );
+    expect(room.toasts, ['已隐藏画面上的弹幕，弹幕列表照常显示']);
+    await tester.tap(find.byKey(const ValueKey('live-play-danmaku-toggle')));
+    await _settle(tester);
+    await tester.tap(find.byKey(const ValueKey('live-play-danmaku-toggle')));
+    await _settle(tester);
+    expect(room.toasts, hasLength(1));
+
+    // E6: a fixed orientation turns the button yellow; the tooltip says it.
+    // U.2n c6: the orientation is a small menu over the button.
+    await tester.tap(find.byKey(const ValueKey('live-play-orientation')));
+    await tester.pumpAndSettle();
+    expect(find.byType(Dialog), findsNothing);
+    // The compact menu uses whichever side fits, with the same 4px gap as
+    // quality/line selection; the removed visual title is not a locator.
+    final button = tester.getRect(find.byKey(const ValueKey('live-play-orientation')));
+    final menu = tester.getRect(
+      find.ancestor(of: find.byKey(const ValueKey('room-orientation-0')), matching: find.byType(Material)).first,
+    );
+    if (menu.bottom <= button.top) {
+      expect(button.top - menu.bottom, closeTo(4, 0.1));
+    } else {
+      expect(menu.top - button.bottom, closeTo(4, 0.1));
+    }
+    await tester.tap(find.byKey(const ValueKey('room-orientation-2')));
+    await _settle(tester);
+    final orientation = tester.widget<VideoIconButton>(find.byKey(const ValueKey('live-play-orientation')));
+    expect(orientation.color, OnVideoColors.active);
+    expect(orientation.tooltip, '画面方向：强制横屏');
+    expect(_in('live-play-orientation', find.byIcon(AppIcons.orientationLandscape)), findsOneWidget);
+    expect(room.services.store.settings.get(Settings.portraitRoomOverrides), {'bilibili:6': 'landscape'});
+    await _close(tester, room);
+  });
+
+  testWidgets('fullscreen bars: back and room switcher on top; follow, pickers and fit at the bottom', (tester) async {
+    final room = await _pump(tester, width: 900, height: 500);
+    await tester.tap(find.byKey(const ValueKey('live-play-fullscreen')));
+    await _settle(tester);
+    final top = find.byKey(const ValueKey('live-play-top-bar'));
+    expect(
+      _order(tester, top, ['live-play-back', 'live-play-video-title', 'live-play-switch-room', 'live-play-audio-only']),
+      ['live-play-back', 'live-play-video-title', 'live-play-switch-room', 'live-play-audio-only'],
+    );
+    final bottom = find.byKey(const ValueKey('live-play-bottom-bar'));
+    expect(
+      _order(tester, bottom, [
+        'live-play-pause',
+        'live-play-refresh',
+        'live-play-video-follow',
+        'live-play-danmaku-toggle',
+        'live-play-danmaku-settings',
+        'live-play-quality',
+        'live-play-line',
+        'live-play-video-fit',
+        'live-play-orientation',
+        'live-play-fullscreen',
+      ]),
+      // U.2c: the orientation before the fit (3.x's order).
+      [
+        'live-play-pause',
+        'live-play-refresh',
+        'live-play-video-follow',
+        'live-play-danmaku-toggle',
+        'live-play-danmaku-settings',
+        'live-play-quality',
+        'live-play-line',
+        'live-play-orientation',
+        'live-play-video-fit',
+        'live-play-fullscreen',
+      ],
+    );
+    expect(_in('live-play-video-follow', find.text('关注')), findsOneWidget);
+    // U.2c change 6: the fit is the "画面比例" icon with a small menu.
+    expect(_in('live-play-video-fit', find.byIcon(AppIcons.aspectRatio)), findsOneWidget);
+    expect(_in('live-play-fullscreen', find.byIcon(AppIcons.exitFullscreen)), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('live-play-video-fit')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('video-fit-1')));
+    await _settle(tester);
+    expect(room.services.store.settings.get(Settings.videoFitIndex), 1);
+    await _close(tester, room);
+  });
+
+  testWidgets('room strip: title and 详情, audience with steady digits, time on air, quality and line buttons', (
+    tester,
+  ) async {
+    final room = await _pump(tester);
+    expect(_in('live-play-info', find.text('今晚开黑')), findsOneWidget);
+    expect(_in('live-play-info', find.text('详情')), findsOneWidget);
+    expect(_in('live-play-info', find.byIcon(AppIcons.dropDown)), findsOneWidget);
+    final heat = tester.widget<Text>(_in('live-play-audience', find.text('12.0万')));
+    expect(heat.style?.fontFeatures, contains(const FontFeature.tabularFigures()));
+    expect(_in('live-play-audience', find.byIcon(AppIcons.audienceHeat)), findsOneWidget);
+    expect(_in('live-play-audience', find.byIcon(AppIcons.liveDuration)), findsOneWidget);
+    expect(_in('live-play-audience', find.text('30 分钟')), findsOneWidget);
+    // Change 8: drop-down buttons, 32 high, 48 to touch.
+    expect(_in('live-play-quality', find.text('原画')), findsOneWidget);
+    expect(_in('live-play-line', find.text('线路1')), findsOneWidget);
+    expect(_in('live-play-quality', find.byIcon(AppIcons.dropDown)), findsOneWidget);
+    expect(tester.getSize(find.byKey(const ValueKey('live-play-quality'))).height, greaterThanOrEqualTo(48));
+    final box = find.descendant(
+      of: find.byKey(const ValueKey('live-play-quality')),
+      matching: find.byType(DecoratedBox),
+    );
+    expect(tester.getSize(box.first).height, 32);
+    await _close(tester, room);
+  });
+
+  testWidgets('E2: names, strip and audience wait as grey bars until the room answers', (tester) async {
+    final site = _SlowSite(liveRoom());
+    final room = await _pump(
+      tester,
+      site: site,
+      room: LiveRoom(platform: SiteIds.bilibili, roomId: '6'),
+    );
+    expect(find.byKey(const ValueKey('live-play-title-placeholder')), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-play-info-placeholder')), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-play-audience-placeholder')), findsOneWidget);
+    site.gate.complete();
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('live-play-title-placeholder')), findsNothing);
+    expect(find.text('哔哩哔哩 · 英雄联盟'), findsOneWidget);
+    await _close(tester, room);
+  });
+
+  testWidgets('details: over the chat, never the picture; Back, 收起 and a pull close them; follow in step', (
+    tester,
+  ) async {
+    final site = FakeSite(
+      liveRoom(startedAt: DateTime.now().subtract(const Duration(minutes: 30)), link: 'https://live.bilibili.com/6'),
+    );
+    final room = await _pump(tester, site: site);
+    await tester.tap(find.byKey(const ValueKey('live-play-info')));
+    await tester.pumpAndSettle();
+    final details = find.byKey(const ValueKey('live-play-details'));
+    expect(details, findsOneWidget);
+    expect(_in('live-play-info', find.text('收起')), findsOneWidget);
+    final player = tester.getRect(find.byType(RoomPlayer));
+    final strip = tester.getRect(find.byKey(const ValueKey('live-play-info')));
+    expect(tester.getRect(details).top, greaterThanOrEqualTo(strip.bottom), reason: 'under the strip');
+    expect(tester.getRect(details).overlaps(player), isFalse, reason: 'the picture stays uncovered');
+    expect(find.byKey(const ValueKey('live-play-tabs')), findsOneWidget, reason: 'covered, not removed');
+    // The details' content (change list "直播间详情").
+    expect(_in('live-play-details-state', find.text('直播')), findsOneWidget);
+    expect(_in('live-play-details-state', find.textContaining('已播 30 分钟')), findsOneWidget);
+    expect(_in('live-play-details-figures', find.text('热度')), findsOneWidget);
+    expect(_in('live-play-details-figures', find.text('30 分钟')), findsOneWidget);
+    expect(find.text('每晚八点开播'), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-play-details-copy-room-id')), findsOneWidget);
+    final list = find.descendant(
+      of: find.byKey(const ValueKey('live-play-details-list')),
+      matching: find.byType(Scrollable),
+    );
+    await tester.scrollUntilVisible(find.byKey(const ValueKey('live-play-details-open')), 100, scrollable: list);
+    expect(find.text('在哔哩哔哩打开'), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-play-details-share')), findsOneWidget);
+
+    // The follow button there and on the bar show the same.
+    await tester.scrollUntilVisible(find.byKey(const ValueKey('live-play-details-follow')), -100, scrollable: list);
+    await tester.tap(find.byKey(const ValueKey('live-play-details-follow')));
+    await _settle(tester);
+    expect(_in('live-play-follow', find.text('已关注')), findsOneWidget);
+    expect(_in('live-play-details-follow', find.text('已关注')), findsOneWidget);
+
+    // Back closes the details first and stays in the room.
+    expect(await tester.binding.handlePopRoute(), isTrue);
+    await tester.pumpAndSettle();
+    expect(details, findsNothing);
+    expect(find.byType(RoomPlayer), findsOneWidget);
+
+    // The name opens them (E1); "收起" closes them.
+    await tester.tap(find.byKey(const ValueKey('live-play-title')));
+    await tester.pumpAndSettle();
+    expect(details, findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('live-play-info')));
+    await tester.pumpAndSettle();
+    expect(details, findsNothing);
+
+    // A pull down past the top closes them.
+    await tester.tap(find.byKey(const ValueKey('live-play-info')));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byKey(const ValueKey('live-play-details-list')), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(details, findsNothing);
+    await _close(tester, room);
+  });
+
+  testWidgets('A03.3 c4: the details handle is 48 high; the panel follows it 1:1 and springs back or closes', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    final room = await _pump(tester);
+    await tester.tap(find.byKey(const ValueKey('live-play-info')));
+    await tester.pumpAndSettle();
+    final details = find.byKey(const ValueKey('live-play-details'));
+    final handle = find.byKey(const ValueKey('live-play-details-handle'));
+    expect(tester.getSize(handle).height, 48, reason: 'research S7: 20 was hard to catch');
+    expect(tester.getSize(find.byKey(const ValueKey('live-play-details-grip'))), const Size(32, 4));
+    // Android's tap target guideline (48 × 48) on the handle's node; the
+    // page-wide check stops at the strip's title line (40 high, A04.1).
+    final node = tester.getSemantics(handle);
+    expect(node.label, '收起');
+    expect(node.getSemanticsData().hasAction(SemanticsAction.tap), isTrue);
+    expect(node.rect.height, greaterThanOrEqualTo(48));
+    expect(node.rect.width, greaterThanOrEqualTo(48));
+    final rest = tester.getTopLeft(details).dy;
+
+    // A finger 30 dp further down: the panel 30 dp further; let go
+    // slowly under 64, back.
+    const frame = Duration(microseconds: 8333);
+    var gesture = await tester.startGesture(tester.getCenter(handle));
+    await gesture.moveBy(const Offset(0, 20));
+    await tester.pump(frame);
+    final taken = tester.getTopLeft(details).dy;
+    expect(taken, greaterThan(rest));
+    await gesture.moveBy(const Offset(0, 30));
+    await tester.pump(frame);
+    expect(tester.getTopLeft(details).dy, closeTo(taken + 30, 0.01));
+    final pulled = tester.getTopLeft(details).dy;
+    expect(pulled - rest, lessThan(64));
+    await tester.pump(const Duration(seconds: 1));
+    await gesture.up();
+    await tester.pump(frame);
+    expect(tester.getTopLeft(details).dy, inExclusiveRange(rest, pulled), reason: 'a spring, not a jump');
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(details).dy, rest);
+    expect(details, findsOneWidget);
+
+    // A fling down carries on at its speed and closes it.
+    gesture = await tester.startGesture(tester.getCenter(handle));
+    var time = Duration.zero;
+    final tops = <double>[];
+    for (var i = 0; i < 6; i++) {
+      time += frame;
+      await gesture.moveBy(const Offset(0, 20), timeStamp: time);
+      await tester.pump(frame);
+      tops.add(tester.getTopLeft(details).dy);
+    }
+    await gesture.up(timeStamp: time);
+    await tester.pump(frame);
+    tops.add(tester.getTopLeft(details).dy);
+    final carried = (tops[6] - tops[5]) / (tops[5] - tops[4]);
+    expect(carried, inInclusiveRange(0.8, 1.25));
+    await tester.pumpAndSettle();
+    expect(details, findsNothing);
+    semantics.dispose();
+    await _close(tester, room);
+  });
+
+  testWidgets('details on a wide window cover the chat column only; an unknown area says so', (tester) async {
+    final room = await _pump(tester, width: 1200);
+    await tester.tap(find.byKey(const ValueKey('live-play-info')));
+    await tester.pumpAndSettle();
+    final details = tester.getRect(find.byKey(const ValueKey('live-play-details')));
+    final player = tester.getRect(find.byType(RoomPlayer));
+    expect(details.left, greaterThanOrEqualTo(player.right));
+    await tester.tap(find.byKey(const ValueKey('live-play-details-area')));
+    await _settle(tester);
+    expect(room.toasts, contains('没有找到这个分区'));
+    await _close(tester, room);
+  });
+
+  testWidgets('chat: compact lines, system labels once in 3 s, cards on request; counts on the tabs', (tester) async {
+    final now = DateTime.now();
+    final site = FakeSite(liveRoom())
+      ..superChats = [
+        LiveSuperChatMessage(
+          userName: '老板',
+          face: '',
+          message: '加油',
+          price: 30,
+          startTime: now.subtract(const Duration(seconds: 10)),
+          endTime: now.add(const Duration(minutes: 5)),
+          backgroundColor: '#EDF5FF',
+          backgroundBottomColor: '#2A60B2',
+        ),
+      ];
+    final room = await _pump(tester, site: site);
+    // Change 9: "醒目留言" with its count. B09 c9: the app's tab labels.
+    expect(_in('live-play-super-chat-count', find.text('1')), findsOneWidget);
+    expect(
+      find.descendant(of: find.byKey(const ValueKey('live-play-tabs')), matching: find.byType(TabLabel)),
+      findsNWidgets(4),
+    );
+    expect(tester.widget<TabLabel>(find.byKey(const ValueKey('live-play-super-chat-count'))).badge, '1');
+    // P03: the tabs' pages turn like Android's ViewPager.
+    expect(tester.widget<TabBarView>(find.byType(TabBarView)).physics, isA<PureLivePageScrollPhysics>());
+
+    // Change 10: the status line is a centred grey label, once in 3 s. U.2e
+    // c2: before the first message the list says so in its middle instead.
+    room.danmaku.emit(const DanmakuReady());
+    await tester.pump();
+    expect(find.byKey(const ValueKey('live-play-chat-quiet')), findsOneWidget);
+
+    // Change 11: "用户名：" in the secondary colour, the message in the normal one.
+    room.danmaku.chat('前排支持', user: '星河');
+    await tester.pump();
+    expect(find.text('弹幕服务器连接正常'), findsOneWidget);
+    expect(_in('live-play-system-line', find.text('弹幕服务器连接正常')), findsOneWidget);
+    expect(find.textContaining('系统消息'), findsNothing);
+    final line = tester.widget<Text>(_in('live-play-chat-line', find.byType(Text)).first);
+    final spans = (line.textSpan! as TextSpan).children!;
+    final name = spans.whereType<TextSpan>().firstWhere((span) => span.text == '星河：');
+    final scheme = Theme.of(tester.element(find.byType(LivePlayPage))).colorScheme;
+    expect(name.style?.color, scheme.onSurfaceVariant);
+    expect(find.textContaining('前排支持', findRichText: true), findsOneWidget);
+
+    // The details hide the tabs; what arrives meanwhile is counted.
+    await tester.tap(find.byKey(const ValueKey('live-play-info')));
+    await tester.pumpAndSettle();
+    room.danmaku
+      ..chat('一')
+      ..chat('二');
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('live-play-info')));
+    await tester.pumpAndSettle();
+    expect(_in('live-play-unread-count', find.text('2')), findsOneWidget);
+    await tester.tap(find.text('弹幕列表'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-play-unread-count')), findsNothing);
+
+    // Choice A: 3.x's cards stay as a setting (U.2f: last in the settings).
+    await tester.tap(find.text('弹幕设置'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('卡片'),
+      200,
+      scrollable: find.descendant(
+        of: find.byKey(const ValueKey('live-play-danmaku-settings')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.ensureVisible(find.text('卡片'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('卡片'));
+    await _settle(tester);
+    expect(room.services.store.settings.get(Settings.danmakuListStyle), 'card');
+    // The settings have a "弹幕列表" group too: the tab is the one in the bar.
+    await tester.tap(_in('live-play-tabs', find.text('弹幕列表')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-play-chat-card')), findsWidgets);
+    expect(find.byKey(const ValueKey('live-play-chat-line')), findsNothing);
+    await _close(tester, room);
+  });
+
+  testWidgets('chat actions: a double tap copies, a long press blocks a keyword (back from 3.x)', (tester) async {
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String?;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    final room = await _pump(tester);
+    room.danmaku.chat('剧透警告', user: '路人');
+    await tester.pump();
+    final line = find.byKey(const ValueKey('live-play-chat-line')).last;
+    await tester.tap(line);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(line);
+    await tester.pumpAndSettle();
+    expect(copied, '路人: 剧透警告');
+
+    await tester.longPress(find.byKey(const ValueKey('live-play-chat-line')).last);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-play-copy-message')), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-play-block-user')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('live-play-block-keyword')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('live-play-keyword-input')), '剧透');
+    await tester.tap(find.byKey(const ValueKey('live-play-keyword-confirm')));
+    await _settle(tester);
+    await tester.pumpAndSettle();
+    expect(await tester.runAsync(() => room.services.store.blockLists.list(BlockKind.keyword)), ['剧透']);
+    expect(find.textContaining('剧透警告', findRichText: true), findsNothing);
+    expect(room.toasts, contains('关键词已加入弹幕屏蔽列表'));
+    await _close(tester, room);
+  });
+
+  testWidgets('menu: four squares; 画面比例 picks the fit', (tester) async {
+    final room = await _pump(tester);
+    await tester.tap(find.byKey(const ValueKey('live-play-menu')));
+    await tester.pumpAndSettle();
+    expect(_in('room-menu-videoFit', find.text('画面比例')), findsOneWidget);
+    expect(_in('room-menu-videoFit', find.byIcon(AppIcons.aspectRatio)), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('room-menu-videoFit')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('video-fit-2')));
+    await _settle(tester);
+    expect(room.services.store.settings.get(Settings.videoFitIndex), 2);
+    await _close(tester, room);
+  });
+
+  testWidgets('E3: a dropped stream says it reconnects and offers the next line; E5 audio only', (tester) async {
+    final room = await _pump(tester);
+    // B02 c4: the session's recovery is the drop (its reopening hangs here).
+    final hang = Completer<void>();
+    room.engine.onOpen = (_) => hang.future;
+    room.engine.emit(const EngineError(PlayerException(message: 'reset', type: PlayerErrorType.network, code: 'drop')));
+    await _settle(tester);
+    expect(find.text('正在重连（第 1 次）'), findsOneWidget);
+    room.engine.onOpen = null;
+    await tester.tap(find.text('换线路'));
+    hang.complete();
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('live-play-reconnecting')), findsNothing);
+    expect(room.engine.opens.last.toString(), contains('b.example'));
+
+    await tester.tap(find.byKey(const ValueKey('live-play-audio-only')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('live-play-audio-cover')), findsOneWidget);
+    expect(find.text('纯音频播放中'), findsOneWidget);
+    final audio = tester.widget<VideoIconButton>(find.byKey(const ValueKey('live-play-audio-only')));
+    expect(audio.color, OnVideoColors.active);
+    await _close(tester, room);
+  });
+
+  testWidgets('A07.20: a placeholder picture gets the room cover and "语音直播"; a real one does not', (tester) async {
+    final room = await _pump(tester);
+    room.engine.emit(const EngineVideoSize(16, 16));
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('live-play-audio-cover')), findsOneWidget);
+    expect(find.text('语音直播'), findsOneWidget);
+    expect(find.text('纯音频播放中'), findsNothing);
+    room.engine.emit(const EngineVideoSize(1280, 720));
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('live-play-audio-cover')), findsNothing);
+    await _close(tester, room);
+  });
+
+  testWidgets('A07.20: a voice platform gets the room cover over a full-size picture', (tester) async {
+    final site = FakeSite(liveRoom(startedAt: DateTime.now().subtract(const Duration(minutes: 30))))
+      ..siteId = SiteIds.kilakila;
+    final room = await _pump(tester, site: site);
+    room.engine.emit(const EngineVideoSize(1280, 720));
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('live-play-audio-cover')), findsOneWidget);
+    expect(find.text('语音直播'), findsOneWidget);
+    await _close(tester, room);
+  });
+
+  group("A07.16 JD Live: the play answer's blurred frame under the dimmed covers", () {
+    /// JD Live's play answer (fixtures/jdlive/S02-play-live): a blurred frame
+    /// as the background and no card cover (upgrade 28-3).
+    JdLiveRoom play() =>
+        JdLiveApi.play(File('../../fixtures/jdlive/S02-play-live/body.json').readAsStringSync(), liveId: '48378944');
+
+    const card = 'https://example.com/card.jpg';
+
+    Finder image(String url) => find.byWidgetPredicate((widget) => widget is LiveNetworkImage && widget.url == url);
+
+    testWidgets('audio only: the blurred frame, not the card cover', (tester) async {
+      final jd = play();
+      final detail = liveRoom(startedAt: DateTime.now().subtract(const Duration(minutes: 30)))
+          .copyWith(cover: card, data: jd);
+      final room = await _pump(tester, site: FakeSite(detail), images: NoImages());
+      await tester.tap(find.byKey(const ValueKey('live-play-audio-only')));
+      await tester.pump();
+      expect(
+        find.descendant(of: find.byKey(const ValueKey('live-play-audio-cover')), matching: image(jd.background)),
+        findsOneWidget,
+      );
+      expect(image(card), findsNothing);
+      await _close(tester, room);
+    });
+
+    testWidgets('a room off air: the blurred frame under the state; another room keeps its cover', (tester) async {
+      final jd = play();
+      var room = await _pump(
+        tester,
+        site: FakeSite(liveRoom(status: LiveStatus.offline).copyWith(data: jd)),
+        images: NoImages(),
+      );
+      expect(image(jd.background), findsOneWidget);
+      await _close(tester, room);
+
+      room = await _pump(
+        tester,
+        site: FakeSite(liveRoom(status: LiveStatus.offline).copyWith(cover: card)),
+        images: NoImages(),
+      );
+      expect(image(card), findsOneWidget);
+      await _close(tester, room);
+    });
+
+    test('the order: the blurred frame, the cover, the avatar (or none)', () {
+      final jd = play();
+      final base = LiveRoom(platform: SiteIds.jdLive, roomId: '48378944', cover: card, avatar: 'a.jpg');
+      expect(roomBackdropOf(base.copyWith(data: jd)), jd.background);
+      expect(roomBackdropOf(base), card);
+      expect(roomBackdropOf(base.copyWith(cover: '')), 'a.jpg');
+      expect(roomBackdropOf(base.copyWith(cover: ''), orAvatar: false), '');
+      expect(
+        roomBackdropOf(
+          base.copyWith(
+            data: const JdLiveRoom(liveId: '48378944', state: JdLiveState.live),
+          ),
+        ),
+        card,
+        reason: 'a card: no frame',
+      );
+      expect(roomBackdropOf(base.copyWith(data: 'args')), card, reason: 'not a JD play answer');
+    });
+  });
+
+  group('room logic of U.2a', () {
+    setUpAll(loadStrings);
+
+    test('A07.20 c1: a short side of 32 or less is a placeholder; an unknown size is not', () {
+      PlaybackState sized(int? width, int? height, [PlaybackStatus status = PlaybackStatus.playing]) =>
+          PlaybackState(status: status, videoWidth: width, videoHeight: height);
+      expect(pictureIsPlaceholder(sized(16, 16)), isTrue);
+      expect(pictureIsPlaceholder(sized(32, 32)), isTrue);
+      expect(pictureIsPlaceholder(sized(1920, 32)), isTrue);
+      expect(pictureIsPlaceholder(sized(144, 256)), isFalse);
+      expect(pictureIsPlaceholder(sized(33, 33)), isFalse);
+      expect(pictureIsPlaceholder(sized(null, null)), isFalse, reason: 'still loading');
+      // A voice platform has no real picture whatever its size, once one
+      // shows or the sound plays; while it opens it is loading.
+      expect(pictureIsPlaceholder(sized(1280, 720), voiceLive: true), isTrue);
+      expect(pictureIsPlaceholder(sized(null, null), voiceLive: true), isTrue);
+      expect(pictureIsPlaceholder(sized(null, null, PlaybackStatus.opening), voiceLive: true), isFalse);
+      expect(SiteIds.voiceLive, {SiteIds.missevan, SiteIds.kilakila});
+    });
+
+    test('B02 c4: ReconnectWatch says what the session says: its recovery, not a buffering or a resume', () {
+      final states = StreamController<PlaybackState>(sync: true);
+      addTearDown(states.close);
+      final watch = ReconnectWatch(states.stream);
+      addTearDown(watch.dispose);
+      var notified = 0;
+      watch.addListener(() => notified++);
+      PlaybackState status(PlaybackStatus value, [int recovery = 0]) =>
+          PlaybackState(status: value, recovery: recovery, videoWidth: 1920, videoHeight: 1080);
+      states
+        ..add(status(PlaybackStatus.opening))
+        ..add(status(PlaybackStatus.playing))
+        // A YY room right after it starts: it buffers, it has not failed.
+        ..add(status(PlaybackStatus.buffering));
+      expect(watch.reconnecting, isFalse, reason: 'a buffering stream is no drop');
+      // Paused for a while, then resumed: buffering again, no drop (B-2).
+      states
+        ..add(status(PlaybackStatus.playing))
+        ..add(status(PlaybackStatus.paused))
+        ..add(status(PlaybackStatus.buffering));
+      expect(watch.reconnecting, isFalse, reason: 'a resume is no drop');
+      expect(notified, 0);
+      // The session recovers: the attempt as it counts it.
+      states.add(status(PlaybackStatus.buffering, 1));
+      expect((watch.reconnecting, watch.attempts), (true, 1));
+      states.add(status(PlaybackStatus.opening, 2));
+      expect((watch.reconnecting, watch.attempts), (true, 2));
+      states.add(status(PlaybackStatus.playing));
+      expect((watch.reconnecting, watch.attempts), (false, 0));
+      states
+        ..add(status(PlaybackStatus.buffering, 3))
+        ..add(status(PlaybackStatus.error));
+      expect(watch.reconnecting, isFalse, reason: 'failed: the error says so');
+      expect(notified, 5);
+    });
+
+    testWidgets('G02.3: the network gone: reconnecting within seconds, counting on, the network as the reason, '
+        'back by itself', (tester) async {
+      var online = true;
+      final engine = FakeEngine();
+      final session = fakeSession(engine);
+      final watch = ReconnectWatch(session.states);
+      PlaybackPlan plan() => PlaybackPlan.of(
+        LivePlayUrlResolution.lines(const [
+          LivePlayLine('https://a.example/live.flv', lineId: 'a'),
+          LivePlayLine('https://b.example/live.flv', lineId: 'b'),
+        ]),
+      );
+      unawaited(
+        session.open(
+          PlaybackRequest(
+            site: SiteIds.bilibili,
+            plan: plan(),
+            refresh: () async {
+              if (!online) throw const NetworkFailure(SiteIds.bilibili, 'connect');
+              return plan();
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+      // The connection the cut broke stays dead; one opened online plays.
+      var dead = false;
+      engine.onOpen = (_) async {
+        dead = !online;
+        engine
+          ..emit(const EngineBuffering(buffering: false))
+          ..emit(const EnginePlaying(playing: true));
+      };
+      final ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (online && !dead) engine.advance();
+      });
+      Future<void> elapse(int seconds) async {
+        for (var second = 0; second < seconds; second++) {
+          await tester.pump(const Duration(seconds: 1));
+        }
+      }
+
+      await elapse(3);
+      expect(watch.reconnecting, isFalse);
+
+      online = false;
+      dead = true;
+      engine.emit(const EngineBuffering(buffering: true));
+      await elapse(7);
+      expect((watch.reconnecting, watch.attempts), (true, 1));
+      await elapse(15);
+      expect(watch.reconnecting, isTrue);
+      expect(watch.attempts, greaterThan(2));
+      await elapse(25);
+      expect(watch.reconnecting, isFalse);
+      expect(session.state.status, PlaybackStatus.error);
+      expect(failureText(session.state.error), '网络已断开，恢复后会自动重连');
+
+      online = true;
+      await elapse(8);
+      expect((session.state.status, watch.reconnecting), (PlaybackStatus.playing, false));
+      ticker.cancel();
+      watch.dispose();
+      await session.dispose();
+    });
+
+    test('orientation choice: remembered under the room, or for this run only', () async {
+      final services = await testServices();
+      addTearDown(services.close);
+      RoomOrientationChoice.clearSession();
+      final room = LiveRoom(platform: SiteIds.bilibili, roomId: '6');
+      final choice = RoomOrientationChoice(settings: services.store.settings, room: room);
+      expect(choice.value, RoomOrientation.automatic);
+      await choice.choose(RoomOrientation.portrait, remember: false);
+      expect(choice.value, RoomOrientation.portrait);
+      expect(services.store.settings.get(Settings.portraitRoomOverrides), isEmpty);
+      await choice.choose(RoomOrientation.landscape, remember: true);
+      expect(services.store.settings.get(Settings.portraitRoomOverrides), {'bilibili:6': 'landscape'});
+      expect(isPortraitLayout(choice.value, detected: true), isFalse);
+      expect(isPortraitLayout(RoomOrientation.automatic, detected: true), isTrue);
+    });
+
+    test('areas by name; texts of the strip and the details; the top bar slots', () {
+      final categories = [
+        LiveCategory(
+          id: '1',
+          name: '网游',
+          children: const [LiveArea(areaId: '86', areaName: '英雄联盟', shortName: 'LOL')],
+        ),
+      ];
+      expect(findAreaByName(categories, ' 英雄联盟 ')?.areaId, '86');
+      expect(findAreaByName(categories, 'lol')?.areaId, '86');
+      expect(findAreaByName(categories, '王者荣耀'), isNull);
+      // B09 c5 (audit B-16): the time on air in words, as on the cards
+      // (`2:18` read like a recording's minutes and seconds).
+      expect(elapsedText(const Duration(hours: 2, minutes: 18)), '2 小时 18 分');
+      expect(elapsedText(const Duration(minutes: 5)), '5 分钟');
+      final now = DateTime(2026, 10, 1, 21, 36);
+      expect(startedText(DateTime(2026, 10, 1, 19, 18), now), '今天 19:18 开播');
+      expect(startedText(DateTime(2026, 9, 30, 23, 5), now), '昨天 23:05 开播');
+      expect(startedText(DateTime(2026, 9, 2, 8), now), '09-02 08:00 开播');
+      expect(topBarSlots(platform: TargetPlatform.android), [TopBarSlot.audioOnly, TopBarSlot.cast, TopBarSlot.pip]);
+      // U.2j change 5: picture-in-picture on every client but the TV.
+      for (final platform in [TargetPlatform.windows, TargetPlatform.linux, TargetPlatform.macOS, TargetPlatform.iOS]) {
+        expect(topBarSlots(platform: platform), [TopBarSlot.audioOnly, TopBarSlot.pip], reason: '$platform');
+      }
+      expect(videoFits, hasLength(6));
+    });
+  });
+}

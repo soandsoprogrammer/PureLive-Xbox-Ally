@@ -1,0 +1,152 @@
+{
+  "source_commit": "4e3eff5c3f0404011fbedc73b277724f8b21f001",
+  "source_tree": "351f8750ce0142d855ea8b8e7c37b54b5dbc6be0",
+  "version": "5.4.22",
+  "build": 5126,
+  "apple_run_id": 40989046819,
+  "release_url": "https://github.com/wzgrx/PureLive/releases/tag/v5.4.22",
+  "package_manifest": {
+    "source_commit": "4e3eff5c3f0404011fbedc73b277724f8b21f001",
+    "source_tree": "351f8750ce0142d855ea8b8e7c37b54b5dbc6be0",
+    "version": "5.4.22",
+    "build": 5126,
+    "apple_run_id": 40989046819,
+    "packages": [
+      {
+        "name": "PureLive-5.4.22-5126-debug-signed-android-arm64-v8a-release.apk",
+        "bytes": 114131300,
+        "sha256": "06bfaefdc784a67403f44cfbb5e6dabc876555bc865764a75984d7f575219e04"
+      },
+      {
+        "name": "PureLive-5.4.22-5126-debug-signed-android-armeabi-v7a-release.apk",
+        "bytes": 101678054,
+        "sha256": "c98223e85f76326a5524fc93898c2506c1599c6c15e5a24c33f94b2afbd0644a"
+      },
+      {
+        "name": "PureLive-5.4.22-5126-debug-signed-android-x86_64-release.apk",
+        "bytes": 125780295,
+        "sha256": "a4f14aaf1ce71d338aeb9d324e55de0ac2b0ddac94ac69eb892ccde7af28fafa"
+      },
+      {
+        "name": "PureLive-5.4.22-5126-linux-x64.tar.gz",
+        "bytes": 57761778,
+        "sha256": "dde8a9690eab1af1897ca5bd0898d37c0b93f828d6f5f396bad0f06bea206f0d"
+      },
+      {
+        "name": "PureLive-5.4.22-5126-windows-x64-portable.zip",
+        "bytes": 69000235,
+        "sha256": "4b13d4a271f7abaf6d2643ea1513036633246afd3cb2516a247fcfbabbe271e4"
+      },
+      {
+        "name": "PureLive-5.4.22-5126-windows-x64-setup.exe",
+        "bytes": 53078141,
+        "sha256": "b57feb41990ebfa6f678da8117dc06ae38815d047eeec36cc0931b7c48dac446"
+      },
+      {
+        "name": "PureLive-5.4.22-5126-ios-trollstore.ipa",
+        "bytes": 47723318,
+        "sha256": "364d97c74aed880a4b7050356862501ffabffa06ef0574ecfe675ab215357c3f"
+      },
+      {
+        "name": "PureLive-5.4.22-5126-ios-unsigned.ipa",
+        "bytes": 47557065,
+        "sha256": "554b62c27ec7c0c46065652ecafb304f901cf23ef0c3ddf66314adce39f58e88"
+      },
+      {
+        "name": "PureLive-5.4.22-5126-macos-universal.dmg",
+        "bytes": 100530181,
+        "sha256": "52952119c7e76892f97a9f954d92f4d94d49677161f72c5bf2ca675ce124fdf4"
+      },
+      {
+        "name": "PureLive-5.4.22-5126-macos-universal.zip",
+        "bytes": 89481990,
+        "sha256": "95a99711bc3129e35cb5c25de0297f0091f76fee5b4a4094ca73102668df04de"
+      }
+    ],
+    "checksum_file": {
+      "name": "SHA256SUMS.txt",
+      "bytes": 1138,
+      "sha256": "1ba53df3e0caa40bfb87dfffe4c07fc6c8cdda4a56f6623a00c4f4ec25c6dd24"
+    }
+  },
+  "receipts_sha256": {
+    "candidate-source.json": "5c466904d337fdd91436b22d481325ee46caec84bf390252ee1184748d9188c6",
+    "release-full-gate.json": "5611d138974cf9b4dfeb4b977776bd57d899414ca7d92aa47a09ea95f8508126",
+    "all-package-manifest.json": "deeacd023a4a5779376e7ba05908fb65a2a348b15e4629621c58bf5218295ada",
+    "windows-final-package-verification.json": "05da6da5a174c818c139e40d50758ff979b70c43bf500d864d593302c96468c2",
+    "windows-native-cleanup.json": "dd547f934063d54211a51870381575ba30978b2ddfd32609d3fbbc30695aa143",
+    "linux-package-smoke.json": "196e57d32cc1a357e22e9cafc169f75b7927aacc9511246ba4d657d5e7b055dd",
+    "apple-manual-frame-review.json": "c8b280e6258742a95e2db46448436d6beb8c436b49ebd3bd2a42b012f83eba20",
+    "mac-accepted-visual.json": "07482955a10a10372f337edd288d8cc20580c1a4700878787e0d0167033e9f2c",
+    "native-recording-kernels-verification.json": "5815937361e3c506224efab7e5c927ca87c524a0400434764cf685e7f9c5e219",
+    "native-macos-playback-verification.json": "87f18c6e772be0c8333808a54382e6dd423f4327a646a59ef13e7d3abcf54518",
+    "public-download-verification.json": "101229234a3cec8c7d58e465e99bbf4ea06d533e0158dfb314b6aba81c19f41e",
+    "legacy-gate-verification.json": "b19b3af84ff8111541f272fc75947b224985b80696d70772bb614e82199cd10f",
+    "patrol-review.json": "7c7e85c86980401f713ae8341bfd0418c7e467be9ce773afe203f5f2b6770160"
+  },
+  "images": [
+    {
+      "caption": "普通窗口四分类与观看记录",
+      "file": "02-normal-four-groups-history-grid.jpg",
+      "source_sha256": "4ce6782af8738620f11ed28abf7a048378620fccc750c89bf48dbbe0f10e0d5e",
+      "sha256": "1be4e9c2459ae126d5fc748d27095f17a2dce9a9c1f69cea281727fe232d6acd"
+    },
+    {
+      "caption": "系统全屏四分类完整显示",
+      "file": "06-fullscreen-four-groups-history.jpg",
+      "source_sha256": "b5e5afeeb4447536bbbab05e1ce24073083e0a30570e3bfdbc96f08c111da821",
+      "sha256": "7c47f150be179816fb3ad371e7818e6b5980e6549f5306121c9712d85df040e7"
+    },
+    {
+      "caption": "全屏醒目留言显示开关",
+      "file": "09-sc-setting-off.jpg",
+      "source_sha256": "38928f1847be9409ac6f7134c136815fde2e70e17da2dddca29ca9e209065931",
+      "sha256": "f746723bb46a40cf6b0c73e0fd310bee45cc74cad39a81424535a3fc745853fa"
+    },
+    {
+      "caption": "最终 Windows 包播放信息",
+      "file": "11-playback-information.jpg",
+      "source_sha256": "88089c8da9d30371d16b18f8612633869361f158fdef0416556c567d5516162b",
+      "sha256": "993b588b2a080fffc6ab3c0b8659ae19a01f26cfa6a375e0359fe04badc01b29"
+    },
+    {
+      "caption": "电视平台图标与方向键焦点",
+      "file": "12-tv-platform-logos-focused.jpg",
+      "source_sha256": "ecc87c7ead3e542f807dcf9d9153628714f1d7f441efe4e17a6d15204cb35956",
+      "sha256": "d5d345f685ceed6dbd3b18fe22701e731a9e642e3e212b7d800e52735091eaa9"
+    },
+    {
+      "caption": "保存自动同步后保留整行焦点",
+      "file": "14-tv-auto-sync-on-saved-focus.jpg",
+      "source_sha256": "79aa01394eacad5cab05a63fc90e7d25b05788cf1ffaa5cd1960d602c6bd6edb",
+      "sha256": "d9eebe3538d250fb89a20ca74a10dc43f0dbf930c8c4b5f51c3bb016cf4d824f"
+    },
+    {
+      "caption": "保存后一次左键移至同步",
+      "file": "15-tv-single-left-to-sync.jpg",
+      "source_sha256": "982a0830b1c8866968fb0a2ca15cc295ddda43bc854dda279e3f05b2157926ec",
+      "sha256": "1dfeade404a59dd8ae4461609f1cc6b13fd6b0f0a0a334922334cefb97def211"
+    },
+    {
+      "caption": "最终Linux包启动首页",
+      "file": "linux-home.jpg",
+      "source_sha256": "bb7fcf9f95a067d8c4990f4862ce1bf7ca5fd990ed117873820b2fa04fbb0a5c",
+      "sha256": "c3418bc7fd1dc71541a15f7fe02f9c3f8f052f9444e8cbd3a94ceb8cfe31c7ee"
+    },
+    {
+      "caption": "最终Mac包启动首页",
+      "file": "launch-1-30.jpg",
+      "source_sha256": "9dbfb1ed6c2b2989a876367d90e178972dfbad234e27a03018ec999dfd82bba5",
+      "sha256": "4461e3b4b8c3ae30de922cca23e631464daddae5a880d74cf0c2da89686558a6"
+    }
+  ],
+  "feed_sha256": {
+    "version.json": "0b56d53be5687d1bf5b7bb25cc7d3da6417b01dfe34efaa068fce25f70c033dd",
+    "releases.json": "d21bf063681c55016dccda5f490acbce2cfc5fe3809111f4464cc5fe47ac1ff0"
+  },
+  "legacy_commit": "ebbdeca91507e79a5f80ee54fc5b559dd92c1e4c",
+  "historical_entries_retained": 213,
+  "runtime_source_unchanged_from_build": true,
+  "physical_k90_tested": false,
+  "original_reporter_devices_tested": false
+}

@@ -1,0 +1,28 @@
+# A17.11 验证
+
+日期：2026-10-24（北京时间）。候选提交 `8a152c8f567433e8a3e6c2a3fba4bffb7afa992d`。
+
+## 已验证
+
+二级外观页的焦点在主题模式和纯黑背景之间移动，大小保持行内，状态底色圆角正确；首选平台弹窗聚焦斗鱼时左右边框完整，返回取消后仍为原首选哔哩哔哩。测试中临时切过“导航栏始终展开”，已恢复原先关闭；界面模式恢复自动，旋转精确恢复。绘制回归覆盖 720p/1080p/4K 与圆角外不绘制矩形底色。没有 Sony KD-65X8566E / Android 9 实机，仍请反馈者在发布后验证。
+
+## 复核步骤
+
+测试包切 TV 模式；外观二级页逐行移动；平台显示与授权 → 首选直播平台，方向键移动、返回取消；确认原值不变；还原所有临时状态。
+
+## 截图
+
+![tv-appearance-subpage.jpg](verify/tv-appearance-subpage.jpg)
+
+![tv-secondary-next-focus.jpg](verify/tv-secondary-next-focus.jpg)
+
+![tv-preferred-dialog-focus.jpg](verify/tv-preferred-dialog-focus.jpg)
+
+![tv-preferred-cancelled.jpg](verify/tv-preferred-cancelled.jpg)
+
+
+## 5.4.10 发布交付
+
+PR #31 合并 `7a823612a836d04a774a575d1e6dee5ff16b18b1`，保留 PR #28 贡献提交；实际构建与标签固定为 `7a20aaa8e04bd095cf4218f04b79f7294c3bf24a`。[5.4.10](https://github.com/wzgrx/PureLive/releases/tag/v5.4.10) 已公开，完整门禁、十包同源和 SHA256SUMS 远端哈希通过，各端首页与同提交 K90 冒烟分别记录于 Y01.21 和本地 outputs/purelive-5.4.10。
+
+最终候选实测覆盖 K90 竖/横屏首页与侧栏拖动、Windows KICK 原生播放与聊天。TV 焦点使用此前 K90 定向回执，相关布局代码在最终候选中未再改变。Sony Android 9、原反馈掌机、真实禁言事件、Apple 真机交互、Windows 覆盖安装和持续长时间播放仍需验证；未覆盖的任务保留待真机。斗鱼受影响账号原故障 #15 继续开放，V02.29 等待首次失败的固定诊断码。

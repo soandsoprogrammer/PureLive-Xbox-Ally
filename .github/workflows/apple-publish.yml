@@ -1,0 +1,48 @@
+# Attaches the packages of a finished Apple run (apple.yml) to a release,
+# inside GitHub: the artifact storage is very slow to download from here,
+# and this way the release carries exactly the files that run built and
+# checked. Started by hand with the run id and the release tag (the
+# release may still be a draft); their SHA-256 are checked first.
+name: Apple publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Id of the Apple run whose packages to attach
+        required: true
+        type: string
+      tag:
+        description: Release tag, e.g. v5.4.1
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: Attach Apple packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download, check and attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern '*-apple' --dir out
+          dir=$(dirname "$(find out -name SHA256SUMS.txt -print -quit)")
+          cd "$dir"
+          sha256sum -c SHA256SUMS.txt
+          version="${TAG#v}"
+          ls PureLive-"$version"-* >/dev/null
+          gh release upload "$TAG" PureLive-"$version"-* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'
