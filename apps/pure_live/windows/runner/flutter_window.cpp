@@ -19,63 +19,52 @@ constexpr UINT_PTR kStartupRecoveryTimer = 0x504C;
 constexpr int kStartupRecoveryAttempts = 5;
 constexpr UINT_PTR kGamepadTimer = 0x504D;
 
-UINT GamepadKeyboardKey(WORD key) {
+using GamepadChannel = flutter::MethodChannel<flutter::EncodableValue>;
+
+const char* GamepadAction(WORD key) {
   switch (key) {
     case VK_PAD_DPAD_UP:
     case VK_PAD_LTHUMB_UP:
-      return VK_UP;
+    case VK_PAD_LTHUMB_UPLEFT:
+    case VK_PAD_LTHUMB_UPRIGHT:
+      return "up";
     case VK_PAD_DPAD_DOWN:
     case VK_PAD_LTHUMB_DOWN:
-      return VK_DOWN;
+    case VK_PAD_LTHUMB_DOWNLEFT:
+    case VK_PAD_LTHUMB_DOWNRIGHT:
+      return "down";
     case VK_PAD_DPAD_LEFT:
     case VK_PAD_LTHUMB_LEFT:
-      return VK_LEFT;
+      return "left";
     case VK_PAD_DPAD_RIGHT:
     case VK_PAD_LTHUMB_RIGHT:
-      return VK_RIGHT;
-    case VK_PAD_A:
-      return VK_RETURN;
-    case VK_PAD_B:
-      return VK_ESCAPE;
-    case VK_PAD_LSHOULDER:
-      return VK_F6;
-    case VK_PAD_RSHOULDER:
-      return VK_F7;
-    case VK_PAD_X:
-      return VK_F8;
-    case VK_PAD_Y:
-      return VK_F9;
-    case VK_PAD_LTRIGGER:
-      return VK_F10;
-    case VK_PAD_RTRIGGER:
-      return VK_F11;
-    default:
-      return 0;
+      return "right";
+    case VK_PAD_A: return "confirm";
+    case VK_PAD_B: return "back";
+    case VK_PAD_LSHOULDER: return "previous";
+    case VK_PAD_RSHOULDER: return "next";
+    case VK_PAD_X: return "list";
+    case VK_PAD_Y: return "danmaku";
+    case VK_PAD_LTRIGGER: return "volumeDown";
+    case VK_PAD_RTRIGGER: return "volumeUp";
+    default: return nullptr;
   }
 }
 
-void PollGamepad(HWND window, HWND flutter_view) {
-  const HWND focus = GetFocus();
-  const bool active = GetForegroundWindow() == window &&
-                      (focus == flutter_view || IsChild(flutter_view, focus));
+void PollGamepad(GamepadChannel* channel) {
   XINPUT_KEYSTROKE event{};
-  while (XInputGetKeystroke(XUSER_INDEX_ANY, 0, &event) == ERROR_SUCCESS) {
-    const UINT key = GamepadKeyboardKey(event.VirtualKey);
-    if (!active || !key || !(event.Flags & XINPUT_KEYSTROKE_KEYDOWN)) {
+  for (int i = 0; i < 64 &&
+       XInputGetKeystroke(XUSER_INDEX_ANY, 0, &event) == ERROR_SUCCESS; ++i) {
+    const char* action = GamepadAction(event.VirtualKey);
+    if (!channel || !action || !(event.Flags & XINPUT_KEYSTROKE_KEYDOWN)) {
       continue;
     }
     const bool directional =
-        key == VK_UP || key == VK_DOWN || key == VK_LEFT || key == VK_RIGHT;
-    if (!directional && (event.Flags & XINPUT_KEYSTROKE_REPEAT)) {
-      continue;
-    }
-    const LPARAM scan_code =
-        static_cast<LPARAM>(MapVirtualKeyW(key, MAPVK_VK_TO_VSC) & 0xff);
-    const LPARAM key_data = 1 | (scan_code << 16) |
-                            (directional ? (1L << 24) : 0);
-    PostMessageW(flutter_view, WM_KEYDOWN, key, key_data);
-    PostMessageW(flutter_view, WM_KEYUP, key,
-                 key_data | (1UL << 30) | (1UL << 31));
+        (event.VirtualKey >= VK_PAD_DPAD_UP && event.VirtualKey <= VK_PAD_DPAD_RIGHT) ||
+        (event.VirtualKey >= VK_PAD_LTHUMB_UP && event.VirtualKey <= VK_PAD_LTHUMB_DOWNRIGHT);
+    if (!directional && (event.Flags & XINPUT_KEYSTROKE_REPEAT)) continue;
+    channel->InvokeMethod(
+        "action", std::make_unique<flutter::EncodableValue>(action));
   }
 }
 }  // namespace
@@ -127,7 +116,26 @@ bool FlutterWindow::OnCreate() {
       });
 
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
-  SetTimer(GetHandle(), kGamepadTimer, 16, nullptr);
+  gamepad_channel_ = std::make_unique<GamepadChannel>(
+      flutter_controller_->engine()->messenger(), "pure_live/gamepad",
+      &flutter::StandardMethodCodec::GetInstance());
+  gamepad_channel_->SetMethodCallHandler([this](const auto& call, auto result) {
+    const HWND window = GetHandle();
+    if (call.method_name() == "start") {
+      gamepad_listening_ = true;
+      if (GetForegroundWindow() == window) {
+        PollGamepad(nullptr);
+        SetTimer(window, kGamepadTimer, 16, nullptr);
+      }
+      result->Success();
+    } else if (call.method_name() == "stop") {
+      gamepad_listening_ = false;
+      KillTimer(window, kGamepadTimer);
+      result->Success();
+    } else {
+      result->NotImplemented();
+    }
+  });
 
   startup_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -167,10 +175,12 @@ void FlutterWindow::OnDestroy() {
   // the wrapper still exists but its internal view is null, so forwarding the
   // re-entrant message would crash in FlutterWindowsView::GetEngine().
   flutter_controller_destroying_ = true;
+  gamepad_listening_ = false;
   KillTimer(GetHandle(), kGamepadTimer);
   KillTimer(GetHandle(), kStartupRecoveryTimer);
   if (startup_callback_) startup_callback_->window = nullptr;
   startup_callback_.reset();
+  gamepad_channel_.reset();
   startup_channel_.reset();
   display_mode_channel_.reset();
   flutter_controller_.reset();
@@ -209,9 +219,17 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     RecoverStartupSurface();
     return 0;
   }
+  if (message == WM_ACTIVATE && gamepad_listening_) {
+    if (LOWORD(wparam) == WA_INACTIVE) {
+      KillTimer(hwnd, kGamepadTimer);
+    } else {
+      PollGamepad(nullptr);
+      SetTimer(hwnd, kGamepadTimer, 16, nullptr);
+    }
+  }
   if (message == WM_TIMER && wparam == kGamepadTimer) {
-    if (flutter_controller_ && !flutter_controller_destroying_) {
-      PollGamepad(hwnd, flutter_controller_->view()->GetNativeWindow());
+    if (GetForegroundWindow() == hwnd && gamepad_listening_ && gamepad_channel_) {
+      PollGamepad(gamepad_channel_.get());
     }
     return 0;
   }

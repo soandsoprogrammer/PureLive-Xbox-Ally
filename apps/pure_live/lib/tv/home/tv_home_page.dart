@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:live_store/live_store.dart';
 import 'package:live_ui/live_ui.dart';
 import 'package:pure_live/app/music_player.dart';
@@ -14,6 +14,7 @@ import 'package:pure_live/features/live_play/logic/predictive_back.dart';
 import 'package:pure_live/features/version/update_feed.dart';
 import 'package:pure_live/features/version/update_prompt.dart';
 import 'package:pure_live/i18n/i18n.dart';
+import 'package:pure_live/tv/gamepad_actions.dart';
 import 'package:pure_live/tv/music/music_panes.dart';
 import 'package:pure_live/tv/pages/tv_areas_pane.dart';
 import 'package:pure_live/tv/pages/tv_favorites_pane.dart';
@@ -730,26 +731,49 @@ class _TvHomePageState extends ConsumerState<TvHomePage> with WidgetsBindingObse
       palette: TvPalette.of(scheme),
       zoom: false,
       child: TvBackground(
-        child: CallbackShortcuts(
-          bindings: {
-            const SingleActivator(LogicalKeyboardKey.f6): () => _stepHandheldTab(-1),
-            const SingleActivator(LogicalKeyboardKey.f7): () => _stepHandheldTab(1),
-            const SingleActivator(LogicalKeyboardKey.f8): () => _select(TvPane.search),
+        child: GamepadActions(
+          handle: (action) {
+            switch (action) {
+              case GamepadAction.previous:
+                _stepHandheldTab(-1);
+              case GamepadAction.next:
+                _stepHandheldTab(1);
+              case GamepadAction.list:
+                _select(TvPane.search);
+              case GamepadAction.up:
+              case GamepadAction.down:
+              case GamepadAction.left:
+              case GamepadAction.right:
+              case GamepadAction.confirm:
+              case GamepadAction.back:
+              case GamepadAction.danmaku:
+              case GamepadAction.volumeDown:
+              case GamepadAction.volumeUp:
+                return false;
+            }
+            return true;
           },
           child: Padding(
             padding: EdgeInsets.symmetric(horizontal: scale.px(28)),
             child: Column(
               children: [
-                Row(
-                  children: [
-                    Icon(Icons.play_arrow_rounded, color: scheme.onSurface),
-                    SizedBox(width: scale.px(8)),
-                    Text(i18n('app_name'), style: scale.font(TvTextSize.body, color: scheme.onSurface)),
-                    const Spacer(),
-                    for (final pane in _handheldTabs) _handheldTab(pane, mint),
-                    const Spacer(),
-                    _handheldTab(TvPane.settings, mint),
-                  ],
+                LayoutBuilder(
+                  builder: (context, constraints) => Row(
+                    children: [
+                      if (constraints.maxWidth >= scale.pxText(650)) ...[
+                        Icon(Icons.play_arrow_rounded, color: scheme.onSurface),
+                        SizedBox(width: scale.px(8)),
+                        Text(i18n('app_name'), style: scale.font(TvTextSize.body, color: scheme.onSurface)),
+                      ],
+                      Expanded(
+                        child: Wrap(
+                          alignment: WrapAlignment.center,
+                          children: [for (final pane in _handheldTabs) _handheldTab(pane, mint)],
+                        ),
+                      ),
+                      _handheldTab(TvPane.settings, mint),
+                    ],
+                  ),
                 ),
                 const Divider(height: 1),
                 Expanded(child: page),

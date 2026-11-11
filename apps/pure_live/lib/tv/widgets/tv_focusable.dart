@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:pure_live/tv/gamepad_actions.dart';
 import 'package:pure_live/tv/tv_theme.dart';
 import 'package:pure_live/tv/widgets/tv_focus_region.dart';
 
@@ -65,6 +66,7 @@ class TvFocusable extends StatefulWidget {
     this.onTap,
     this.onLongPress,
     this.onKey,
+    this.onGamepadDirection,
     this.onFocusChange,
     this.focusNode,
     this.autofocus = false,
@@ -86,6 +88,9 @@ class TvFocusable extends StatefulWidget {
 
   /// Keys before the default handling.
   final TvKeyHandler? onKey;
+
+  /// Optional direction handling shared with the keyboard.
+  final bool Function(FocusNode, TraversalDirection)? onGamepadDirection;
 
   /// Focus gained or lost.
   final ValueChanged<bool>? onFocusChange;
@@ -227,7 +232,7 @@ class _TvFocusableState extends State<TvFocusable> {
     final target = _focused ? (_pressed ? zoom * tvPressScale : zoom) : (_pressed ? tvPressScale : 1.0);
     final ringOn = _focused && widget.ring;
     final content = widget.builder(context, _focused);
-    return Focus(
+    final focus = Focus(
       focusNode: _node,
       autofocus: widget.autofocus,
       canRequestFocus: widget.enabled,
@@ -259,6 +264,17 @@ class _TvFocusableState extends State<TvFocusable> {
           ),
         ),
       ),
+    );
+    return GamepadActions(
+      handle: (action) {
+        if (action.direction case final direction?) {
+          return widget.onGamepadDirection?.call(_node, direction) ?? false;
+        }
+        if (action != GamepadAction.confirm || !widget.enabled || widget.onTap == null) return false;
+        _tap();
+        return true;
+      },
+      child: focus,
     );
   }
 }

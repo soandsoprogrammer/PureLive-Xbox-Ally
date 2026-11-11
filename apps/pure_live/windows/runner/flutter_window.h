@@ -47,6 +47,8 @@ class FlutterWindow : public Win32Window {
   // The frame callback may outlive the HWND/controller. It owns only this token.
   struct StartupCallback { HWND window = nullptr; };
   std::shared_ptr<StartupCallback> startup_callback_;
+  bool gamepad_listening_ = false;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> gamepad_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> startup_channel_;
   bool startup_layout_ready_ = false;
   bool uninstall_ready_ = false;

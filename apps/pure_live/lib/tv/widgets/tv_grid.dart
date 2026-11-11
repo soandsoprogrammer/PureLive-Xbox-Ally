@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:pure_live/tv/gamepad_actions.dart';
 import 'package:pure_live/tv/tv_theme.dart';
 import 'package:pure_live/tv/widgets/tv_focusable.dart';
 
@@ -34,6 +35,7 @@ class TvGrid extends StatefulWidget {
     this.onLeaveUp,
     this.onLeaveLeft,
     this.padding,
+    this.itemIdentity,
     super.key,
   });
 
@@ -48,6 +50,9 @@ class TvGrid extends StatefulWidget {
 
   /// Builds a cell.
   final TvGridCellBuilder itemBuilder;
+
+  /// A stable identity for focus restoration when the grid reflows.
+  final Object Function(int index)? itemIdentity;
 
   /// Left on the first column, when this grid belongs to a two-column pane.
   final VoidCallback? onLeaveLeft;
@@ -105,6 +110,23 @@ class TvGridState extends State<TvGrid> {
   @override
   void didUpdateWidget(TvGrid oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final last = _last;
+    final identity = oldWidget.itemIdentity;
+    final currentIdentity = widget.itemIdentity;
+    if (oldWidget.columns != widget.columns && last != null && identity != null && currentIdentity != null) {
+      final room = identity(last);
+      for (var index = 0; index < widget.itemCount; index++) {
+        if (currentIdentity(index) != room) continue;
+        _last = index;
+        if (_inside) {
+          final origin = FocusManager.instance.primaryFocus;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && FocusManager.instance.primaryFocus == origin) focusIndex(index);
+          });
+        }
+        break;
+      }
+    }
     // Fewer cells (a refresh): forget the nodes past the end.
     final stale = _nodes.keys.where((index) => index >= widget.itemCount).toList();
     for (final index in stale) {
@@ -179,13 +201,24 @@ class TvGridState extends State<TvGrid> {
 
   KeyEventResult _move(int index, KeyEvent event) {
     if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final direction = switch (event.logicalKey) {
+      LogicalKeyboardKey.arrowLeft => TraversalDirection.left,
+      LogicalKeyboardKey.arrowRight => TraversalDirection.right,
+      LogicalKeyboardKey.arrowUp => TraversalDirection.up,
+      LogicalKeyboardKey.arrowDown => TraversalDirection.down,
+      _ => null,
+    };
+    return direction == null ? KeyEventResult.ignored : _moveInDirection(index, direction);
+  }
+
+  KeyEventResult _moveInDirection(int index, TraversalDirection direction) {
     final count = widget.itemCount;
     final columns = _columns;
     final column = index % columns;
     final row = index ~/ columns;
     final lastRow = (count - 1) ~/ columns;
-    switch (event.logicalKey) {
-      case LogicalKeyboardKey.arrowLeft:
+    switch (direction) {
+      case TraversalDirection.left:
         if (column == 0) {
           if (widget.onLeaveLeft == null) return KeyEventResult.ignored;
           widget.onLeaveLeft!();
@@ -193,10 +226,10 @@ class TvGridState extends State<TvGrid> {
         }
         focusIndex(index - 1);
         return KeyEventResult.handled;
-      case LogicalKeyboardKey.arrowRight:
+      case TraversalDirection.right:
         if (column < columns - 1 && index + 1 < count) focusIndex(index + 1);
         return KeyEventResult.handled;
-      case LogicalKeyboardKey.arrowUp:
+      case TraversalDirection.up:
         if (row > 0) {
           focusIndex(index - columns);
           return KeyEventResult.handled;
@@ -205,7 +238,7 @@ class TvGridState extends State<TvGrid> {
         if (leave == null) return KeyEventResult.ignored;
         leave();
         return KeyEventResult.handled;
-      case LogicalKeyboardKey.arrowDown:
+      case TraversalDirection.down:
         if (row < lastRow) {
           focusIndex(math.min(index + columns, count - 1));
         } else {
@@ -213,7 +246,6 @@ class TvGridState extends State<TvGrid> {
         }
         return KeyEventResult.handled;
     }
-    return KeyEventResult.ignored;
   }
 
   /// Follows the focus once it settled: remembers the cell, asks for more
@@ -262,8 +294,13 @@ class TvGridState extends State<TvGrid> {
             mainAxisSpacing: widget.mainSpacing,
           ),
           itemCount: widget.itemCount,
-          itemBuilder: (context, index) =>
-              widget.itemBuilder(context, index, _node(index), (node, event) => _move(index, event)),
+          itemBuilder: (context, index) => GamepadActions(
+            handle: (action) {
+              final direction = action.direction;
+              return direction != null && _moveInDirection(index, direction) == KeyEventResult.handled;
+            },
+            child: widget.itemBuilder(context, index, _node(index), (node, event) => _move(index, event)),
+          ),
         );
       },
     );

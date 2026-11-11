@@ -11,7 +11,6 @@ import 'package:live_ui/live_ui.dart';
 import 'package:pure_live/app/music_player.dart';
 import 'package:pure_live/app/network.dart';
 import 'package:pure_live/app/services.dart';
-import 'package:pure_live/app/ui_mode.dart';
 import 'package:pure_live/features/live_play/layout/room_panel.dart';
 import 'package:pure_live/features/live_play/logic/background_playback.dart';
 import 'package:pure_live/features/live_play/logic/room_controller.dart';
@@ -30,6 +29,7 @@ import 'package:pure_live/shared/rooms/playback_hud.dart';
 import 'package:pure_live/shared/rooms/playback_lines.dart';
 import 'package:pure_live/shared/rooms/room_gain.dart';
 import 'package:pure_live/shared/rooms/room_menu.dart';
+import 'package:pure_live/tv/gamepad_actions.dart';
 import 'package:pure_live/tv/room/tv_room_overlays.dart';
 import 'package:pure_live/tv/room/tv_room_settings_panel.dart';
 import 'package:pure_live/tv/room/tv_super_chat_panel.dart';
@@ -106,6 +106,7 @@ class TvLivePlayPageState extends ConsumerState<TvLivePlayPage> {
   Timer? _hideControls;
   Timer? _hideBanner;
   Timer? _debounce;
+  Timer? _volumeSaveTimer;
   int _pendingDelta = 0;
   ValueNotifier<LiveRoom?>? _shown;
   PlaybackRemote? _remote;
@@ -244,6 +245,10 @@ class TvLivePlayPageState extends ConsumerState<TvLivePlayPage> {
   }
 
   Future<void> _closeRoom() {
+    if (_volumeSaveTimer?.isActive ?? false) {
+      _volumeSaveTimer?.cancel();
+      unawaited(_controller?.saveVolume());
+    }
     _controller?.removeListener(_syncAutoRoomSwitch);
     unawaited(_autoRoomStates?.cancel());
     _autoRoomStates = null;
@@ -378,7 +383,10 @@ class TvLivePlayPageState extends ConsumerState<TvLivePlayPage> {
   Future<void> _stepVolume(double amount) async {
     final controller = _controller;
     if (controller == null || _blocked) return;
-    await controller.setVolume(controller.volume + amount, save: true);
+    final update = controller.setVolume(controller.volume + amount);
+    _volumeSaveTimer?.cancel();
+    _volumeSaveTimer = Timer(const Duration(milliseconds: 350), () => unawaited(controller.saveVolume()));
+    await update;
     if (mounted && identical(controller, _controller)) {
       AppNavigator.toast('${i18n('volume')} ${(controller.volume * 100).round()}%');
     }
@@ -397,24 +405,6 @@ class TvLivePlayPageState extends ConsumerState<TvLivePlayPage> {
     }
     // The settings walk by focus; Back closes them.
     if (_settings || _superChatPanel) return KeyEventResult.ignored;
-    if (isHandheldBuild) {
-      switch (key) {
-        case LogicalKeyboardKey.f6:
-        case LogicalKeyboardKey.f7:
-          switchBy(key == LogicalKeyboardKey.f6 ? -1 : 1);
-          return KeyEventResult.handled;
-        case LogicalKeyboardKey.f8:
-          _openPanel();
-          return KeyEventResult.handled;
-        case LogicalKeyboardKey.f9:
-          _toggleDanmaku();
-          return KeyEventResult.handled;
-        case LogicalKeyboardKey.f10:
-        case LogicalKeyboardKey.f11:
-          unawaited(_stepVolume(key == LogicalKeyboardKey.f10 ? -0.05 : 0.05));
-          return KeyEventResult.handled;
-      }
-    }
     final up = key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.channelUp;
     final down = key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.channelDown;
     if (up || down) {
@@ -452,6 +442,38 @@ class TvLivePlayPageState extends ConsumerState<TvLivePlayPage> {
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
+  }
+
+  bool _onGamepad(GamepadAction action) {
+    if (_panel && action == GamepadAction.right) {
+      _hide();
+      return true;
+    }
+    if (_panel || _settings || _superChatPanel) return false;
+    switch (action) {
+      case GamepadAction.previous:
+      case GamepadAction.next:
+        switchBy(action == GamepadAction.previous ? -1 : 1);
+      case GamepadAction.list:
+        _openPanel();
+      case GamepadAction.danmaku:
+        _toggleDanmaku();
+      case GamepadAction.volumeDown:
+      case GamepadAction.volumeUp:
+        unawaited(_stepVolume(action == GamepadAction.volumeDown ? -0.05 : 0.05));
+      case GamepadAction.up:
+      case GamepadAction.down:
+        switchBy(action == GamepadAction.up ? -1 : 1);
+        if (_controls) _touch();
+      case GamepadAction.left:
+      case GamepadAction.right:
+      case GamepadAction.confirm:
+        if (_controls) return false;
+        unawaited(_remoteKey(action == GamepadAction.confirm ? 'ok' : action.name));
+      case GamepadAction.back:
+        return false;
+    }
+    return true;
   }
 
   Future<bool> _remoteKey(String key) async {
@@ -597,116 +619,119 @@ class TvLivePlayPageState extends ConsumerState<TvLivePlayPage> {
       },
       child: Scaffold(
         backgroundColor: OnVideoColors.ground,
-        body: Focus(
-          focusNode: _keys,
-          autofocus: true,
-          onKeyEvent: _onKey,
-          child: controller == null
-              ? TvBackground(
-                  child: TvStatusView(
-                    icon: AppIcons.playbackError,
-                    title: _problem ?? i18n('get_room_info_failed_retry'),
-                    subtitle: i18n('tv_room_switch_hint'),
-                  ),
-                )
-              : Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    GestureDetector(
-                      key: const ValueKey('tv-room-touch-surface'),
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () {
-                        if (_blocked || _panel || _settings || _superChatPanel) return;
-                        if (_controls) {
-                          _hide();
-                        } else {
-                          _showControls();
-                        }
-                      },
-                      child: _Picture(key: ObjectKey(controller), controller: controller),
+        body: GamepadActions(
+          handle: _onGamepad,
+          child: Focus(
+            focusNode: _keys,
+            autofocus: true,
+            onKeyEvent: _onKey,
+            child: controller == null
+                ? TvBackground(
+                    child: TvStatusView(
+                      icon: AppIcons.playbackError,
+                      title: _problem ?? i18n('get_room_info_failed_retry'),
+                      subtitle: i18n('tv_room_switch_hint'),
                     ),
-                    ListenableBuilder(
-                      listenable: controller,
-                      builder: (context, _) => StreamBuilder<PlaybackState>(
-                        stream: controller.session.states,
-                        initialData: controller.session.state,
-                        builder: (context, snapshot) =>
-                            TvRoomStatus(controller: controller, playback: snapshot.data ?? controller.session.state),
+                  )
+                : Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      GestureDetector(
+                        key: const ValueKey('tv-room-touch-surface'),
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () {
+                          if (_blocked || _panel || _settings || _superChatPanel) return;
+                          if (_controls) {
+                            _hide();
+                          } else {
+                            _showControls();
+                          }
+                        },
+                        child: _Picture(key: ObjectKey(controller), controller: controller),
                       ),
-                    ),
-                    PlaybackHud(
-                      telemetry: controller.telemetry,
-                      controls: _controls,
-                      fullscreen: true,
-                      clearance: EdgeInsets.only(top: _banner ? 110 : 12, bottom: _controls ? 170 : 52),
-                    ),
-                    if (_banner && !_controls && !_panel && !_settings && !_superChatPanel)
-                      Positioned(
-                        left: 0,
-                        top: 0,
-                        child: ListenableBuilder(
-                          listenable: controller,
-                          builder: (context, _) =>
-                              TvChannelBanner(room: controller.room, index: _index, count: _playlist.length),
+                      ListenableBuilder(
+                        listenable: controller,
+                        builder: (context, _) => StreamBuilder<PlaybackState>(
+                          stream: controller.session.states,
+                          initialData: controller.session.state,
+                          builder: (context, snapshot) =>
+                              TvRoomStatus(controller: controller, playback: snapshot.data ?? controller.session.state),
                         ),
                       ),
-                    if (_controls)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: ListenableBuilder(
-                          listenable: controller,
-                          builder: (context, _) => StreamBuilder<bool>(
-                            stream: ref.read(storeProvider).follows.watchContains(controller.room),
-                            builder: (context, followed) => TvRoomControls(
-                              controller: controller,
-                              followed: followed.data ?? false,
-                              danmakuOn: watchSetting(ref, Settings.enableDanmakuDisplay),
-                              onQuality: () => unawaited(_pickQuality()),
-                              onLine: () => unawaited(_pickLine()),
-                              onGain: () => unawaited(_pickGain()),
-                              onDanmaku: _toggleDanmaku,
-                              onFollow: () => unawaited(_toggleFollow(followed: followed.data ?? false)),
-                              onRefresh: () {
-                                _touch();
-                                unawaited(controller.load());
-                              },
-                              onList: _openPanel,
-                              onSuperChat:
-                                  watchSetting(ref, Settings.showFullscreenSuperChat) &&
-                                      controller.superChats.isNotEmpty
-                                  ? _showSuperChats
-                                  : null,
-                              firstButton: _firstControl,
+                      PlaybackHud(
+                        telemetry: controller.telemetry,
+                        controls: _controls,
+                        fullscreen: true,
+                        clearance: EdgeInsets.only(top: _banner ? 110 : 12, bottom: _controls ? 170 : 52),
+                      ),
+                      if (_banner && !_controls && !_panel && !_settings && !_superChatPanel)
+                        Positioned(
+                          left: 0,
+                          top: 0,
+                          child: ListenableBuilder(
+                            listenable: controller,
+                            builder: (context, _) =>
+                                TvChannelBanner(room: controller.room, index: _index, count: _playlist.length),
+                          ),
+                        ),
+                      if (_controls)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: ListenableBuilder(
+                            listenable: controller,
+                            builder: (context, _) => StreamBuilder<bool>(
+                              stream: ref.read(storeProvider).follows.watchContains(controller.room),
+                              builder: (context, followed) => TvRoomControls(
+                                controller: controller,
+                                followed: followed.data ?? false,
+                                danmakuOn: watchSetting(ref, Settings.enableDanmakuDisplay),
+                                onQuality: () => unawaited(_pickQuality()),
+                                onLine: () => unawaited(_pickLine()),
+                                onGain: () => unawaited(_pickGain()),
+                                onDanmaku: _toggleDanmaku,
+                                onFollow: () => unawaited(_toggleFollow(followed: followed.data ?? false)),
+                                onRefresh: () {
+                                  _touch();
+                                  unawaited(controller.load());
+                                },
+                                onList: _openPanel,
+                                onSuperChat:
+                                    watchSetting(ref, Settings.showFullscreenSuperChat) &&
+                                        controller.superChats.isNotEmpty
+                                    ? _showSuperChats
+                                    : null,
+                                firstButton: _firstControl,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    if (_panel)
-                      Positioned(
-                        top: 0,
-                        left: 0,
-                        bottom: 0,
-                        child: TvRoomList(rooms: _playlist, current: _index, onPick: switchTo),
-                      ),
-                    if (_superChatPanel)
-                      Positioned(
-                        top: 0,
-                        right: 0,
-                        bottom: 0,
-                        width: TvScale.of(context).px(roomSidePanelWidth),
-                        child: TvSuperChatPanel(controller: controller, focusNode: _superChatFocus, onClose: _hide),
-                      ),
-                    if (_settings)
-                      Positioned(
-                        top: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: TvRoomSettingsPanel(controller: controller, onClose: _hide),
-                      ),
-                  ],
-                ),
+                      if (_panel)
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          bottom: 0,
+                          child: TvRoomList(rooms: _playlist, current: _index, onPick: switchTo),
+                        ),
+                      if (_superChatPanel)
+                        Positioned(
+                          top: 0,
+                          right: 0,
+                          bottom: 0,
+                          width: TvScale.of(context).px(roomSidePanelWidth),
+                          child: TvSuperChatPanel(controller: controller, focusNode: _superChatFocus, onClose: _hide),
+                        ),
+                      if (_settings)
+                        Positioned(
+                          top: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: TvRoomSettingsPanel(controller: controller, onClose: _hide),
+                        ),
+                    ],
+                  ),
+          ),
         ),
       ),
     );

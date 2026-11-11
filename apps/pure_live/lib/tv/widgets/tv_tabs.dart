@@ -158,28 +158,38 @@ class TvTabBarState extends State<TvTabBar> {
 
   KeyEventResult _key(FocusNode node, KeyEvent event) {
     if (event is KeyUpEvent) return KeyEventResult.ignored;
-    final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-      final index = widget.tabs.indexWhere((tab) => _nodes[tab.id] == node);
-      final rtl = Directionality.of(context) == TextDirection.rtl;
-      final next = index + ((key == LogicalKeyboardKey.arrowRight) != rtl ? 1 : -1);
-      if (index >= 0 && next >= 0 && next < widget.tabs.length) {
-        _node(widget.tabs[next].id).requestFocus();
-        return KeyEventResult.handled;
-      }
-      final boundary = key == LogicalKeyboardKey.arrowLeft ? widget.onLeft : widget.onRight;
-      if (boundary != null) {
-        boundary();
-        return KeyEventResult.handled;
-      }
-      return key == LogicalKeyboardKey.arrowRight ? KeyEventResult.handled : KeyEventResult.ignored;
-    }
-    final move = switch (event.logicalKey) {
-      LogicalKeyboardKey.arrowDown => widget.onDown,
-      LogicalKeyboardKey.arrowUp => widget.onUp,
+    final direction = switch (event.logicalKey) {
+      LogicalKeyboardKey.arrowLeft => TraversalDirection.left,
+      LogicalKeyboardKey.arrowRight => TraversalDirection.right,
+      LogicalKeyboardKey.arrowUp => TraversalDirection.up,
+      LogicalKeyboardKey.arrowDown => TraversalDirection.down,
       _ => null,
     };
-    return move != null && move() ? KeyEventResult.handled : KeyEventResult.ignored;
+    return direction != null && _move(node, direction) ? KeyEventResult.handled : KeyEventResult.ignored;
+  }
+
+  bool _move(FocusNode node, TraversalDirection direction) {
+    if (direction == TraversalDirection.left || direction == TraversalDirection.right) {
+      final index = widget.tabs.indexWhere((tab) => _nodes[tab.id] == node);
+      final rtl = Directionality.of(context) == TextDirection.rtl;
+      final next = index + ((direction == TraversalDirection.right) != rtl ? 1 : -1);
+      if (index >= 0 && next >= 0 && next < widget.tabs.length) {
+        _node(widget.tabs[next].id).requestFocus();
+        return true;
+      }
+      final boundary = direction == TraversalDirection.left ? widget.onLeft : widget.onRight;
+      if (boundary != null) {
+        boundary();
+        return true;
+      }
+      return direction == TraversalDirection.right;
+    }
+    final move = switch (direction) {
+      TraversalDirection.down => widget.onDown,
+      TraversalDirection.up => widget.onUp,
+      _ => null,
+    };
+    return move != null && move();
   }
 
   @override
@@ -207,6 +217,7 @@ class TvTabBarState extends State<TvTabBar> {
                     focusNode: _node(tab.id),
                     radius: TvRadius.pill,
                     onKey: _key,
+                    onGamepadDirection: _move,
                     onFocusChange: (focused) {
                       if (focused) {
                         _remembered = tab.id;

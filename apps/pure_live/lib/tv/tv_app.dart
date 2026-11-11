@@ -3,7 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:live_store/live_store.dart';
 import 'package:pure_live/app/services.dart';
+import 'package:pure_live/app/ui_mode.dart';
 import 'package:pure_live/routes/app_navigator.dart';
+import 'package:pure_live/tv/gamepad_actions.dart';
 import 'package:pure_live/tv/phone/tv_phone_dialogs.dart';
 import 'package:pure_live/tv/tv_theme.dart';
 import 'package:pure_live/tv/wallpaper/tv_wallpaper_layer.dart';
@@ -47,12 +49,14 @@ class _TvAppFrameState extends ConsumerState<TvAppFrame> {
   @override
   void initState() {
     super.initState();
+    if (isHandheldBuild) GamepadActions.install();
     _openExternal = AppNavigator.openExternal;
     AppNavigator.openExternal = _showLink;
   }
 
   @override
   void dispose() {
+    if (isHandheldBuild) GamepadActions.uninstall();
     AppNavigator.openExternal = _openExternal;
     super.dispose();
   }

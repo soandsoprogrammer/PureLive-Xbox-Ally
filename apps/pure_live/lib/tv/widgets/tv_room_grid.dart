@@ -110,16 +110,22 @@ class TvRoomGridState extends ConsumerState<TvRoomGrid> {
     final scale = TvScale.of(context);
     final policy = watchAudiencePolicy(ref);
     final followed = ref.watch(followKeysProvider).value ?? const <String>{};
-    final columns = isHandheldBuild ? 3 : tvRoomColumns(watchSetting(ref, Settings.textScaleFactor));
+    final rooms = widget.rooms;
+    final defaultColumns = tvRoomColumns(watchSetting(ref, Settings.textScaleFactor));
     final crossSpacing = scale(watchSetting(ref, Settings.crossAxisSpacing) + 26);
     final mainSpacing = scale(watchSetting(ref, Settings.mainAxisSpacing) + 26);
     return LayoutBuilder(
       builder: (context, constraints) {
         // The card's 16:9 cover over its two lines sets the cell's shape.
-        final width = (constraints.maxWidth - scale.px(24) - crossSpacing * (columns - 1)) / columns;
+        final available = constraints.maxWidth - scale.px(isHandheldBuild ? 48 : 24);
+        final columns = isHandheldBuild
+            ? ((available + crossSpacing) / (scale.pxText(105) + crossSpacing)).floor().clamp(1, 3)
+            : defaultColumns;
+        final width = (available - crossSpacing * (columns - 1)) / columns;
         return TvGrid(
           key: _grid,
-          itemCount: widget.rooms.length,
+          itemCount: rooms.length,
+          itemIdentity: isHandheldBuild ? (index) => rooms[index].identityKey : null,
           columns: columns,
           aspectRatio: width > 0 ? width / TvRoomCard.heightFor(width, scale) : 1.2,
           crossSpacing: crossSpacing,
