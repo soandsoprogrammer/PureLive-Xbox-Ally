@@ -557,18 +557,6 @@ impl Home {
             self.move_platform(if right { 1 } else { -1 }, 0, cx);
             return;
         }
-        if self.pane == Pane::Follows && self.content.is_none() && self.room_selection.is_none() {
-            let current = FollowFilter::TABS
-                .iter()
-                .position(|tab| *tab == self.follow_filter)
-                .expect("follow filter tab");
-            let step = if right { 1 } else { -1 };
-            let next = current
-                .saturating_add_signed(step)
-                .min(FollowFilter::TABS.len() - 1);
-            self.select_follow_filter(FollowFilter::TABS[next], cx);
-            return;
-        }
         if self.content.is_none() && self.pane != Pane::Settings {
             self.move_card(if right { 1 } else { -1 }, cx);
             return;
@@ -910,9 +898,9 @@ impl Home {
                     Ok(rooms) => {
                         mark(&this.log, format!("rooms_loaded={}", rooms.len()));
                         this.results = rooms;
-                        this.room_selection = (!this.results.is_empty()
-                            && this.platform_cursor.is_none())
-                        .then_some(0);
+                        // Do not pre-select a card: the mint ring means the user moved
+                        // to it, not that the list has just loaded.
+                        this.room_selection = None;
                         if this.results.is_empty() {
                             if this.pane == Pane::Search && this.search_platform.is_none() {
                                 "暂无结果，可换个关键词或粘贴直播间链接".into()

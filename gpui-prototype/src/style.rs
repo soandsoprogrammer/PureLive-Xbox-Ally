@@ -355,10 +355,10 @@ impl Home {
             ]
         } else if self.pane == Pane::Follows && self.room_selection.is_none() {
             &[
-                ("← / →", "切换筛选"),
+                ("LB / RB", "切换筛选"),
+                ("LT / RT", "切换栏目"),
                 ("↓", "直播列表"),
                 ("Ⓧ", "刷新"),
-                ("LB / RB", "切换栏目"),
             ]
         } else if self.pane == Pane::Follows {
             &[
@@ -366,7 +366,7 @@ impl Home {
                 ("Ⓐ", "观看"),
                 ("Ⓨ", "取消关注"),
                 ("Ⓧ", "刷新"),
-                ("LB / RB", "切换栏目"),
+                ("LB / RB", "切换筛选"),
             ]
         } else {
             &[
