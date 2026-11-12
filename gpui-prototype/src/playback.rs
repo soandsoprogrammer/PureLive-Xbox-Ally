@@ -221,6 +221,9 @@ impl Home {
         self.playback_epoch += 1;
         let room = self.active_room.take();
         self.reopen_video = false;
+        if let Some(Content::Video { player, .. }) = &self.content {
+            player.clear_notice();
+        }
         self.content = None;
         self.playback = PlaybackUi::default();
         self.status.clear();

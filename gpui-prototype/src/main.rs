@@ -1024,7 +1024,7 @@ impl Home {
                         if let Some(toast) = this.switch_toast.take()
                             && let Some(Content::Video { player, .. }) = &this.content
                         {
-                            player.show_text(&toast, 2000);
+                            player.notice(&toast);
                         }
                         if this.playback.visible() {
                             this.show_controls(window, cx);

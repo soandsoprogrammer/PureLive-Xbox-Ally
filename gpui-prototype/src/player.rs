@@ -376,14 +376,38 @@ impl Player {
         self.run(&[c"osd-overlay", &id, c"ass-events", &text, &width, &height]) >= 0
     }
 
-    /// Shows a short centred message over the video (mpv `show-text`), used for
-    /// "3/6 神棍老师" after switching rooms with the bumpers.
-    pub fn show_text(&self, text: &str, duration_ms: u32) -> bool {
-        let Ok(text) = CString::new(text) else {
+    /// Paints a small top-left label over the video (the room and its position in
+    /// the follow list after a bumper switch) and keeps it until the next one.
+    pub fn notice(&self, text: &str) -> bool {
+        let Some((osd_width, osd_height)) = self.osd_size() else {
             return false;
         };
-        let duration = CString::new(duration_ms.to_string()).expect("numeric duration");
-        self.run(&[c"show-text", &text, &duration]) >= 0
+        let scale = (osd_width / 1280.0).max(0.5);
+        let font = (24.0 * scale).round();
+        let border = (2.0 * scale).round();
+        let text: String = text
+            .chars()
+            .map(|ch| match ch {
+                '{' => '｛',
+                '}' => '｝',
+                '\\' => '＼',
+                other => other,
+            })
+            .collect();
+        let line = format!(
+            "{{\\an7\\pos({:.1},{:.1})\\fs{}\\bord{}\\shad1}}{}",
+            24.0 * scale,
+            24.0 * scale,
+            font,
+            border,
+            text
+        );
+        self.chat_overlay(99, &line, (osd_width as u32, osd_height as u32))
+    }
+
+    /// Removes the label painted by [`Self::notice`].
+    pub fn clear_notice(&self) {
+        self.chat_overlay(99, "", (1280, 720));
     }
 
     pub fn osd_size(&self) -> Option<(f32, f32)> {
