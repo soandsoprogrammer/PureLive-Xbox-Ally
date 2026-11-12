@@ -649,6 +649,43 @@ impl Home {
         cx.notify();
     }
 
+    /// Bumpers on a list page: cycle the row at its top. 关注 cycles the follow
+    /// filters, 热门 selects the next platform and reloads its rooms.
+    fn page_bar(&mut self, right: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.content.is_some() {
+            return;
+        }
+        match self.pane {
+            Pane::Follows => {
+                let current = FollowFilter::TABS
+                    .iter()
+                    .position(|tab| *tab == self.follow_filter)
+                    .unwrap_or(0);
+                let step = if right {
+                    1
+                } else {
+                    FollowFilter::TABS.len() - 1
+                };
+                let next = (current + step) % FollowFilter::TABS.len();
+                self.select_follow_filter(FollowFilter::TABS[next], cx);
+            }
+            Pane::Popular => {
+                let count = self.platforms.len();
+                if count == 0 {
+                    return;
+                }
+                let current = self.platform_cursor.unwrap_or(self.platform).min(count - 1);
+                let next = if right {
+                    (current + 1) % count
+                } else {
+                    (current + count - 1) % count
+                };
+                self.select_platform(next, window, cx);
+            }
+            _ => {}
+        }
+    }
+
     fn move_room(&mut self, down: bool, cx: &mut Context<Self>) {
         if self.pane == Pane::Follows && self.content.is_none() {
             if down {
@@ -1414,12 +1451,14 @@ impl Home {
             }
             return;
         }
-        // Bumpers walk the platform strip; the triggers switch the top tabs.
+        // Bumpers switch the row at the top of the current page: the follow filters
+        // on 关注, the platform strip on 热门 (selected right away so the list
+        // reloads); the triggers switch the main tabs.
         if pressed & XINPUT_GAMEPAD_LEFT_SHOULDER != 0 {
-            self.move_selection(false, cx);
+            self.page_bar(false, window, cx);
         }
         if pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0 {
-            self.move_selection(true, cx);
+            self.page_bar(true, window, cx);
         }
         if pressed & TRIGGER_LEFT != 0 {
             self.step_pane(-1, window, cx);
