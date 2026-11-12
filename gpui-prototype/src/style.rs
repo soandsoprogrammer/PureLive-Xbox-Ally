@@ -426,7 +426,8 @@ impl Home {
             .border_color(rgb(if selected { MINT } else { DIVIDER }))
             .bg(rgb(if selected { SURFACE } else { PANEL }))
             .cursor_pointer()
-            .hover(|style| style.border_color(rgb(MINT)))
+            // Hover must not look like the selection ring: only a dim edge.
+            .hover(|style| style.border_color(rgb(0x3d5866)))
             .on_click(
                 cx.listener(move |this, _, window, cx| this.play_room(play.clone(), window, cx)),
             )
