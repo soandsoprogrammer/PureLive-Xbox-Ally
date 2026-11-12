@@ -686,28 +686,18 @@ impl Home {
                     _ => {}
                 }
             } else if let Some(index) = self.room_selection {
-                if index < 3 {
-                    self.room_selection = None;
-                    cx.notify();
-                } else {
+                // Up never leaves the grid: the filter row belongs to LB/RB.
+                if index >= 3 {
                     self.select_room_card(index - 3, cx);
                 }
             }
             return;
         }
         if self.pane == Pane::Popular && self.content.is_none() {
-            if self.platform_cursor.is_some() {
-                if down && self.room_count() != 0 {
-                    self.platform_cursor = None;
+            if self.room_selection.is_none() {
+                if self.room_count() != 0 {
                     self.move_card(0, cx);
                 }
-                return;
-            }
-            if !down && self.room_selection.is_none_or(|index| index < 3) {
-                self.room_selection = None;
-                self.platform_cursor = Some(self.platform);
-                self.platform_scroll.scroll_to_item(self.platform);
-                cx.notify();
                 return;
             }
         }
