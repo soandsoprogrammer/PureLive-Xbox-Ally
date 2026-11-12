@@ -1,0 +1,28 @@
+[package]
+name = "purelive-gpui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui-kit = "=0.9.1"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+libloading = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", features = ["json"] }
+url = "2"
+wry = { version = "0.57", default-features = false }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security_Cryptography",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_XboxController",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3.0.12"
+
+[profile.release]
+strip = "symbols"
