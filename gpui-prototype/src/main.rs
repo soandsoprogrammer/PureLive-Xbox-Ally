@@ -145,8 +145,6 @@ struct Home {
     selected: Action,
     content: Option<Content>,
     status: String,
-    /// Shown over the video once the next room in the follow list has opened.
-    switch_toast: Option<String>,
     reopen_video: bool,
     playback: PlaybackUi,
     emotes: emotes::Cache,
@@ -270,7 +268,6 @@ impl Home {
             selected: Action::Back,
             content: None,
             status: String::new(),
-            switch_toast: None,
             reopen_video: false,
             playback: PlaybackUi::default(),
             emotes: emotes::Cache::default(),
@@ -945,13 +942,34 @@ impl Home {
             (position + candidates.len() - 1) % candidates.len()
         };
         let room = self.follows[candidates[next]].clone();
+        self.play_room(room, window, cx);
+    }
+
+    /// The room's place in the follow list ("3/6 神棍老师"), or just its name when
+    /// it is not a follow; used in the status line while the source connects.
+    fn room_label(&self, room: &Room) -> String {
         let name = if room.nick.trim().is_empty() {
             room.title.trim()
         } else {
             room.nick.trim()
         };
-        self.switch_toast = Some(format!("{}/{}  {}", next + 1, candidates.len(), name));
-        self.play_room(room, window, cx);
+        let live: Vec<&Room> = self
+            .follows
+            .iter()
+            .filter(|followed| followed.broadcast_status() == BroadcastStatus::Live)
+            .collect();
+        let list: Vec<&Room> = if live.len() >= 2 {
+            live
+        } else {
+            self.follows.iter().collect()
+        };
+        match list
+            .iter()
+            .position(|followed| followed.key() == room.key())
+        {
+            Some(index) => format!("{}/{}  {}", index + 1, list.len(), name),
+            None => name.to_string(),
+        }
     }
 
     fn refresh_playback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -981,8 +999,12 @@ impl Home {
             "正在连接直播…"
         }
         .into();
-        if let Some(toast) = &self.switch_toast {
-            self.status = format!("{}  {toast}", self.status);
+        if let Some(label) = self
+            .active_room
+            .as_ref()
+            .map(|room| self.room_label(room))
+        {
+            self.status = format!("{}  {label}", self.status);
         }
         let directory = self.options.directory.clone();
         let cookie = self
@@ -1024,21 +1046,6 @@ impl Home {
                             this.status.clear();
                         }
                         this.focus.focus(window, cx);
-                        if let Some(toast) = this.switch_toast.take() {
-                            this.status = toast.clone();
-                            cx.spawn(async move |entity, cx| {
-                                cx.background_executor()
-                                    .timer(Duration::from_secs(3))
-                                    .await;
-                                let _ = entity.update(cx, |this, cx| {
-                                    if this.status == toast {
-                                        this.status.clear();
-                                        cx.notify();
-                                    }
-                                });
-                            })
-                            .detach();
-                        }
                         if this.playback.visible() {
                             this.show_controls(window, cx);
                         }
