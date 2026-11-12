@@ -1417,6 +1417,10 @@ impl Home {
                 && pressed & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT) != 0
             {
                 self.switch_follow(pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0, window, cx);
+            } else if self.playback.menu.is_none() && pressed & XINPUT_GAMEPAD_DPAD_UP != 0 {
+                self.adjust_volume(5, window, cx);
+            } else if self.playback.menu.is_none() && pressed & XINPUT_GAMEPAD_DPAD_DOWN != 0 {
+                self.adjust_volume(-5, window, cx);
             } else if pressed & XINPUT_GAMEPAD_DPAD_UP != 0 {
                 self.move_playback_vertical(false, window, cx);
             } else if pressed & XINPUT_GAMEPAD_DPAD_DOWN != 0 {
@@ -1500,6 +1504,12 @@ impl Render for Home {
                     match event.keystroke.key.as_str() {
                         "left" => this.move_playback(-1, window, cx),
                         "right" => this.move_playback(1, window, cx),
+                        "up" if this.playback.menu.is_none() => {
+                            this.adjust_volume(5, window, cx)
+                        }
+                        "down" if this.playback.menu.is_none() => {
+                            this.adjust_volume(-5, window, cx)
+                        }
                         "up" => this.move_playback_vertical(false, window, cx),
                         "down" => this.move_playback_vertical(true, window, cx),
                         "enter" => this.confirm_playback(window, cx),
