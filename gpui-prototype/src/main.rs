@@ -1482,11 +1482,10 @@ impl Home {
                 self.query.read(cx).focus_handle(cx).focus(window, cx);
             }
         }
-        if pressed & XINPUT_GAMEPAD_START != 0
-            && self.pane == Pane::Search
-            && self.content.is_none()
-        {
-            self.choose(Action::SearchPlatform, window, cx);
+        // The pad's menu button opens the settings page from anywhere outside
+        // playback; the platform picker in search stays on F2.
+        if pressed & XINPUT_GAMEPAD_START != 0 && self.content.is_none() {
+            self.select_pane(Pane::Settings, window, cx);
         }
         if pressed & XINPUT_GAMEPAD_B != 0 {
             self.go_back(window, cx);
