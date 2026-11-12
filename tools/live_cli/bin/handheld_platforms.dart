@@ -141,6 +141,7 @@ Future<List<Map<String, Object?>>> _find(SiteRegistry registry, LiveHttp http, S
     if (site == null) throw const FormatException('该平台已退役或不可用');
     return [_room(site, await site.getRoomDetail(roomId: link.roomId), fallbackId: link.roomId)];
   }
+  if (platform == 'all') return _searchAll(registry, text);
   final site = registry.maybeOf(platform);
   if (site == null) throw const FormatException('未识别的平台');
   if (text.startsWith('@') || RegExp(r'^\d+$').hasMatch(text)) {
@@ -153,6 +154,54 @@ Future<List<Map<String, Object?>>> _find(SiteRegistry registry, LiveHttp http, S
     for (final room in rooms.take(24))
       if (room.roomId.isNotEmpty) _room(site, room),
   ];
+}
+
+Future<List<Map<String, Object?>>> _searchAll(SiteRegistry registry, String text) async {
+  if (text.isEmpty) return const [];
+  final sites = registry.sites;
+  final buckets = List<List<LiveRoom>>.filled(sites.length, const []);
+  var next = 0;
+  var completed = 0;
+  var stopped = false;
+  final pending = <CancelToken>{};
+
+  Future<void> worker() async {
+    while (!stopped && next < sites.length) {
+      final index = next++;
+      final site = sites[index];
+      final cancel = CancelToken();
+      pending.add(cancel);
+      try {
+        final rooms = await site.searchRoomsWithCancellation(text, pageSize: 12, cancel: cancel)
+            .timeout(const Duration(seconds: 4));
+        if (stopped) return;
+        buckets[index] = rooms.where((room) => room.roomId.isNotEmpty).take(12).toList();
+        completed++;
+      } on Object {
+        // Other platforms can still return results.
+      } finally {
+        cancel.cancel();
+        pending.remove(cancel);
+      }
+    }
+  }
+
+  try {
+    await Future.wait(List.generate(8, (_) => worker())).timeout(const Duration(seconds: 21));
+  } on TimeoutException {
+    // Keep completed platforms if some adapters are still busy.
+  } finally {
+    stopped = true;
+    for (final cancel in pending) {
+      cancel.cancel();
+    }
+  }
+  if (completed == 0) throw const FormatException('各平台暂时没有返回搜索结果');
+  return [
+    for (var row = 0; row < 12; row++)
+      for (var site = 0; site < sites.length; site++)
+        if (row < buckets[site].length) _room(sites[site], buckets[site][row]),
+  ].take(96).toList();
 }
 
 Map<String, Object?> _room(LiveSite site, LiveRoom room, {String? fallbackId}) => {
@@ -299,9 +348,18 @@ Future<void> _chat(
         stdout.writeln(jsonEncode({'super_chat': _superChat(card)}));
       case DanmakuReceived(:final message) when message.type == LiveMessageType.chat:
         final now = clock.elapsedMilliseconds;
-        if (now - lastMessage < 80 || message.message.trim().isEmpty) return;
+        final text = message.message.isNotEmpty ? message.message : message.emotes.map((item) => item.code).join();
+        if (now - lastMessage < 80 || text.trim().isEmpty) return;
         lastMessage = now;
-        stdout.writeln(jsonEncode({'text': String.fromCharCodes(message.message.runes.take(140))}));
+        stdout.writeln(jsonEncode({
+          'text': String.fromCharCodes(text.runes.take(140)),
+          if (message.emotes.isNotEmpty)
+            'emotes': [
+              for (final item in message.emotes.take(12))
+                if (item.code.length <= 140 && item.url.length <= 2048)
+                  {'code': item.code, 'url': item.url},
+            ],
+        }));
       case DanmakuClosed():
         stdout.writeln('{"state":"closed"}');
         if (!ended.isCompleted) ended.complete();

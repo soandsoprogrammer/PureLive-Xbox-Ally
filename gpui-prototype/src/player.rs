@@ -1,5 +1,6 @@
 use crate::{compat::Source, playback::AudioSettings};
 use std::{
+    collections::BTreeMap,
     ffi::{CStr, CString, c_char, c_int, c_void},
     path::Path,
     ptr::{NonNull, null},
@@ -11,6 +12,8 @@ type Destroy = unsafe extern "C" fn(*mut c_void);
 type SetOption = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> c_int;
 type SetNode = unsafe extern "C" fn(*mut c_void, *const c_char, c_int, *const c_void) -> c_int;
 type Command = unsafe extern "C" fn(*mut c_void, *const *const c_char) -> c_int;
+type CommandRet = unsafe extern "C" fn(*mut c_void, *const *const c_char, *mut Node) -> c_int;
+type FreeNode = unsafe extern "C" fn(*mut Node);
 type Property = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_char;
 type Free = unsafe extern "C" fn(*mut c_void);
 type WaitEvent = unsafe extern "C" fn(*mut c_void, f64) -> *const Event;
@@ -19,12 +22,20 @@ const EVENT_NONE: c_int = 0;
 const EVENT_END_FILE: c_int = 7;
 const END_FILE_ERROR: c_int = 4;
 const FORMAT_STRING: c_int = 1;
+const FORMAT_INT64: c_int = 4;
 const FORMAT_NODE: c_int = 6;
 const FORMAT_NODE_ARRAY: c_int = 7;
+const FORMAT_NODE_MAP: c_int = 8;
+
+#[repr(C)]
+union NodeData {
+    ptr: *const c_void,
+    integer: i64,
+}
 
 #[repr(C)]
 struct Node {
-    data: *const c_void,
+    data: NodeData,
     format: c_int,
 }
 
@@ -47,15 +58,47 @@ struct Event {
 struct EndFile {
     reason: c_int,
     error: c_int,
+    playlist_entry_id: i64,
+}
+
+struct SourceOptions {
+    headers: BTreeMap<String, String>,
+    proxy: String,
+    relayed: bool,
+    rtp: bool,
+}
+
+impl SourceOptions {
+    fn new(source: &Source) -> Self {
+        Self {
+            headers: source.headers.clone(),
+            proxy: source.proxy.clone(),
+            relayed: source.lease.is_some(),
+            rtp: source.url.starts_with("rtp:"),
+        }
+    }
+
+    fn can_reload(&self, source: &Source) -> bool {
+        // A relay owns the stream until mpv finishes closing it asynchronously.
+        !self.relayed
+            && source.lease.is_none()
+            && self.rtp == source.url.starts_with("rtp:")
+            && self.proxy == source.proxy
+            && self.headers == source.headers
+    }
 }
 
 pub struct Player {
     handle: NonNull<c_void>,
     destroy: Destroy,
     command: Command,
+    command_ret: CommandRet,
+    free_node: FreeNode,
     property: Property,
     free: Free,
     wait_event: WaitEvent,
+    source_options: SourceOptions,
+    first_entry_id: Option<i64>,
     _library: libloading::Library,
 }
 
@@ -88,6 +131,12 @@ impl Player {
             let command = *library
                 .get::<Command>(b"mpv_command\0")
                 .map_err(symbol_error)?;
+            let command_ret = *library
+                .get::<CommandRet>(b"mpv_command_ret\0")
+                .map_err(symbol_error)?;
+            let free_node = *library
+                .get::<FreeNode>(b"mpv_free_node_contents\0")
+                .map_err(symbol_error)?;
             let property = *library
                 .get::<Property>(b"mpv_get_property_string\0")
                 .map_err(symbol_error)?;
@@ -96,13 +145,17 @@ impl Player {
                 .get::<WaitEvent>(b"mpv_wait_event\0")
                 .map_err(symbol_error)?;
             let handle = NonNull::new(create()).ok_or("无法创建 libmpv 播放器")?;
-            let player = Self {
+            let mut player = Self {
                 handle,
                 destroy,
                 command,
+                command_ret,
+                free_node,
                 property,
                 free,
                 wait_event,
+                source_options: SourceOptions::new(source),
+                first_entry_id: None,
                 _library: library,
             };
             let window = CString::new(window.to_string()).expect("numeric HWND");
@@ -128,14 +181,16 @@ impl Player {
                     ));
                 }
             }
-            if !source.proxy.is_empty() || source.lease.is_some() {
-                let proxy = CString::new(source.proxy.as_str()).map_err(|_| "代理地址无效")?;
+            let source_options = &player.source_options;
+            if !source_options.proxy.is_empty() || source_options.relayed {
+                let proxy =
+                    CString::new(source_options.proxy.as_str()).map_err(|_| "代理地址无效")?;
                 let status = option(handle.as_ptr(), c"http-proxy".as_ptr(), proxy.as_ptr());
                 if status < 0 {
                     return Err(format!("libmpv 设置播放代理失败 ({status})"));
                 }
             }
-            if source.lease.is_some() {
+            if source_options.relayed {
                 // The loopback relay rewrites HLS resource paths. Let FFmpeg
                 // probe their types while keeping its network protocol list narrow.
                 let settings = c"allowed_extensions=ALL,allowed_segment_extensions=ALL,extension_picky=0,protocol_whitelist=[http,https,httpproxy,tcp,tls,crypto]";
@@ -148,7 +203,7 @@ impl Player {
                     return Err(format!("libmpv 配置播放中继失败 ({status})"));
                 }
             }
-            if source.url.starts_with("rtp:") {
+            if source_options.rtp {
                 let status = option(
                     handle.as_ptr(),
                     c"demuxer-lavf-format".as_ptr(),
@@ -158,8 +213,8 @@ impl Player {
                     return Err(format!("libmpv 配置 RTP 播放失败 ({status})"));
                 }
             }
-            if !source.headers.is_empty() {
-                let headers = source
+            if !source_options.headers.is_empty() {
+                let headers = source_options
                     .headers
                     .iter()
                     .filter(|(key, value)| {
@@ -171,7 +226,9 @@ impl Player {
                 let nodes: Vec<_> = headers
                     .iter()
                     .map(|text| Node {
-                        data: text.as_ptr().cast(),
+                        data: NodeData {
+                            ptr: text.as_ptr().cast(),
+                        },
                         format: FORMAT_STRING,
                     })
                     .collect();
@@ -181,7 +238,9 @@ impl Player {
                     keys: null(),
                 };
                 let node = Node {
-                    data: (&raw const list).cast(),
+                    data: NodeData {
+                        ptr: (&raw const list).cast(),
+                    },
                     format: FORMAT_NODE_ARRAY,
                 };
                 let set_node = *player
@@ -202,14 +261,51 @@ impl Player {
             if status < 0 {
                 return Err(format!("libmpv 初始化失败 ({status})"));
             }
-            let source = CString::new(source.url.as_str()).map_err(|_| "播放地址含有无效字符")?;
-            let args = [c"loadfile".as_ptr(), source.as_ptr(), null()];
-            let status = (player.command)(handle.as_ptr(), args.as_ptr());
+            player.load(&source.url)?;
+            Ok(player)
+        }
+    }
+
+    pub fn try_reload(&mut self, source: &Source) -> bool {
+        // Older mpv builds may omit the playlist entry ID in the command result.
+        self.first_entry_id.is_some()
+            && self.source_options.can_reload(source)
+            && self.load(&source.url).is_ok()
+    }
+
+    fn load(&mut self, url: &str) -> Result<(), String> {
+        let url = CString::new(url).map_err(|_| "播放地址含有无效字符")?;
+        let args = [
+            c"loadfile".as_ptr(),
+            url.as_ptr(),
+            c"replace".as_ptr(),
+            null(),
+        ];
+        let mut result = Node {
+            data: NodeData { ptr: null() },
+            format: 0,
+        };
+        unsafe {
+            let status = (self.command_ret)(self.handle.as_ptr(), args.as_ptr(), &mut result);
             if status < 0 {
                 return Err(format!("libmpv 打开播放源失败 ({status})"));
             }
-            Ok(player)
+            self.first_entry_id = None;
+            if result.format == FORMAT_NODE_MAP {
+                let entries = &*result.data.ptr.cast::<NodeList>();
+                for index in 0..entries.count as usize {
+                    let value = &*entries.values.add(index);
+                    if value.format == FORMAT_INT64
+                        && CStr::from_ptr(*entries.keys.add(index)) == c"playlist_entry_id"
+                    {
+                        self.first_entry_id = Some(value.data.integer);
+                        break;
+                    }
+                }
+            }
+            (self.free_node)(&mut result);
         }
+        Ok(())
     }
 
     pub fn property(&self, name: &CStr) -> Option<String> {
@@ -267,6 +363,50 @@ impl Player {
         })
     }
 
+    pub fn osd_size(&self) -> Option<(f32, f32)> {
+        let width = self.property(c"osd-width")?.parse::<u32>().ok()?;
+        let height = self.property(c"osd-height")?.parse::<u32>().ok()?;
+        (width > 0 && height > 0).then_some((width as f32, height as f32))
+    }
+
+    pub fn emote_overlay(
+        &self,
+        id: u8,
+        position: (i32, i32),
+        size: (u32, u32),
+        bitmap: &crate::emotes::Bitmap,
+    ) -> bool {
+        let stride = bitmap.width as usize * 4;
+        if id >= 64 || stride * bitmap.height as usize != bitmap.pixels.len() {
+            return false;
+        }
+        // The bundled mpv copies the validated BGRA slice before this synchronous call returns.
+        let args = [
+            id.to_string(),
+            position.0.to_string(),
+            position.1.to_string(),
+            format!("&{}", bitmap.pixels.as_ptr() as usize),
+            "0".into(),
+            "bgra".into(),
+            bitmap.width.to_string(),
+            bitmap.height.to_string(),
+            stride.to_string(),
+            size.0.to_string(),
+            size.1.to_string(),
+        ]
+        .map(|arg| CString::new(arg).expect("overlay argument"));
+        let mut command = [c"overlay-add"; 12];
+        for (slot, arg) in command[1..].iter_mut().zip(&args) {
+            *slot = arg;
+        }
+        self.run(&command) >= 0
+    }
+
+    pub fn remove_emote(&self, id: u8) {
+        let id = CString::new(id.to_string()).expect("numeric overlay id");
+        self.run(&[c"overlay-remove", &id]);
+    }
+
     pub fn stats(&self) -> String {
         let hardware = self
             .property(c"hwdec-current")
@@ -288,7 +428,12 @@ impl Player {
                 }
                 if event.id == EVENT_END_FILE {
                     if let Some(end) = event.data.cast::<EndFile>().as_ref() {
-                        if end.reason == END_FILE_ERROR {
+                        // A replacement can leave end events for the previous source queued.
+                        if end.reason == END_FILE_ERROR
+                            && self
+                                .first_entry_id
+                                .is_none_or(|id| end.playlist_entry_id >= id)
+                        {
                             return Some(end.error);
                         }
                     }

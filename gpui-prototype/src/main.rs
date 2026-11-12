@@ -2,6 +2,7 @@
 
 mod account;
 mod compat;
+mod emotes;
 mod live;
 mod native;
 mod platform_icons;
@@ -31,7 +32,7 @@ use style::Pane;
 use windows_sys::Win32::UI::Input::XboxController::{
     XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
     XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_LEFT_SHOULDER,
-    XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
+    XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_START, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
 };
 use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, dpi::PhysicalSize};
 
@@ -146,12 +147,14 @@ struct Home {
     status: String,
     reopen_video: bool,
     playback: PlaybackUi,
+    emotes: emotes::Cache,
     playback_epoch: u64,
     audio: AudioSettings,
     danmaku_enabled: bool,
-    previous_buttons: Option<u16>,
+    gamepad: Option<Task<()>>,
     probe_reported: bool,
     chat_probe_reported: bool,
+    emote_probe_reported: bool,
     first_poll: bool,
     query: Entity<InputState>,
     follows_path: PathBuf,
@@ -161,13 +164,14 @@ struct Home {
     room_selection: Option<usize>,
     request_id: u64,
     active_room: Option<Room>,
-    last_playback_check: Instant,
     platforms: Vec<live::Platform>,
     platform: usize,
+    search_platform: Option<usize>,
     platform_cursor: Option<usize>,
     platform_scroll: ScrollHandle,
     pane: Pane,
-    rooms_scroll: ScrollHandle,
+    rooms_scroll: UniformListScrollHandle,
+    covers: style::CoverCache,
     settings_scroll: ScrollHandle,
     accounts: BTreeMap<String, account::Account>,
     account_site: usize,
@@ -239,15 +243,16 @@ impl Home {
             }
         })
         .detach();
+        cx.observe_window_activation(window, Self::sync_gamepad)
+            .detach();
         cx.spawn_in(window, async move |entity, cx| {
             let mut delay = Duration::from_millis(120);
             loop {
                 cx.background_executor().timer(delay).await;
-                let Ok(next) = entity.update_in(cx, |this, window, cx| this.tick(window, cx))
-                else {
+                if entity.update_in(cx, Self::tick).is_err() {
                     break;
-                };
-                delay = next;
+                }
+                delay = Duration::from_millis(200);
             }
         })
         .detach();
@@ -260,12 +265,14 @@ impl Home {
             status: String::new(),
             reopen_video: false,
             playback: PlaybackUi::default(),
+            emotes: emotes::Cache::default(),
             playback_epoch: 0,
             audio,
             danmaku_enabled,
-            previous_buttons: None,
+            gamepad: None,
             probe_reported: false,
             chat_probe_reported: false,
+            emote_probe_reported: false,
             first_poll: true,
             query,
             follows_path,
@@ -275,13 +282,14 @@ impl Home {
             room_selection: None,
             request_id: 0,
             active_room: None,
-            last_playback_check: Instant::now(),
             platforms: live::platforms(),
             platform: 0,
+            search_platform: None,
             platform_cursor: (pane == Pane::Popular).then_some(0),
             platform_scroll: ScrollHandle::new(),
             pane,
-            rooms_scroll: ScrollHandle::new(),
+            rooms_scroll: UniformListScrollHandle::new(),
+            covers: style::CoverCache::default(),
             settings_scroll: ScrollHandle::new(),
             accounts,
             account_site: 0,
@@ -300,7 +308,7 @@ impl Home {
             url,
             ..Source::default()
         };
-        self.status = match self.open_video(window, source) {
+        self.status = match self.open_video(window, source, cx) {
             Ok(()) => {
                 self.selected = Action::Back;
                 self.platform_cursor = None;
@@ -316,29 +324,53 @@ impl Home {
         cx.notify();
     }
 
-    fn open_video(&mut self, window: &mut Window, source: Source) -> Result<(), String> {
-        let surface = Surface::video(window, self.playback.height())?;
-        let player = Player::start(
-            &self.options.directory,
-            surface.id(),
-            &source,
-            self.options.vsync,
-            self.playback.paused,
-            self.audio,
-        )?;
+    fn open_video(
+        &mut self,
+        window: &mut Window,
+        source: Source,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let reused = match &mut self.content {
+            Some(Content::Video { player, .. }) => player.try_reload(&source),
+            _ => false,
+        };
+        if !reused {
+            let surface = Surface::video(window, self.playback.height())?;
+            let player = Player::start(
+                &self.options.directory,
+                surface.id(),
+                &source,
+                self.options.vsync,
+                self.playback.paused,
+                self.audio,
+            )?;
+            self.content = Some(Content::Video {
+                player,
+                surface,
+                _lease: source.lease,
+            });
+        }
         self.playback.selection = compat::Selection {
             quality: source.playback.quality.clone(),
             line: source.playback.line.clone(),
         };
         self.playback.options = source.playback;
         self.playback.chat_enabled = self.danmaku_enabled && self.playback.options.chat;
-        self.content = Some(Content::Video {
-            player,
-            surface,
-            _lease: source.lease,
-        });
         self.reopen_video = false;
-        self.connect_chat();
+        mark(
+            &self.log,
+            if reused {
+                "player_reused"
+            } else {
+                "player_created"
+            },
+        );
+        if self.playback.options.chat {
+            self.playback.update_chat_filter();
+            self.connect_chat(window, cx);
+        } else {
+            self.release_chat();
+        }
         Ok(())
     }
 
@@ -591,7 +623,8 @@ impl Home {
             (index as isize + delta).rem_euclid(count as isize) as usize
         });
         self.room_selection = Some(index);
-        self.rooms_scroll.scroll_to_item(index / 3);
+        self.rooms_scroll
+            .scroll_to_item(index / 3, ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -604,7 +637,11 @@ impl Home {
             return;
         }
         if let Some(index) = self.platform_cursor {
-            self.select_platform(index, window, cx);
+            if self.pane == Pane::Search {
+                self.select_search_platform(index, window, cx);
+            } else {
+                self.select_platform(index, window, cx);
+            }
             return;
         }
         if let Some(room) = self
@@ -625,7 +662,7 @@ impl Home {
                 .saturating_add_signed(x)
                 .min(self.platforms.len() - 1)
         } else {
-            platform_picker::move_index(current, x, y, self.platforms.len())
+            platform_picker::move_index(current, x, y, self.platforms.len() + 1)
         };
         self.platform_cursor = Some(next);
         let item = if self.pane == Pane::Popular {
@@ -641,7 +678,7 @@ impl Home {
         self.platform = index;
         self.platform_cursor = None;
         self.show_follows = false;
-        self.clear_results(cx);
+        self.results.clear();
         self.room_selection = None;
         self.request_id += 1;
         self.status = if self.platforms[index].id == "iptv" {
@@ -651,6 +688,7 @@ impl Home {
         };
         self.focus.focus(window, cx);
         if self.pane == Pane::Popular && self.platforms[index].id == "iptv" {
+            self.search_platform = Some(index);
             self.pane = Pane::Search;
         }
         if self.pane == Pane::Popular {
@@ -660,22 +698,62 @@ impl Home {
         cx.notify();
     }
 
+    fn select_search_platform(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_platform = index.checked_sub(1);
+        self.platform_cursor = None;
+        self.request_id += 1;
+        self.results.clear();
+        self.room_selection = None;
+        self.status = if self
+            .search_platform
+            .is_some_and(|index| self.platforms[index].id == "iptv")
+        {
+            "输入 M3U / TXT 播放列表路径或网址"
+        } else if self.search_platform.is_none() {
+            "输入关键词或粘贴直播间链接"
+        } else {
+            "输入关键词、房间号或直播间链接"
+        }
+        .into();
+        self.query.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
     fn search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.query.read(cx).value().to_string();
         self.pane = Pane::Search;
+        if self.search_platform.is_none() && input.trim().is_empty() {
+            self.status = "输入关键词或粘贴直播间链接".into();
+            cx.notify();
+            return;
+        }
         self.request_rooms(input, window, cx);
     }
 
     fn request_rooms(&mut self, input: String, window: &mut Window, cx: &mut Context<Self>) {
         self.request_id += 1;
         let request = self.request_id;
-        let platform = self.platforms[self.platform].id.clone();
+        let site = if self.pane == Pane::Search {
+            self.search_platform.map(|index| &self.platforms[index])
+        } else {
+            Some(&self.platforms[self.platform])
+        };
+        let platform = site.map_or("all", |site| site.id.as_str()).to_owned();
         let directory = self.options.directory.clone();
-        self.status = format!("正在查询 {}…", self.platforms[self.platform].name);
+        self.status = site.map_or_else(
+            || "正在搜索全部直播平台…".into(),
+            |site| format!("正在查询 {}…", site.name),
+        );
         self.show_follows = false;
-        self.clear_results(cx);
+        self.covers.retry_failed(cx);
+        self.results.clear();
         self.room_selection = None;
-        self.rooms_scroll = ScrollHandle::new();
+        self.rooms_scroll = UniformListScrollHandle::new();
         if self.pane == Pane::Popular {
             self.platform_scroll.scroll_to_item(self.platform);
         }
@@ -701,7 +779,11 @@ impl Home {
                             && this.platform_cursor.is_none())
                         .then_some(0);
                         if this.results.is_empty() {
-                            "暂无结果，可粘贴直播间链接或输入 @频道ID".into()
+                            if this.pane == Pane::Search && this.search_platform.is_none() {
+                                "暂无结果，可换个关键词或粘贴直播间链接".into()
+                            } else {
+                                "暂无结果，可粘贴直播间链接或输入 @频道ID".into()
+                            }
                         } else {
                             format!("找到 {} 个房间", this.results.len())
                         }
@@ -716,6 +798,7 @@ impl Home {
     }
 
     fn play_room(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+        self.covers.clear(window, cx);
         self.stop_chat();
         self.playback_epoch += 1;
         self.playback = PlaybackUi::default();
@@ -774,7 +857,7 @@ impl Home {
                     this.playback.resume_selection = Some(selection);
                     return;
                 }
-                match result.and_then(|source| this.open_video(window, source)) {
+                match result.and_then(|source| this.open_video(window, source, cx)) {
                     Ok(()) => {
                         if selection.quality.as_deref().is_some_and(|quality| {
                             Some(quality) != this.playback.options.quality.as_deref()
@@ -842,7 +925,8 @@ impl Home {
         cx.notify();
     }
 
-    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Duration {
+    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_gamepad(window, cx);
         if self.first_poll {
             self.first_poll = false;
             if let Some(id) = self.options.launch_room.take() {
@@ -894,8 +978,7 @@ impl Home {
                 self.content = None;
                 self.reopen_video = true;
             }
-            self.previous_buttons = None;
-            return Duration::from_millis(200);
+            return;
         }
         if self.reopen_video && !self.playback.busy {
             if self.active_room.is_some() {
@@ -909,17 +992,14 @@ impl Home {
                 self.play_stream(window, cx);
             }
         }
-        if self.last_playback_check.elapsed() >= Duration::from_millis(200) {
-            self.last_playback_check = Instant::now();
-            if let Some(Content::Video { player, .. }) = &mut self.content {
-                if let Some(code) = player.playback_error() {
-                    self.release_chat();
-                    self.content = None;
-                    self.status = format!("播放失败（mpv {code}），请重新打开房间或更换播放源");
-                    mark(&self.log, &self.status);
-                    self.show_controls(window, cx);
-                }
-            }
+        if let Some(Content::Video { player, .. }) = &mut self.content
+            && let Some(code) = player.playback_error()
+        {
+            self.release_chat();
+            self.content = None;
+            self.status = format!("播放失败（mpv {code}），请重新打开房间或更换播放源");
+            mark(&self.log, &self.status);
+            self.show_controls(window, cx);
         }
         if self.log.is_some() && !self.probe_reported {
             if let Some(Content::Video { player, .. }) = &self.content {
@@ -941,22 +1021,55 @@ impl Home {
             }
         }
         if self.in_playback() {
-            self.tick_playback(window, cx);
+            self.hide_playback_controls(window, cx);
         }
-        let idle_delay = if self.playback.has_overlay_input() {
-            Duration::from_millis(50)
-        } else {
-            Duration::from_millis(200)
-        };
-        if !window.is_window_active() {
-            self.previous_buttons = None;
-            return idle_delay;
+    }
+
+    fn sync_gamepad(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !window.is_window_active() || native::minimized(window) {
+            self.gamepad = None;
+            return;
         }
-        let Some(buttons) = native::buttons() else {
-            self.previous_buttons = None;
-            return idle_delay;
-        };
-        let pressed = buttons & !self.previous_buttons.replace(buttons).unwrap_or(buttons);
+        if self.gamepad.is_some() {
+            return;
+        }
+        let (input, presses) = async_channel::bounded(8);
+        let executor = cx.background_executor().clone();
+        self.gamepad = Some(cx.spawn_in(window, async move |entity, cx| {
+            let _poll = executor.spawn({
+                let executor = executor.clone();
+                async move {
+                    let mut previous: Option<u16> = None;
+                    loop {
+                        let buttons = native::buttons();
+                        if let (Some(current), Some(last)) = (buttons, previous) {
+                            let pressed = current & !last;
+                            if pressed != 0 {
+                                let _ = input.try_send(pressed);
+                            }
+                        }
+                        previous = buttons;
+                        let delay = if buttons.is_some() { 16 } else { 200 };
+                        executor.timer(Duration::from_millis(delay)).await;
+                    }
+                }
+            });
+            while let Ok(pressed) = presses.recv().await {
+                if entity
+                    .update_in(cx, |this, window, cx| {
+                        if window.is_window_active() && !native::minimized(window) {
+                            this.on_gamepad(pressed, window, cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn on_gamepad(&mut self, pressed: u16, window: &mut Window, cx: &mut Context<Self>) {
         if self.in_playback() {
             if pressed & XINPUT_GAMEPAD_B != 0 {
                 self.playback_back(window, cx);
@@ -979,7 +1092,7 @@ impl Home {
             } else if pressed & (XINPUT_GAMEPAD_DPAD_RIGHT | XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0 {
                 self.move_playback(1, window, cx);
             }
-            return Duration::from_millis(16);
+            return;
         }
         if pressed & XINPUT_GAMEPAD_LEFT_SHOULDER != 0 {
             self.step_pane(-1, window, cx);
@@ -1018,10 +1131,15 @@ impl Home {
             self.select_pane(Pane::Search, window, cx);
             self.query.read(cx).focus_handle(cx).focus(window, cx);
         }
+        if pressed & XINPUT_GAMEPAD_START != 0
+            && self.pane == Pane::Search
+            && self.content.is_none()
+        {
+            self.choose(Action::SearchPlatform, window, cx);
+        }
         if pressed & XINPUT_GAMEPAD_B != 0 {
             self.go_back(window, cx);
         }
-        Duration::from_millis(16)
     }
 }
 
@@ -1048,6 +1166,13 @@ impl Render for Home {
                         "+" | "=" if !event.is_held => this.adjust_volume(5, window, cx),
                         _ => {}
                     }
+                    return;
+                }
+                if event.keystroke.key == "f2"
+                    && this.pane == Pane::Search
+                    && this.content.is_none()
+                {
+                    this.choose(Action::SearchPlatform, window, cx);
                     return;
                 }
                 if this.query.read(cx).focus_handle(cx).is_focused(window) {
@@ -1085,6 +1210,7 @@ fn main() {
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx| {
             gpui_kit::init(cx);
+            style::init_theme(cx);
             let bounds = Bounds::centered(None, size(px(920.0), px(550.0)), cx);
             let window = WindowOptions {
                 titlebar: None,

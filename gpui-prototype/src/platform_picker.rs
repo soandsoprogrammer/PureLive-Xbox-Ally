@@ -92,9 +92,10 @@ impl Home {
     }
 
     pub(super) fn open_platform_picker(&mut self) {
-        self.platform_cursor = Some(self.platform);
+        let index = self.search_platform.map_or(0, |platform| platform + 1);
+        self.platform_cursor = Some(index);
         self.platform_scroll = ScrollHandle::new();
-        self.platform_scroll.scroll_to_item(self.platform / COLUMNS);
+        self.platform_scroll.scroll_to_item(index / COLUMNS);
     }
 
     pub(super) fn platform_picker(&self, cursor: usize, cx: &mut Context<Self>) -> Div {
@@ -118,10 +119,11 @@ impl Home {
                             .child("选择平台"),
                     )
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(MUTED))
-                            .child(format!("当前 · {}", label(&self.platforms[self.platform]))),
+                        div().text_sm().text_color(rgb(MUTED)).child(format!(
+                            "当前 · {}",
+                            self.search_platform
+                                .map_or("全部", |index| label(&self.platforms[index]))
+                        )),
                     ),
             )
             .child(
@@ -144,18 +146,20 @@ impl Home {
         height: f32,
         cx: &mut Context<Self>,
     ) -> Vec<Div> {
-        self.platforms
-            .chunks(COLUMNS)
-            .enumerate()
-            .map(|(row, sites)| {
+        let count = self.platforms.len() + 1;
+        (0..count)
+            .step_by(COLUMNS)
+            .map(|start| {
+                let end = (start + COLUMNS).min(count);
                 div()
                     .h_flex()
                     .gap_2()
                     .flex_shrink_0()
-                    .children(sites.iter().enumerate().map(|(column, site)| {
-                        let index = row * COLUMNS + column;
+                    .children((start..end).map(|index| {
+                        let site = index.checked_sub(1).map(|index| &self.platforms[index]);
                         let focused = Some(index) == cursor;
-                        let selected = index == self.platform;
+                        let selected =
+                            self.search_platform.map_or(0, |platform| platform + 1) == index;
                         div()
                             .id(("platform-tile", index))
                             .v_flex()
@@ -173,7 +177,7 @@ impl Home {
                             .bg(rgb(if focused { 0x1b3832 } else { PANEL }))
                             .hover(|style| style.border_color(rgb(MINT)))
                             .cursor_pointer()
-                            .when_some(logo(&site.id), |tile, logo| {
+                            .when_some(site.and_then(|site| logo(&site.id)), |tile, logo| {
                                 tile.child(
                                     img(logo)
                                         .size(px(28.0))
@@ -193,7 +197,7 @@ impl Home {
                                     } else {
                                         FontWeight::NORMAL
                                     })
-                                    .child(label(site).to_owned()),
+                                    .child(site.map_or("全部", label).to_owned()),
                             )
                             .when(selected, |tile| {
                                 tile.child(
@@ -207,10 +211,10 @@ impl Home {
                                 )
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_platform(index, window, cx)
+                                this.select_search_platform(index, window, cx)
                             }))
                     }))
-                    .children((sites.len()..COLUMNS).map(|_| div().flex_1().min_w_0()))
+                    .children((end - start..COLUMNS).map(|_| div().flex_1().min_w_0()))
             })
             .collect()
     }

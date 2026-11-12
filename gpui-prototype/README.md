@@ -4,13 +4,15 @@ Windows x64 掌机版使用 GPUI Kit、XInput、libmpv 和 WebView2。平台目�
 
 ## 试用
 
-解压便携包后运行 `purelive-gpui.exe`。平台横排在「热门」右边，按左右键移动，平台栏会跟随焦点滚动。选站后按下浏览该站直播。「搜索」支持直播间链接、关键词和数字房间号。频道 ID 前加 `@`，例如选 Twitch 后输入 `@频道名`。选 IPTV 后可输入 M3U / TXT 播放列表文件路径或网址。
+解压便携包后运行 `purelive-gpui.exe`。平台横排在「热门」右边，按左右键移动，平台栏会跟随焦点滚动。选站后按下浏览该站直播。「搜索」默认查找全部直播平台，可输入关键词或粘贴直播间链接。按手柄菜单键或 F2 筛选平台。查数字房间号或 `@频道名` 可先选平台，选 IPTV 后可输入 M3U / TXT 播放列表文件路径或网址。
 
 LB / RB 切换工具，方向键选房间或平台，Enter 或 A 打开，Y 切换选中房间的关注状态，Esc 或 B 返回。关注保存在 `%LOCALAPPDATA%\PureLiveRust\follows.json`。各站的游客搜索与播放能力依平台而异。兼容组件可读取 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量。
 
 播放时轻点画面或按 A 唤出控制栏，方向键选按钮，A 确认，LB / RB 翻线路或画质选项。X 刷新直播，Y 切换关注，B 依次关闭选项、收起控制栏、返回列表。键盘也可用空格暂停或播放、R 刷新、D 开关弹幕。线路和画质选项由当前平台提供。支持弹幕的直播间默认开启弹幕，开关选择会保存在本机。
 
 「音量」面板用方向键按 5% 调整，A 切换静音。播放器音量和静音会保存在本机。键盘可用 + / − 调整、M 静音。支持醒目留言的平台会显示「SC 历史」。记录按最新到最早排列，包括平台提供的近期留言和本次连接收到的醒目留言。方向键翻阅，X 刷新，退出直播间后清除本次历史。
+
+哔哩哔哩、抖音、斗鱼和虎牙支持常用图片表情。使用内置图片，哔哩哔哩和抖音还可显示消息附带的图片表情。当前显示静态画面。
 
 在「设置 → 账号」选择平台，再点「登录账号」。在平台官方网页完成登录后，点击「完成登录」。当前支持哔哩哔哩、斗鱼、虎牙、抖音、快手、YY、Twitch 和 SOOP。应用用 Windows 用户级加密分别保存各站登录状态，并将其用于对应平台的直播请求。可在设置中单独清除某站的本地登录状态。
 
@@ -44,3 +46,5 @@ python gpui-prototype/package.py --native-dir 'C:\path\to\native'
 ```
 
 开发时可用 `--probe home`、`--probe play --stream <视频路径>` 或 `--probe login --platform <平台 ID>` 记录首帧、播放或登录页面加载事件。记录写入 EXE 旁的 `probe.log`。
+
+内置表情由 `python gpui-prototype/build-emotes.py <上游 assets/emo 目录>` 生成，需要 Pillow。原图和表情码来自上游 PureLive。 [表情资源](https://github.com/wzgrx/PureLive/tree/9b406e8ecc46642233176ece200ec9aef5921cf0/apps/pure_live/assets/emo)

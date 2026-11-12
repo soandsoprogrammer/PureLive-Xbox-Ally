@@ -1,4 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    ops::Range,
+    rc::Rc,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use super::*;
 use playback::{CHOICES_HEIGHT, CHOICES_PER_PAGE, ChoiceMenu};
@@ -10,6 +17,18 @@ const DIVIDER: u32 = 0x293741;
 const TEXT: u32 = 0xf2f5f7;
 const MUTED: u32 = 0xa8b7c1;
 const MINT: u32 = 0x4ff2ba;
+
+pub(super) fn init_theme(cx: &mut App) {
+    use gpui_kit::component::{Theme, ThemeMode};
+    Theme::change(ThemeMode::Dark, None, cx);
+    Theme::update(cx, |theme| {
+        theme.colors.foreground = rgb(TEXT).into();
+        theme.colors.muted_foreground = rgb(MUTED).into();
+        theme.colors.input = rgb(DIVIDER).into();
+        theme.colors.ring = rgb(MINT).into();
+        theme.colors.caret = rgb(MINT).into();
+    });
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
@@ -56,6 +75,58 @@ fn control(
 
 enum Cover {}
 
+const COVER_CACHE_SIZE: usize = 48;
+type CoverEntry = (String, Option<Arc<RenderImage>>);
+
+#[derive(Clone, Default)]
+pub(super) struct CoverCache(Rc<RefCell<VecDeque<CoverEntry>>>);
+
+impl CoverCache {
+    fn get(&self, url: &String, window: &mut Window, cx: &mut App) -> Option<Arc<RenderImage>> {
+        let image = window.use_asset::<Cover>(url, cx).flatten();
+        let mut entries = self.0.borrow_mut();
+        if let Some(index) = entries.iter().position(|(key, _)| key == url) {
+            let entry = entries.remove(index).expect("cover cache index");
+            entries.push_back((entry.0, image.clone()));
+        } else {
+            if entries.len() == COVER_CACHE_SIZE {
+                let oldest = entries.pop_front().expect("full cover cache");
+                let cache = self.clone();
+                window.defer(cx, move |window, cx| {
+                    if !cache.0.borrow().iter().any(|(url, _)| *url == oldest.0) {
+                        cache_evict(oldest, window, cx);
+                    }
+                });
+            }
+            entries.push_back((url.clone(), image.clone()));
+        }
+        image
+    }
+
+    pub(super) fn clear(&self, window: &mut Window, cx: &mut App) {
+        for entry in self.0.borrow_mut().drain(..) {
+            cache_evict(entry, window, cx);
+        }
+    }
+
+    pub(super) fn retry_failed(&self, cx: &mut App) {
+        self.0.borrow_mut().retain(|(url, _)| {
+            let failed = matches!(cx.fetch_asset::<Cover>(url), Some(None));
+            if failed {
+                cx.remove_asset::<Cover>(url);
+            }
+            !failed
+        });
+    }
+}
+
+fn cache_evict((url, image): CoverEntry, window: &mut Window, cx: &mut App) {
+    cx.remove_asset::<Cover>(&url);
+    if let Some(image) = image {
+        let _ = window.drop_image(image);
+    }
+}
+
 impl Asset for Cover {
     type Source = String;
     type Output = Option<Arc<RenderImage>>;
@@ -71,11 +142,18 @@ impl Asset for Cover {
             if !matches!(uri.scheme(), "http" | "https") {
                 return None;
             }
-            let client: ureq::Agent = ureq::Agent::config_builder()
-                .timeout_global(Some(Duration::from_secs(6)))
-                .build()
-                .into();
-            let bytes = client
+            static HTTP: LazyLock<ureq::Agent> = LazyLock::new(|| {
+                ureq::Agent::config_builder()
+                    .timeout_global(Some(Duration::from_secs(6)))
+                    .max_idle_connections(12)
+                    .max_idle_connections_per_host(2)
+                    .build()
+                    .into()
+            });
+            static LOADS: LazyLock<async_lock::Semaphore> =
+                LazyLock::new(|| async_lock::Semaphore::new(4));
+            let _permit = LOADS.acquire().await;
+            let bytes = HTTP
                 .get(uri.as_str())
                 .call()
                 .ok()?
@@ -133,13 +211,6 @@ mod tests {
 }
 
 impl Home {
-    pub(super) fn clear_results(&mut self, cx: &mut Context<Self>) {
-        for room in self.results.drain(..) {
-            if !room.cover.is_empty() {
-                cx.remove_asset::<Cover>(&room.cover);
-            }
-        }
-    }
     pub(super) fn select_pane(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
         if self.content.is_some() {
             return;
@@ -149,7 +220,7 @@ impl Home {
         self.platform_cursor = None;
         self.request_id += 1;
         self.room_selection = None;
-        self.rooms_scroll = ScrollHandle::new();
+        self.rooms_scroll = UniformListScrollHandle::new();
         self.status.clear();
         self.show_follows = pane == Pane::Follows;
         match pane {
@@ -157,7 +228,7 @@ impl Home {
                 self.platform_cursor = Some(self.platform);
                 self.request_rooms(String::new(), window, cx);
             }
-            Pane::Search if previous != Pane::Search => self.clear_results(cx),
+            Pane::Search if previous != Pane::Search => self.results.clear(),
             Pane::Settings => {
                 self.selected = SETTINGS_ACTIONS[0];
                 self.account_tabs_focused = true;
@@ -255,11 +326,22 @@ impl Home {
     }
 
     fn footer(&self) -> Div {
-        let hints: &[(&str, &str)] = if self.platform_cursor.is_some() {
+        let hints: &[(&str, &str)] = if self.pane == Pane::Search && self.platform_cursor.is_some()
+        {
+            &[("方向键", "筛选平台"), ("Ⓐ", "选择"), ("Ⓑ", "返回")]
+        } else if self.platform_cursor.is_some() {
             &[
                 ("← / →", "切平台"),
                 ("↓", "直播列表"),
                 ("Ⓐ", "选择"),
+                ("Ⓑ", "返回"),
+            ]
+        } else if self.pane == Pane::Search {
+            &[
+                ("Ⓐ", "观看"),
+                ("Ⓨ", "关注"),
+                ("菜单 / F2", "筛选平台"),
+                ("Ⓧ", "输入搜索"),
                 ("Ⓑ", "返回"),
             ]
         } else if self.pane == Pane::Settings {
@@ -314,6 +396,7 @@ impl Home {
             .map_or(room.platform.as_str(), |site| site.name.as_str())
             .to_owned();
         let cover = room.cover.clone();
+        let covers = self.covers.clone();
         let play = room.clone();
         let save = room.clone();
         div()
@@ -356,7 +439,7 @@ impl Home {
                     .when(!cover.is_empty(), |frame| {
                         frame.child(
                             img(ImageSource::Custom(Arc::new(move |window, cx| {
-                                window.use_asset::<Cover>(&cover, cx).flatten().map(Ok)
+                                covers.get(&cover, window, cx).map(Ok)
                             })))
                             .absolute()
                             .inset_0()
@@ -375,11 +458,18 @@ impl Home {
                             .text_xs()
                             .bg(rgba(0x0b131ae8))
                             .text_color(rgb(if room.live { MINT } else { TEXT }))
-                            .child(if room.live {
-                                "●  直播中".into()
-                            } else {
-                                platform.clone()
-                            }),
+                            .child(
+                                if room.live
+                                    && self.pane == Pane::Search
+                                    && self.search_platform.is_none()
+                                {
+                                    format!("●  {platform}")
+                                } else if room.live {
+                                    "●  直播中".into()
+                                } else {
+                                    platform.clone()
+                                },
+                            ),
                     ),
             )
             .child(
@@ -434,6 +524,34 @@ impl Home {
             )
     }
 
+    fn room_grid(&self, row_gap: f32, cx: &mut Context<Self>) -> UniformList {
+        uniform_list(
+            "room-grid",
+            self.rooms().len().div_ceil(3),
+            cx.processor(move |this, rows: Range<usize>, _, cx| {
+                rows.map(|row| {
+                    let start = row * 3;
+                    let rooms = &this.rooms()[start..(start + 3).min(this.rooms().len())];
+                    div()
+                        .h_flex()
+                        .gap_3()
+                        .pb(px(row_gap))
+                        .children(
+                            rooms
+                                .iter()
+                                .enumerate()
+                                .map(|(column, room)| this.room_card(start + column, room, cx)),
+                        )
+                        .children((rooms.len()..3).map(|_| div().flex_1().min_w_0()))
+                })
+                .collect()
+            }),
+        )
+        .track_scroll(&self.rooms_scroll)
+        .flex_1()
+        .min_h_0()
+    }
+
     fn popular_view(&self, cx: &mut Context<Self>) -> Div {
         div()
             .v_flex()
@@ -461,42 +579,24 @@ impl Home {
                         )),
                     ),
             )
-            .child(
-                div()
-                    .id("popular-scroll")
-                    .track_scroll(&self.rooms_scroll)
-                    .overflow_y_scroll()
-                    .flex_1()
-                    .min_h_0()
-                    .v_flex()
-                    .gap_2()
-                    .pb_3()
-                    .when(self.rooms().is_empty() && !self.status.is_empty(), |view| {
-                        view.child(
-                            div()
-                                .pt_2()
-                                .text_sm()
-                                .text_color(rgb(MUTED))
-                                .child(self.status.clone()),
-                        )
-                    })
-                    .children(self.rooms().chunks(3).enumerate().map(|(row, rooms)| {
-                        div()
-                            .h_flex()
-                            .gap_3()
-                            .flex_shrink_0()
-                            .children(
-                                rooms.iter().enumerate().map(|(column, room)| {
-                                    self.room_card(row * 3 + column, room, cx)
-                                }),
-                            )
-                            .children((rooms.len()..3).map(|_| div().flex_1().min_w_0()))
-                    })),
-            )
+            .when(self.rooms().is_empty() && !self.status.is_empty(), |view| {
+                view.child(
+                    div()
+                        .pt_2()
+                        .text_sm()
+                        .text_color(rgb(MUTED))
+                        .child(self.status.clone()),
+                )
+            })
+            .when(!self.rooms().is_empty(), |view| {
+                view.child(self.room_grid(8.0, cx))
+            })
     }
 
     fn directory_view(&self, cx: &mut Context<Self>) -> Div {
-        let site = self.platforms[self.platform].name.clone();
+        let site = self
+            .search_platform
+            .map_or("全部", |index| self.platforms[index].name.as_str());
         let heading = self.pane.label();
         div()
             .v_flex()
@@ -537,7 +637,11 @@ impl Home {
                     div()
                         .h_flex()
                         .gap_2()
-                        .child(div().flex_1().child(Input::new(&self.query)))
+                        .child(
+                            div().flex_1().child(
+                                Input::new(&self.query).bg(rgb(PANEL)).text_color(rgb(TEXT)),
+                            ),
+                        )
                         .child(
                             control("search-button", "搜索", true).on_click(
                                 cx.listener(|this, _, window, cx| this.search(window, cx)),
@@ -573,26 +677,7 @@ impl Home {
                 )
             })
             .when(!self.rooms().is_empty(), |view| {
-                view.child(
-                    div()
-                        .id("room-grid")
-                        .track_scroll(&self.rooms_scroll)
-                        .overflow_y_scroll()
-                        .flex_1()
-                        .v_flex()
-                        .gap_3()
-                        .pb_3()
-                        .children(self.rooms().chunks(3).enumerate().map(|(row, rooms)| {
-                            div()
-                                .h_flex()
-                                .gap_3()
-                                .flex_shrink_0()
-                                .children(rooms.iter().enumerate().map(|(column, room)| {
-                                    self.room_card(row * 3 + column, room, cx)
-                                }))
-                                .children((rooms.len()..3).map(|_| div().flex_1().min_w_0()))
-                        })),
-                )
+                view.child(self.room_grid(12.0, cx))
             })
     }
 

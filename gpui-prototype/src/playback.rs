@@ -1,11 +1,12 @@
 use std::{
     fmt::Write,
-    sync::mpsc::TryRecvError,
     time::{Duration, Instant},
 };
 
+use async_channel::{Receiver, TryRecvError};
+
 use super::*;
-use compat::{Choice, Playback, Selection, SuperChat};
+use compat::{ChatEvent, Choice, Playback, Selection, SuperChat};
 
 pub(super) const CONTROL_HEIGHT: f32 = 144.0;
 pub(super) const DIRECT_HEIGHT: f32 = 96.0;
@@ -115,16 +116,24 @@ pub(super) struct PlaybackUi {
     pub super_chats: SuperChatHistory,
     hide_at: Option<Instant>,
     chat: Option<compat::Chat>,
-    chat_frame_at: Option<Instant>,
+    chat_updates: Option<Task<()>>,
     messages: [Option<FlyingMessage>; 5],
+    picture_mask: u16,
 }
 
 struct FlyingMessage {
-    text: String,
+    parts: Vec<emotes::Segment>,
+    width: i32,
     time: Instant,
 }
 
 impl PlaybackUi {
+    pub fn update_chat_filter(&self) {
+        if let Some(chat) = &self.chat {
+            chat.set_text_enabled(self.chat_enabled && !self.paused);
+        }
+    }
+
     pub fn actions(&self) -> &[usize] {
         if self.direct {
             &DIRECT_ACTIONS
@@ -137,10 +146,6 @@ impl PlaybackUi {
 
     pub fn visible(&self) -> bool {
         self.hide_at.is_some()
-    }
-
-    pub fn has_overlay_input(&self) -> bool {
-        self.chat_enabled && self.chat.is_some()
     }
 
     pub fn height(&self) -> f32 {
@@ -333,6 +338,7 @@ impl Home {
                     match player.set_paused(paused) {
                         Ok(()) => {
                             self.playback.paused = paused;
+                            self.playback.update_chat_filter();
                             mark(&self.log, format!("paused={paused}"));
                         }
                         Err(error) => self.status = error,
@@ -340,7 +346,7 @@ impl Home {
                 }
             }
             1 if !self.playback.busy => self.refresh_playback(window, cx),
-            2 => self.toggle_chat(),
+            2 => self.toggle_chat(window, cx),
             3 => self.open_choice_menu(ChoiceMenu::Lines),
             4 => self.open_choice_menu(ChoiceMenu::Qualities),
             5 => {
@@ -466,7 +472,7 @@ impl Home {
         self.playback.menu = Some(ChoiceMenu::SuperChat);
         self.playback.cursor = 0;
         self.playback.super_chats.enabled = true;
-        self.connect_chat();
+        self.connect_chat(window, cx);
         if self
             .playback
             .super_chats
@@ -479,7 +485,7 @@ impl Home {
 
     pub(super) fn refresh_super_chats(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.playback.options.super_chat {
-            self.connect_chat();
+            self.connect_chat(window, cx);
             self.fetch_super_chat_board(window, cx);
         }
         self.show_controls(window, cx);
@@ -539,18 +545,19 @@ impl Home {
         }
     }
 
-    fn toggle_chat(&mut self) {
+    fn toggle_chat(&mut self, window: &Window, cx: &mut Context<Self>) {
         if !self.playback.options.chat {
             self.status = "当前直播间没有可用的弹幕接口".into();
             return;
         }
         self.danmaku_enabled = !self.danmaku_enabled;
         self.playback.chat_enabled = self.danmaku_enabled;
+        self.playback.update_chat_filter();
         if self.playback.chat_enabled {
             if self.playback.chat.is_some() {
                 self.status = "弹幕已开启".into();
             } else {
-                self.connect_chat();
+                self.connect_chat(window, cx);
             }
         } else {
             self.clear_chat_overlay();
@@ -576,20 +583,22 @@ impl Home {
 
     pub(super) fn release_chat(&mut self) {
         self.clear_chat_overlay();
+        self.playback.chat_updates = None;
         self.playback.chat = None;
-        self.playback.chat_frame_at = None;
     }
 
     fn clear_chat_overlay(&mut self) {
-        if self.playback.messages.iter().any(Option::is_some)
-            && let Some(Content::Video { player, .. }) = &self.content
-        {
-            player.chat_overlay("");
+        if let Some(Content::Video { player, .. }) = &self.content {
+            if self.playback.messages.iter().any(Option::is_some) {
+                player.chat_overlay("");
+            }
+            clear_emotes(player, self.playback.picture_mask);
         }
+        self.playback.picture_mask = 0;
         self.playback.messages.fill_with(|| None);
     }
 
-    pub(super) fn connect_chat(&mut self) {
+    pub(super) fn connect_chat(&mut self, window: &Window, cx: &mut Context<Self>) {
         if (!self.playback.chat_enabled && !self.playback.super_chats.enabled)
             || !self.playback.options.chat
             || self.playback.chat.is_some()
@@ -603,9 +612,31 @@ impl Home {
             .accounts
             .get(&room.platform)
             .map(|account| account.cookie.as_str());
-        match compat::chat(&self.options.directory, room, cookie) {
+        let text_enabled = self.playback.chat_enabled && !self.playback.paused;
+        match compat::chat(&self.options.directory, room, cookie, text_enabled) {
             Ok(chat) => {
+                let events = chat.events.clone();
                 self.playback.chat = Some(chat);
+                self.playback.chat_updates = Some(cx.spawn_in(window, async move |entity, cx| {
+                    let mut animating = false;
+                    loop {
+                        let first = if animating {
+                            cx.background_executor().timer(CHAT_TICK).await;
+                            None
+                        } else {
+                            Some(events.recv().await.map_err(|_| TryRecvError::Closed))
+                        };
+                        let Ok(Some(next)) = entity
+                            .update_in(cx, |this, _, cx| this.update_chat(first, &events, cx))
+                        else {
+                            break;
+                        };
+                        animating = next;
+                        if !animating && !events.is_empty() {
+                            cx.background_executor().timer(CHAT_TICK).await;
+                        }
+                    }
+                }));
                 if self.playback.chat_enabled {
                     self.status = "正在连接弹幕…".into();
                 }
@@ -618,7 +649,7 @@ impl Home {
         }
     }
 
-    pub(super) fn tick_playback(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub(super) fn hide_playback_controls(&mut self, window: &Window, cx: &mut Context<Self>) {
         let now = Instant::now();
         if self.playback.menu.is_none()
             && !self.playback.busy
@@ -628,12 +659,15 @@ impl Home {
         {
             self.toggle_controls(window, cx);
         }
-        if self.playback.chat.is_none()
-            || self.playback.chat_frame_at.is_some_and(|next| next > now)
-        {
-            return;
-        }
-        self.playback.chat_frame_at = Some(now + CHAT_TICK);
+    }
+
+    fn update_chat(
+        &mut self,
+        mut first: Option<Result<ChatEvent, TryRecvError>>,
+        events: &Receiver<ChatEvent>,
+        cx: &mut Context<Self>,
+    ) -> Option<bool> {
+        let now = Instant::now();
         let mut changed = false;
         for message in &mut self.playback.messages {
             if message
@@ -644,11 +678,15 @@ impl Home {
                 changed = true;
             }
         }
-        let chat = self.playback.chat.as_ref().expect("active chat");
         let mut closed = None;
         let mut super_chats = Vec::new();
+        let mut pictures = Vec::new();
+        let platform = self
+            .active_room
+            .as_ref()
+            .map_or("", |room| room.platform.as_str());
         for _ in 0..32 {
-            match chat.events.try_recv() {
+            match first.take().unwrap_or_else(|| events.try_recv()) {
                 Ok(event) => {
                     if let Some(error) = event.error {
                         closed = Some(error);
@@ -686,8 +724,16 @@ impl Home {
                                 .iter_mut()
                                 .find(|lane| lane.is_none())
                             {
+                                let parts = emotes::segments(platform, &text, &event.emotes);
+                                for part in &parts {
+                                    if let emotes::Segment::Picture { source, .. } = part {
+                                        pictures.push(source.clone());
+                                    }
+                                }
+                                let width = parts.iter().map(emotes::Segment::width).sum();
                                 *lane = Some(FlyingMessage {
-                                    text: safe_chat_text(&text),
+                                    parts,
+                                    width,
                                     time: now,
                                 });
                             }
@@ -695,7 +741,7 @@ impl Home {
                     }
                 }
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
+                Err(TryRecvError::Closed) => {
                     closed = Some("弹幕连接已断开，可再次开启".into());
                     break;
                 }
@@ -715,31 +761,91 @@ impl Home {
             }
             self.playback.super_chats.connection = Some("实时 SC 已断开，按 X 重试");
             cx.notify();
-            return;
+            return None;
         }
-        let mut overlay = String::new();
-        for (lane, message) in self.playback.messages.iter().enumerate() {
-            if let Some(message) = message {
-                let width = message.text.chars().count() as f32 * 28.0;
-                let progress =
-                    now.duration_since(message.time).as_secs_f32() / CHAT_DURATION.as_secs_f32();
-                let x = (1280.0 - progress * (1280.0 + width)) as i32;
-                let y = 30 + 39 * lane;
-                let _ = writeln!(
-                    overlay,
-                    r"{{\an7\pos({x},{y})\fs28\bord2\shad1}} {}",
-                    message.text
-                );
+        for source in pictures {
+            if self.emotes.begin(&source) {
+                let requested = source.clone();
+                let task = cx.background_spawn(async move { emotes::load(&requested) });
+                cx.spawn(async move |entity, cx| {
+                    let bitmap = task.await;
+                    let _ = entity.update(cx, |this, _| this.emotes.finish(source, bitmap));
+                })
+                .detach();
             }
         }
-        if changed || !overlay.is_empty() {
-            if let Some(Content::Video { player, .. }) = &self.content {
-                if player.chat_overlay(&overlay) && !overlay.is_empty() {
-                    if self.playback_chat_probe_pending() {
-                        mark(&self.log, "danmaku_rendered");
-                        self.chat_probe_reported = true;
+        let animating = self.playback.messages.iter().any(Option::is_some);
+        if changed || animating {
+            self.draw_chat(now, changed);
+        }
+        Some(animating)
+    }
+
+    fn draw_chat(&mut self, now: Instant, changed: bool) {
+        let Some(Content::Video { player, .. }) = &self.content else {
+            self.playback.picture_mask = 0;
+            return;
+        };
+        let mut overlay = String::new();
+        let mut pictures = 0;
+        let mut osd_size = None;
+        for (lane, message) in self.playback.messages.iter().enumerate() {
+            if let Some(message) = message {
+                let progress =
+                    now.duration_since(message.time).as_secs_f32() / CHAT_DURATION.as_secs_f32();
+                let mut x = (1280.0 - progress * (1280.0 + message.width as f32)) as i32;
+                let y = 30 + 39 * lane as i32;
+                let mut picture = 0;
+                for part in &message.parts {
+                    match part {
+                        emotes::Segment::Text(text) => ass_line(&mut overlay, x, y, text),
+                        emotes::Segment::Picture { source, alt } => {
+                            let id = (lane * 3 + picture) as u8;
+                            picture += 1;
+                            if x < 1280 && x + emotes::EMOTE_WIDTH > 0 {
+                                let bitmap = self.emotes.get(source);
+                                if let Some(bitmap) = bitmap
+                                    && let Some((w, h)) =
+                                        *osd_size.get_or_insert_with(|| player.osd_size())
+                                {
+                                    let scaled_x = (x as f32 * w / 1280.0).round() as i32;
+                                    let scaled_y = (y as f32 * h / 720.0).round() as i32;
+                                    let side =
+                                        (emotes::EMOTE_WIDTH as f32 * h / 720.0).round().max(1.0);
+                                    let longest = bitmap.width.max(bitmap.height) as f32;
+                                    let size = (
+                                        (side * bitmap.width as f32 / longest).round().max(1.0)
+                                            as u32,
+                                        (side * bitmap.height as f32 / longest).round().max(1.0)
+                                            as u32,
+                                    );
+                                    if player.emote_overlay(id, (scaled_x, scaled_y), size, bitmap)
+                                    {
+                                        pictures |= 1 << id;
+                                    } else {
+                                        ass_line(&mut overlay, x, y, alt);
+                                    }
+                                } else {
+                                    ass_line(&mut overlay, x, y, alt);
+                                }
+                            }
+                        }
                     }
+                    x += part.width();
                 }
+            }
+        }
+        clear_emotes(player, self.playback.picture_mask & !pictures);
+        self.playback.picture_mask = pictures;
+        if changed || !overlay.is_empty() || pictures != 0 {
+            let text_rendered = player.chat_overlay(&overlay) && !overlay.is_empty();
+            if (text_rendered || pictures != 0) && self.playback_chat_probe_pending() {
+                mark(&self.log, "danmaku_rendered");
+                self.chat_probe_reported = true;
+            }
+            if pictures != 0 && self.log.is_some() && !self.emote_probe_reported {
+                mark(&self.log, "emote_rendered");
+                self.emote_probe_reported = true;
             }
         }
     }
@@ -747,6 +853,22 @@ impl Home {
     fn playback_chat_probe_pending(&self) -> bool {
         self.log.is_some() && !self.chat_probe_reported
     }
+}
+
+fn clear_emotes(player: &Player, mask: u16) {
+    for id in 0..15 {
+        if mask & (1 << id) != 0 {
+            player.remove_emote(id);
+        }
+    }
+}
+
+fn ass_line(overlay: &mut String, x: i32, y: i32, text: &str) {
+    let _ = writeln!(
+        overlay,
+        r"{{\an7\pos({x},{y})\fs28\bord2\shad1}}{}",
+        safe_chat_text(text)
+    );
 }
 
 fn safe_chat_text(text: &str) -> String {

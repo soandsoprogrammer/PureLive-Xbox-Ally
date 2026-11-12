@@ -4,7 +4,10 @@ use std::{
     os::windows::process::CommandExt,
     path::Path,
     process::{Child, ChildStdout, Command, Stdio},
-    sync::mpsc::{self, Receiver},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -53,6 +56,8 @@ pub struct ChatEvent {
     pub state: Option<String>,
     pub error: Option<String>,
     pub super_chat: Option<SuperChat>,
+    #[serde(default)]
+    pub emotes: Vec<crate::emotes::RemoteEmote>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -85,8 +90,15 @@ impl SuperChat {
 }
 
 pub struct Chat {
-    pub events: Receiver<ChatEvent>,
+    pub events: async_channel::Receiver<ChatEvent>,
+    text_enabled: Arc<AtomicBool>,
     _child: Bridge,
+}
+
+impl Chat {
+    pub fn set_text_enabled(&self, enabled: bool) {
+        self.text_enabled.store(enabled, Ordering::Relaxed);
+    }
 }
 
 pub struct Bridge(Option<Child>);
@@ -197,18 +209,33 @@ pub fn resolve(
     })
 }
 
-pub fn chat(directory: &Path, room: &Room, cookie: Option<&str>) -> Result<Chat, String> {
+pub fn chat(
+    directory: &Path,
+    room: &Room,
+    cookie: Option<&str>,
+    text_enabled: bool,
+) -> Result<Chat, String> {
     let (stdout, child) = launch(
         directory,
         serde_json::json!({
             "action": "chat", "platform": room.platform, "query": room.id, "account_cookie": cookie,
         }),
     )?;
-    let (sender, events) = mpsc::sync_channel(32);
+    let (sender, events) = async_channel::bounded(32);
+    let text_enabled = Arc::new(AtomicBool::new(text_enabled));
+    let receive_text = text_enabled.clone();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Ok(event) = serde_json::from_str(&line) {
-                if let Err(mpsc::TrySendError::Disconnected(_)) = sender.try_send(event) {
+            if let Ok(event) = serde_json::from_str::<ChatEvent>(&line) {
+                if event.state.is_some() || event.error.is_some() || event.super_chat.is_some() {
+                    // State and SC must still arrive if regular chat fills the queue.
+                    if sender.send_blocking(event).is_err() {
+                        break;
+                    }
+                } else if event.text.is_some()
+                    && receive_text.load(Ordering::Relaxed)
+                    && let Err(async_channel::TrySendError::Closed(_)) = sender.try_send(event)
+                {
                     break;
                 }
             }
@@ -216,6 +243,7 @@ pub fn chat(directory: &Path, room: &Room, cookie: Option<&str>) -> Result<Chat,
     });
     Ok(Chat {
         events,
+        text_enabled,
         _child: child,
     })
 }

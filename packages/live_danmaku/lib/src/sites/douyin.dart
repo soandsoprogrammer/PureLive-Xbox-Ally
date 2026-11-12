@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' show gzip;
 import 'dart:math';
 import 'dart:typed_data';
@@ -172,6 +173,7 @@ abstract final class DouyinDanmakuProtocol {
         }
         final message = switch (envelope.string(1)) {
           'WebcastChatMessage' => _chat(payload, envelope.integer(3) ?? 0, roomId),
+          'WebcastEmojiChatMessage' => _chat(payload, envelope.integer(3) ?? 0, roomId, sticker: true),
           'WebcastGiftMessage' => _gift(payload, envelope.integer(3) ?? 0, roomId),
           'WebcastRoomUserSeqMessage' => _online(payload),
           'WebcastRoomDataSyncMessage' => _broadcastInfo(payload, roomId),
@@ -198,7 +200,7 @@ abstract final class DouyinDanmakuProtocol {
   /// `createTime`, else `eventTime` (M5.F B-5: the recorded chats carry
   /// only that); above 10^11 is milliseconds, otherwise seconds, and 0
   /// means none. Ids are unsigned (3.x printed uint64 signed).
-  static LiveMessage? _chat(Uint8List payload, int envelopeId, String roomId) {
+  static LiveMessage? _chat(Uint8List payload, int envelopeId, String roomId, {bool sticker = false}) {
     final chat = ProtoMessage.decode(payload);
     final common = chat.message(1);
     final user = chat.message(2);
@@ -218,15 +220,55 @@ abstract final class DouyinDanmakuProtocol {
       // B-5; a fallback out of range leaves the chat without a time.
       sentAt = DateTime.fromMillisecondsSinceEpoch(_milliseconds(eventTime));
     }
+    final rich = _richChat(chat, sticker: sticker);
+    final plain = chat.string(sticker ? 5 : 3) ?? '';
     return LiveMessage(
       type: LiveMessageType.chat,
       userName: user?.string(3) ?? '',
       userId: ProtoMessage.unsigned(user?.integer(1) ?? 0),
-      message: chat.string(3) ?? '',
+      message: rich?.text ?? plain,
       color: LiveMessageColor.white,
       messageId: messageId.isEmpty ? '' : 'douyin:$messageId',
       sentAt: sentAt,
+      emotes: rich?.emotes ?? const [],
     );
+  }
+
+  // The current web schema uses 40/41 and TextPiece fields 11/21/25.
+  // Older sampled frames used 22 with 3/4/8 for those same fields.
+  static ({String text, List<LiveEmote> emotes})? _richChat(ProtoMessage chat, {required bool sticker}) {
+    for (final number in (sticker ? const [4] : const [41, 40, 22])) {
+      try {
+        final rich = chat.message(number);
+        if (rich == null) continue;
+        final text = StringBuffer();
+        final emotes = <LiveEmote>[];
+        for (final piece in rich.messages(4).take(24)) {
+          final image = (piece.message(25) ?? piece.message(8))?.message(1);
+          final url = image?.fields
+              .where((field) => field.number == 1 && field.wireType == ProtoMessage.lengthDelimitedType)
+              .map((field) => utf8.decode(field.value as Uint8List, allowMalformed: true))
+              .firstWhere((url) => url.startsWith('https://'), orElse: () => '');
+          if (url != null && url.isNotEmpty && emotes.length < 12) {
+            final code = '[表情${emotes.length + 1}]';
+            text.write(code);
+            emotes.add(LiveEmote(code: code, url: url));
+          } else {
+            final value = piece.string(11) ?? piece.string(3);
+            if (value != null) {
+              text.write(value);
+            } else {
+              final user = (piece.message(21) ?? piece.message(4))?.message(1)?.string(3);
+              if (user != null) text.write('@$user');
+            }
+          }
+        }
+        if (emotes.isNotEmpty) return (text: text.toString(), emotes: emotes);
+      } on FormatException {
+        // A malformed optional image field must not drop ordinary text.
+      }
+    }
+    return null;
   }
 
   /// GiftMessage/GiftStruct field numbers: wwengg/douyin message.proto at
