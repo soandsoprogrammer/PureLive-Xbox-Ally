@@ -376,40 +376,6 @@ impl Player {
         self.run(&[c"osd-overlay", &id, c"ass-events", &text, &width, &height]) >= 0
     }
 
-    /// Paints a small top-left label over the video (the room and its position in
-    /// the follow list after a bumper switch) and keeps it until the next one.
-    pub fn notice(&self, text: &str) -> bool {
-        // Right after a source opens mpv may not report the OSD size yet; the
-        // overlay is scaled anyway, so 720p is a safe placeholder.
-        let (osd_width, osd_height) = self.osd_size().unwrap_or((1280.0, 720.0));
-        let scale = (osd_width / 1280.0).max(0.5);
-        let font = (24.0 * scale).round();
-        let border = (2.0 * scale).round();
-        let text: String = text
-            .chars()
-            .map(|ch| match ch {
-                '{' => '｛',
-                '}' => '｝',
-                '\\' => '＼',
-                other => other,
-            })
-            .collect();
-        let line = format!(
-            "{{\\an7\\pos({:.1},{:.1})\\fs{}\\bord{}\\shad1}}{}",
-            24.0 * scale,
-            24.0 * scale,
-            font,
-            border,
-            text
-        );
-        self.chat_overlay(99, &line, (osd_width as u32, osd_height as u32))
-    }
-
-    /// Removes the label painted by [`Self::notice`].
-    pub fn clear_notice(&self) {
-        self.chat_overlay(99, "", (1280, 720));
-    }
-
     pub fn osd_size(&self) -> Option<(f32, f32)> {
         let width = self.property(c"osd-width")?.parse::<u32>().ok()?;
         let height = self.property(c"osd-height")?.parse::<u32>().ok()?;
