@@ -954,6 +954,32 @@ impl Home {
         self.play_room(room, window, cx);
     }
 
+    /// Puts the switched room in the top-left for a few seconds: waits for the new
+    /// source's overlay layer to exist, paints it, then takes it away again.
+    fn show_switch_notice(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |entity, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(400))
+                .await;
+            let _ = entity.update_in(cx, |this, _, cx| {
+                if let Some(Content::Video { player, .. }) = &this.content {
+                    player.notice(&text);
+                }
+                cx.notify();
+            });
+            cx.background_executor()
+                .timer(Duration::from_secs(3))
+                .await;
+            let _ = entity.update_in(cx, |this, _, cx| {
+                if let Some(Content::Video { player, .. }) = &this.content {
+                    player.clear_notice();
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn refresh_playback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.playback.direct {
             self.play_stream(window, cx);
@@ -1021,10 +1047,8 @@ impl Home {
                             this.status.clear();
                         }
                         this.focus.focus(window, cx);
-                        if let Some(toast) = this.switch_toast.take()
-                            && let Some(Content::Video { player, .. }) = &this.content
-                        {
-                            player.notice(&toast);
+                        if let Some(toast) = this.switch_toast.take() {
+                            this.show_switch_notice(toast, window, cx);
                         }
                         if this.playback.visible() {
                             this.show_controls(window, cx);

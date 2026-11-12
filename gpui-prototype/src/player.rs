@@ -379,9 +379,9 @@ impl Player {
     /// Paints a small top-left label over the video (the room and its position in
     /// the follow list after a bumper switch) and keeps it until the next one.
     pub fn notice(&self, text: &str) -> bool {
-        let Some((osd_width, osd_height)) = self.osd_size() else {
-            return false;
-        };
+        // Right after a source opens mpv may not report the OSD size yet; the
+        // overlay is scaled anyway, so 720p is a safe placeholder.
+        let (osd_width, osd_height) = self.osd_size().unwrap_or((1280.0, 720.0));
         let scale = (osd_width / 1280.0).max(0.5);
         let font = (24.0 * scale).round();
         let border = (2.0 * scale).round();
