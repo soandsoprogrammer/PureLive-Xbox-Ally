@@ -53,7 +53,7 @@ def package(root, rust_exe, native_dir, output):
             raise FileNotFoundError(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     temp = output.with_suffix(".tmp")
-    with ZipFile(temp, "w", ZIP_DEFLATED) as archive:
+    with ZipFile(temp, "w", ZIP_DEFLATED, strict_timestamps=False) as archive:
         for name, path in sorted(payload.items()):
             archive.write(path, name)
     with ZipFile(temp) as archive:
