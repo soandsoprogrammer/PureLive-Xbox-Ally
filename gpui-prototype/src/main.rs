@@ -907,6 +907,45 @@ impl Home {
         self.reload_room(compat::Selection::default(), window, cx);
     }
 
+    /// Left/right while watching a room opened from the follow list: plays the next
+    /// followed room that is live, wrapping around, so the room can be changed
+    /// without going back to the list.
+    fn switch_follow(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pane != Pane::Follows {
+            return;
+        }
+        let current = self.active_room.as_ref().map(Room::key);
+        let count = self.follows.len();
+        if count < 2 {
+            return;
+        }
+        let Some(start) = self
+            .follows
+            .iter()
+            .position(|room| Some(&room.key()) == current.as_ref())
+        else {
+            return;
+        };
+        let step = if forward { 1 } else { count - 1 };
+        let mut next: Option<Room> = None;
+        for offset in 1..count {
+            let room = &self.follows[(start + offset * step) % count];
+            if Some(&room.key()) == current.as_ref() {
+                continue;
+            }
+            if room.broadcast_status() == BroadcastStatus::Live {
+                next = Some(room.clone());
+                break;
+            }
+            if next.is_none() {
+                next = Some(room.clone());
+            }
+        }
+        if let Some(room) = next {
+            self.play_room(room, window, cx);
+        }
+    }
+
     fn refresh_playback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.playback.direct {
             self.play_stream(window, cx);
@@ -1258,12 +1297,33 @@ impl Home {
                 let executor = executor.clone();
                 async move {
                     let mut previous: Option<u16> = None;
+                    let mut repeat_at: Option<Instant> = None;
                     loop {
-                        let buttons = native::buttons();
+                        // The left stick feeds the same d-pad bits, so every direction handler
+                        // keeps working without a second path through the UI.
+                        let pad = native::pad();
+                        let buttons = pad.map(|pad| {
+                            pad.buttons
+                                | stick_buttons(pad.left_x, pad.left_y)
+                                | trigger_buttons(pad.left_trigger, pad.right_trigger)
+                        });
                         if let (Some(current), Some(last)) = (buttons, previous) {
+                            let now = Instant::now();
                             let pressed = current & !last;
-                            if pressed != 0 {
-                                let _ = input.try_send(pressed);
+                            let mut send = pressed;
+                            if pressed & DIRECTION_BUTTONS != 0 {
+                                repeat_at = Some(now + Duration::from_millis(REPEAT_DELAY_MS));
+                            } else if current & DIRECTION_BUTTONS != 0 {
+                                if repeat_at.is_some_and(|at| at <= now) {
+                                    send |= current & DIRECTION_BUTTONS;
+                                    repeat_at =
+                                        Some(now + Duration::from_millis(REPEAT_INTERVAL_MS));
+                                }
+                            } else {
+                                repeat_at = None;
+                            }
+                            if send != 0 {
+                                let _ = input.try_send(send);
                             }
                         }
                         previous = buttons;
@@ -1301,6 +1361,11 @@ impl Home {
                 && pressed & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0
             {
                 self.page_playback(pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0, window, cx);
+            } else if self.playback.menu.is_none()
+                && !self.playback.visible()
+                && pressed & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT) != 0
+            {
+                self.switch_follow(pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0, window, cx);
             } else if pressed & XINPUT_GAMEPAD_DPAD_UP != 0 {
                 self.move_playback_vertical(false, window, cx);
             } else if pressed & XINPUT_GAMEPAD_DPAD_DOWN != 0 {
@@ -1312,10 +1377,17 @@ impl Home {
             }
             return;
         }
+        // Bumpers walk the platform strip; the triggers switch the top tabs.
         if pressed & XINPUT_GAMEPAD_LEFT_SHOULDER != 0 {
-            self.step_pane(-1, window, cx);
+            self.move_selection(false, cx);
         }
         if pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0 {
+            self.move_selection(true, cx);
+        }
+        if pressed & TRIGGER_LEFT != 0 {
+            self.step_pane(-1, window, cx);
+        }
+        if pressed & TRIGGER_RIGHT != 0 {
             self.step_pane(1, window, cx);
         }
         if pressed & XINPUT_GAMEPAD_DPAD_LEFT != 0 {
@@ -1451,4 +1523,51 @@ fn main() {
             })
             .expect("open PureLive window");
         });
+}
+
+/// The left stick counts as a d-pad once it passes this fraction of full tilt.
+const STICK_DEADZONE: f32 = 0.45;
+/// The bits a held direction repeats, so lists keep moving like a d-pad would.
+const DIRECTION_BUTTONS: u16 = XINPUT_GAMEPAD_DPAD_UP
+    | XINPUT_GAMEPAD_DPAD_DOWN
+    | XINPUT_GAMEPAD_DPAD_LEFT
+    | XINPUT_GAMEPAD_DPAD_RIGHT;
+/// Delay before a held direction starts repeating, and the interval after that.
+const REPEAT_DELAY_MS: u64 = 350;
+const REPEAT_INTERVAL_MS: u64 = 90;
+
+fn stick_buttons(x: i16, y: i16) -> u16 {
+    let x = f32::from(x) / 32767.0;
+    let y = f32::from(y) / 32767.0;
+    let mut buttons = 0;
+    if y > STICK_DEADZONE {
+        buttons |= XINPUT_GAMEPAD_DPAD_UP;
+    }
+    if y < -STICK_DEADZONE {
+        buttons |= XINPUT_GAMEPAD_DPAD_DOWN;
+    }
+    if x < -STICK_DEADZONE {
+        buttons |= XINPUT_GAMEPAD_DPAD_LEFT;
+    }
+    if x > STICK_DEADZONE {
+        buttons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+    }
+    buttons
+}
+
+/// The triggers are analogue, so they get the two button bits XInput leaves free.
+const TRIGGER_LEFT: u16 = 0x0400;
+const TRIGGER_RIGHT: u16 = 0x0800;
+/// How far a trigger has to travel before it counts as pressed.
+const TRIGGER_THRESHOLD: u8 = 30;
+
+fn trigger_buttons(left: u8, right: u8) -> u16 {
+    let mut buttons = 0;
+    if left > TRIGGER_THRESHOLD {
+        buttons |= TRIGGER_LEFT;
+    }
+    if right > TRIGGER_THRESHOLD {
+        buttons |= TRIGGER_RIGHT;
+    }
+    buttons
 }

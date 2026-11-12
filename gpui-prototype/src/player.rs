@@ -360,13 +360,20 @@ impl Player {
         Ok(())
     }
 
-    pub fn chat_overlay(&self, text: &str) -> bool {
+    /// Draws [text] (ASS events) over the video as overlay [id], rasterised at [size]
+    /// pixels; the overlay is only then scaled with the video, so passing the video's
+    /// own size keeps the text sharp instead of upscaling it from 720p.
+    pub fn chat_overlay(&self, id: u32, text: &str, size: (u32, u32)) -> bool {
+        let id = CString::new(id.to_string()).expect("numeric overlay id");
         if text.is_empty() {
-            return self.run(&[c"osd-overlay", c"1", c"none", c""]) >= 0;
+            return self.run(&[c"osd-overlay", &id, c"none", c""]) >= 0;
         }
-        CString::new(text).is_ok_and(|text| {
-            self.run(&[c"osd-overlay", c"1", c"ass-events", &text, c"1280", c"720"]) >= 0
-        })
+        let Ok(text) = CString::new(text) else {
+            return false;
+        };
+        let width = CString::new(size.0.to_string()).expect("numeric OSD width");
+        let height = CString::new(size.1.to_string()).expect("numeric OSD height");
+        self.run(&[c"osd-overlay", &id, c"ass-events", &text, &width, &height]) >= 0
     }
 
     pub fn osd_size(&self) -> Option<(f32, f32)> {

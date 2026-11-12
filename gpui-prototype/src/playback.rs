@@ -18,7 +18,7 @@ const ROOM_ACTIONS: [usize; 8] = [0, 1, 6, 2, 3, 4, 7, 5];
 const ROOM_ACTIONS_WITHOUT_SC: [usize; 7] = [0, 1, 6, 2, 3, 4, 5];
 const DIRECT_ACTIONS: [usize; 3] = [0, 1, 6];
 const HIDE_DELAY: Duration = Duration::from_secs(5);
-const CHAT_TICK: Duration = Duration::from_millis(50);
+const CHAT_TICK: Duration = Duration::from_millis(16);
 const CHAT_DURATION: Duration = Duration::from_secs(7);
 const SUPER_CHAT_INTERVAL: Duration = Duration::from_secs(30);
 const SUPER_CHAT_LIMIT: usize = 100;
@@ -119,6 +119,8 @@ pub(super) struct PlaybackUi {
     chat_updates: Option<Task<()>>,
     messages: [Option<FlyingMessage>; 5],
     picture_mask: u16,
+    /// Whether the lane's ASS overlay is currently set in mpv.
+    chat_lanes: [bool; 5],
 }
 
 struct FlyingMessage {
@@ -594,8 +596,11 @@ impl Home {
 
     fn clear_chat_overlay(&mut self) {
         if let Some(Content::Video { player, .. }) = &self.content {
-            if self.playback.messages.iter().any(Option::is_some) {
-                player.chat_overlay("");
+            for lane in 0..self.playback.chat_lanes.len() {
+                if self.playback.chat_lanes[lane] {
+                    player.chat_overlay(lane as u32 + 1, "", (1280, 720));
+                    self.playback.chat_lanes[lane] = false;
+                }
             }
             clear_emotes(player, self.playback.picture_mask);
         }
@@ -786,73 +791,85 @@ impl Home {
         Some(animating)
     }
 
-    fn draw_chat(&mut self, now: Instant, changed: bool) {
+    fn draw_chat(&mut self, now: Instant, _changed: bool) {
         let Some(Content::Video { player, .. }) = &self.content else {
             self.playback.picture_mask = 0;
             return;
         };
-        let mut overlay = String::new();
+        // The OSD is rasterised at this size and then scaled with the video, so
+        // matching the video's own size keeps the danmaku text sharp.
+        let (osd_width, osd_height) = player.osd_size().unwrap_or((1280.0, 720.0));
+        let scale = (osd_width / 1280.0).max(0.5);
+        let size = (
+            osd_width.round().max(1.0) as u32,
+            osd_height.round().max(1.0) as u32,
+        );
+        let total = CHAT_DURATION.as_secs_f32();
         let mut pictures = 0;
-        let mut osd_size = None;
         for (lane, message) in self.playback.messages.iter().enumerate() {
-            if let Some(message) = message {
-                let progress =
-                    now.duration_since(message.time).as_secs_f32() / CHAT_DURATION.as_secs_f32();
-                let mut x = (1280.0 - progress * (1280.0 + message.width as f32)) as i32;
-                let y = 30 + 39 * lane as i32;
-                let mut picture = 0;
-                for part in &message.parts {
-                    match part {
-                        emotes::Segment::Text(text) => ass_line(&mut overlay, x, y, text),
-                        emotes::Segment::Picture { source, alt } => {
-                            let id = (lane * 3 + picture) as u8;
-                            picture += 1;
-                            if x < 1280 && x + emotes::EMOTE_WIDTH > 0 {
-                                let bitmap = self.emotes.get(source);
-                                if let Some(bitmap) = bitmap
-                                    && let Some((w, h)) =
-                                        *osd_size.get_or_insert_with(|| player.osd_size())
-                                {
-                                    let scaled_x = (x as f32 * w / 1280.0).round() as i32;
-                                    let scaled_y = (y as f32 * h / 720.0).round() as i32;
-                                    let side =
-                                        (emotes::EMOTE_WIDTH as f32 * h / 720.0).round().max(1.0);
-                                    let longest = bitmap.width.max(bitmap.height) as f32;
-                                    let size = (
-                                        (side * bitmap.width as f32 / longest).round().max(1.0)
-                                            as u32,
-                                        (side * bitmap.height as f32 / longest).round().max(1.0)
-                                            as u32,
-                                    );
-                                    if player.emote_overlay(id, (scaled_x, scaled_y), size, bitmap)
-                                    {
-                                        pictures |= 1 << id;
-                                    } else {
-                                        ass_line(&mut overlay, x, y, alt);
-                                    }
-                                } else {
-                                    ass_line(&mut overlay, x, y, alt);
+            let id = lane as u32 + 1;
+            let Some(message) = message else {
+                if self.playback.chat_lanes[lane] {
+                    player.chat_overlay(id, "", size);
+                    self.playback.chat_lanes[lane] = false;
+                }
+                continue;
+            };
+            let elapsed = now.duration_since(message.time).as_secs_f32().min(total);
+            let travel = 1280.0 + message.width as f32;
+            // Positions are recomputed every chat tick and sent as \pos: mpv only
+            // guarantees a frame at the moment an overlay is set, so the flight has to
+            // be drawn by us rather than left to libass timing.
+            let mut x = 1280.0 - elapsed / total * travel;
+            let y = (30 + 39 * lane as i32) as f32;
+            let mut overlay = String::new();
+            let mut picture = 0;
+            for part in &message.parts {
+                match part {
+                    emotes::Segment::Text(text) => {
+                        ass_line(&mut overlay, x, y, scale, text);
+                    }
+                    emotes::Segment::Picture { source, alt } => {
+                        let picture_id = (lane * 3 + picture) as u8;
+                        picture += 1;
+                        let mut drawn = false;
+                        if x < 1280.0 && x + emotes::EMOTE_WIDTH as f32 > 0.0 {
+                            let bitmap = self.emotes.get(source);
+                            if let Some(bitmap) = bitmap
+                                && let Some((w, h)) = player.osd_size()
+                            {
+                                let scaled_x = (x * w / 1280.0).round() as i32;
+                                let scaled_y = (y * h / 720.0).round() as i32;
+                                let side = (emotes::EMOTE_WIDTH as f32 * h / 720.0).round().max(1.0);
+                                let longest = bitmap.width.max(bitmap.height) as f32;
+                                let emote_size = (
+                                    (side * bitmap.width as f32 / longest).round().max(1.0) as u32,
+                                    (side * bitmap.height as f32 / longest).round().max(1.0) as u32,
+                                );
+                                if player.emote_overlay(
+                                    picture_id,
+                                    (scaled_x, scaled_y),
+                                    emote_size,
+                                    bitmap,
+                                ) {
+                                    pictures |= 1 << picture_id;
+                                    drawn = true;
                                 }
                             }
                         }
+                        if !drawn {
+                            ass_line(&mut overlay, x, y, scale, alt);
+                        }
                     }
-                    x += part.width();
                 }
+                x += part.width() as f32;
+            }
+            if player.chat_overlay(id, &overlay, size) {
+                self.playback.chat_lanes[lane] = true;
             }
         }
         clear_emotes(player, self.playback.picture_mask & !pictures);
         self.playback.picture_mask = pictures;
-        if changed || !overlay.is_empty() || pictures != 0 {
-            let text_rendered = player.chat_overlay(&overlay) && !overlay.is_empty();
-            if (text_rendered || pictures != 0) && self.playback_chat_probe_pending() {
-                mark(&self.log, "danmaku_rendered");
-                self.chat_probe_reported = true;
-            }
-            if pictures != 0 && self.log.is_some() && !self.emote_probe_reported {
-                mark(&self.log, "emote_rendered");
-                self.emote_probe_reported = true;
-            }
-        }
     }
 
     fn playback_chat_probe_pending(&self) -> bool {
@@ -868,10 +885,16 @@ fn clear_emotes(player: &Player, mask: u16) {
     }
 }
 
-fn ass_line(overlay: &mut String, x: i32, y: i32, text: &str) {
+fn ass_line(overlay: &mut String, x: f32, y: f32, scale: f32, text: &str) {
+    let font = (28.0 * scale).round();
+    let border = (2.0 * scale).round();
     let _ = writeln!(
         overlay,
-        r"{{\an7\pos({x},{y})\fs28\bord2\shad1}}{}",
+        r"{{\an7\pos({:.2},{:.2})\fs{}\bord{}\shad1}}{}",
+        x * scale,
+        y * scale,
+        font,
+        border,
         safe_chat_text(text)
     );
 }

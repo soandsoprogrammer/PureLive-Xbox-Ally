@@ -30,11 +30,27 @@ pub fn minimized(window: &Window) -> bool {
     window_handle(window).is_ok_and(|hwnd| unsafe { IsIconic(hwnd) != 0 })
 }
 
-pub fn buttons() -> Option<u16> {
+/// The buttons, the left thumbstick and the triggers of the first connected pad.
+#[derive(Clone, Copy, Debug)]
+pub struct PadState {
+    pub buttons: u16,
+    pub left_x: i16,
+    pub left_y: i16,
+    pub left_trigger: u8,
+    pub right_trigger: u8,
+}
+
+pub fn pad() -> Option<PadState> {
     for index in 0..4 {
-        let mut state = XINPUT_STATE::default();
-        if unsafe { XInputGetState(index, &mut state) } == 0 {
-            return Some(state.Gamepad.wButtons);
+        let mut raw = XINPUT_STATE::default();
+        if unsafe { XInputGetState(index, &mut raw) } == 0 {
+            return Some(PadState {
+                buttons: raw.Gamepad.wButtons,
+                left_x: raw.Gamepad.sThumbLX,
+                left_y: raw.Gamepad.sThumbLY,
+                left_trigger: raw.Gamepad.bLeftTrigger,
+                right_trigger: raw.Gamepad.bRightTrigger,
+            });
         }
     }
     None
