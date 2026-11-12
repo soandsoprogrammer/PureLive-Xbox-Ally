@@ -227,7 +227,6 @@ impl Home {
         match pane {
             Pane::Follows => self.next_follow_check = None,
             Pane::Popular => {
-                self.platform_cursor = Some(self.platform);
                 self.request_rooms(String::new(), window, cx);
             }
             Pane::Search if previous != Pane::Search => self.results.clear(),

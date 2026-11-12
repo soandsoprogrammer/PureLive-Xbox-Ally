@@ -815,7 +815,6 @@ impl Home {
             self.pane = Pane::Search;
         }
         if self.pane == Pane::Popular {
-            self.platform_cursor = Some(index);
             self.request_rooms(String::new(), window, cx);
         }
         cx.notify();
