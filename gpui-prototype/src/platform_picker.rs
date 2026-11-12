@@ -62,7 +62,10 @@ impl Home {
             .overflow_x_scroll()
             .track_scroll(&self.platform_scroll)
             .children(self.platforms.iter().enumerate().map(|(index, site)| {
-                let focused = self.platform_cursor == Some(index);
+                // On 热门 the strip is driven by LB/RB, so it never takes the d-pad
+                // cursor and never draws a focus ring there; the current platform is
+                // still indicated by its background.
+                let focused = self.platform_cursor == Some(index) && self.pane != Pane::Popular;
                 let selected = self.platform == index;
                 div()
                     .id(("platform-tab", index))
@@ -80,7 +83,7 @@ impl Home {
                     .text_color(rgb(if focused || selected { MINT } else { TEXT }))
                     .text_sm()
                     .cursor_pointer()
-                    .hover(|style| style.border_color(rgb(MINT)))
+                    .hover(|style| style.text_color(rgb(MINT)))
                     .when_some(logo(&site.id), |tile, icon| {
                         tile.child(img(icon).size(px(19.0)).object_fit(ObjectFit::Contain))
                     })
