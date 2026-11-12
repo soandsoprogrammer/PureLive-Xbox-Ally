@@ -376,6 +376,16 @@ impl Player {
         self.run(&[c"osd-overlay", &id, c"ass-events", &text, &width, &height]) >= 0
     }
 
+    /// Shows a short centred message over the video (mpv `show-text`), used for
+    /// "3/6 神棍老师" after switching rooms with the bumpers.
+    pub fn show_text(&self, text: &str, duration_ms: u32) -> bool {
+        let Ok(text) = CString::new(text) else {
+            return false;
+        };
+        let duration = CString::new(duration_ms.to_string()).expect("numeric duration");
+        self.run(&[c"show-text", &text, &duration]) >= 0
+    }
+
     pub fn osd_size(&self) -> Option<(f32, f32)> {
         let width = self.property(c"osd-width")?.parse::<u32>().ok()?;
         let height = self.property(c"osd-height")?.parse::<u32>().ok()?;

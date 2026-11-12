@@ -145,6 +145,8 @@ struct Home {
     selected: Action,
     content: Option<Content>,
     status: String,
+    /// Shown over the video once the next room in the follow list has opened.
+    switch_toast: Option<String>,
     reopen_video: bool,
     playback: PlaybackUi,
     emotes: emotes::Cache,
@@ -268,6 +270,7 @@ impl Home {
             selected: Action::Back,
             content: None,
             status: String::new(),
+            switch_toast: None,
             reopen_video: false,
             playback: PlaybackUi::default(),
             emotes: emotes::Cache::default(),
@@ -907,43 +910,48 @@ impl Home {
         self.reload_room(compat::Selection::default(), window, cx);
     }
 
-    /// Left/right while watching a room opened from the follow list: plays the next
-    /// followed room that is live, wrapping around, so the room can be changed
-    /// without going back to the list.
+    /// Bumpers (or left/right) while watching a room opened from the follow list:
+    /// plays the next followed room that is live, wrapping around, and shows which
+    /// one it is ("3/6 神棍老师") over the video.
     fn switch_follow(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.pane != Pane::Follows {
             return;
         }
-        let current = self.active_room.as_ref().map(Room::key);
-        let count = self.follows.len();
-        if count < 2 {
+        let Some(current) = self.active_room.as_ref().map(Room::key) else {
             return;
-        }
-        let Some(start) = self
+        };
+        let mut candidates: Vec<usize> = self
             .follows
             .iter()
-            .position(|room| Some(&room.key()) == current.as_ref())
+            .enumerate()
+            .filter(|(_, room)| room.broadcast_status() == BroadcastStatus::Live)
+            .map(|(index, _)| index)
+            .collect();
+        if candidates.len() < 2 {
+            candidates = (0..self.follows.len()).collect();
+        }
+        if candidates.len() < 2 {
+            return;
+        }
+        let Some(position) = candidates
+            .iter()
+            .position(|&index| self.follows[index].key() == current)
         else {
             return;
         };
-        let step = if forward { 1 } else { count - 1 };
-        let mut next: Option<Room> = None;
-        for offset in 1..count {
-            let room = &self.follows[(start + offset * step) % count];
-            if Some(&room.key()) == current.as_ref() {
-                continue;
-            }
-            if room.broadcast_status() == BroadcastStatus::Live {
-                next = Some(room.clone());
-                break;
-            }
-            if next.is_none() {
-                next = Some(room.clone());
-            }
-        }
-        if let Some(room) = next {
-            self.play_room(room, window, cx);
-        }
+        let next = if forward {
+            (position + 1) % candidates.len()
+        } else {
+            (position + candidates.len() - 1) % candidates.len()
+        };
+        let room = self.follows[candidates[next]].clone();
+        let name = if room.nick.trim().is_empty() {
+            room.title.trim()
+        } else {
+            room.nick.trim()
+        };
+        self.switch_toast = Some(format!("{}/{}  {}", next + 1, candidates.len(), name));
+        self.play_room(room, window, cx);
     }
 
     fn refresh_playback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1013,6 +1021,11 @@ impl Home {
                             this.status.clear();
                         }
                         this.focus.focus(window, cx);
+                        if let Some(toast) = this.switch_toast.take()
+                            && let Some(Content::Video { player, .. }) = &this.content
+                        {
+                            player.show_text(&toast, 2000);
+                        }
                         if this.playback.visible() {
                             this.show_controls(window, cx);
                         }
@@ -1361,6 +1374,10 @@ impl Home {
                 && pressed & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0
             {
                 self.page_playback(pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0, window, cx);
+            } else if self.playback.menu.is_none()
+                && pressed & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0
+            {
+                self.switch_follow(pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0, window, cx);
             } else if self.playback.menu.is_none()
                 && !self.playback.visible()
                 && pressed & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT) != 0
