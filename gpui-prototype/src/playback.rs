@@ -217,11 +217,16 @@ impl Home {
     pub(super) fn leave_playback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.request_id += 1;
         self.playback_epoch += 1;
-        self.active_room = None;
+        let room = self.active_room.take();
         self.reopen_video = false;
         self.content = None;
         self.playback = PlaybackUi::default();
         self.status.clear();
+        if self.pane == Pane::Follows {
+            self.next_follow_check = None;
+        } else if let Some(room) = room {
+            self.check_room_statuses(vec![room.key()], false, window, cx);
+        }
         self.focus.focus(window, cx);
         cx.notify();
     }

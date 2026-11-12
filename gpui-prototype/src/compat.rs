@@ -14,7 +14,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::live::Room;
+use crate::live::{Room, RoomKey, RoomStatus};
 
 #[derive(Default)]
 pub struct Source {
@@ -131,6 +131,7 @@ impl Drop for Bridge {
 struct Reply {
     error: Option<String>,
     rooms: Vec<Room>,
+    room_statuses: Vec<RoomStatus>,
     url: String,
     headers: BTreeMap<String, String>,
     proxy: String,
@@ -182,6 +183,20 @@ pub fn find(
         }),
     )?;
     Ok(reply.rooms)
+}
+
+pub fn room_statuses(
+    directory: &Path,
+    rooms: &[RoomKey],
+    cookies: &BTreeMap<String, String>,
+) -> Result<Vec<RoomStatus>, String> {
+    let (reply, _) = request(
+        directory,
+        serde_json::json!({
+            "action": "status", "rooms": rooms, "account_cookies": cookies,
+        }),
+    )?;
+    Ok(reply.room_statuses)
 }
 
 pub fn resolve(

@@ -17,6 +17,7 @@ const DIVIDER: u32 = 0x293741;
 const TEXT: u32 = 0xf2f5f7;
 const MUTED: u32 = 0xa8b7c1;
 const MINT: u32 = 0x4ff2ba;
+const ROOM_CARD_HEIGHT: f32 = 214.0;
 
 pub(super) fn init_theme(cx: &mut App) {
     use gpui_kit::component::{Theme, ThemeMode};
@@ -224,6 +225,7 @@ impl Home {
         self.status.clear();
         self.show_follows = pane == Pane::Follows;
         match pane {
+            Pane::Follows => self.next_follow_check = None,
             Pane::Popular => {
                 self.platform_cursor = Some(self.platform);
                 self.request_rooms(String::new(), window, cx);
@@ -351,6 +353,21 @@ impl Home {
                 ("Ⓐ", "选择"),
                 ("Ⓑ", "返回"),
             ]
+        } else if self.pane == Pane::Follows && self.room_selection.is_none() {
+            &[
+                ("← / →", "切换筛选"),
+                ("↓", "直播列表"),
+                ("Ⓧ", "刷新"),
+                ("LB / RB", "切换栏目"),
+            ]
+        } else if self.pane == Pane::Follows {
+            &[
+                ("↑", "返回筛选"),
+                ("Ⓐ", "观看"),
+                ("Ⓨ", "取消关注"),
+                ("Ⓧ", "刷新"),
+                ("LB / RB", "切换栏目"),
+            ]
         } else {
             &[
                 ("Ⓐ", "观看"),
@@ -388,6 +405,7 @@ impl Home {
 
     fn room_card(&self, index: usize, room: &Room, cx: &mut Context<Self>) -> Stateful<Div> {
         let selected = self.room_selection == Some(index);
+        let status = room.broadcast_status();
         let followed = self.follows.iter().any(|saved| saved.same_channel(room));
         let platform = self
             .platforms
@@ -402,7 +420,7 @@ impl Home {
         div()
             .id(("card", index))
             .v_flex()
-            .flex_1()
+            .h(px(ROOM_CARD_HEIGHT))
             .min_w_0()
             .rounded_lg()
             .overflow_hidden()
@@ -419,6 +437,7 @@ impl Home {
                     .relative()
                     .w_full()
                     .h(px(149.0))
+                    .flex_shrink_0()
                     .overflow_hidden()
                     .bg(linear_gradient(
                         130.0,
@@ -457,19 +476,23 @@ impl Home {
                             .py_1()
                             .text_xs()
                             .bg(rgba(0x0b131ae8))
-                            .text_color(rgb(if room.live { MINT } else { TEXT }))
-                            .child(
-                                if room.live
-                                    && self.pane == Pane::Search
-                                    && self.search_platform.is_none()
+                            .text_color(rgb(if status == BroadcastStatus::Live {
+                                MINT
+                            } else {
+                                TEXT
+                            }))
+                            .child(match status {
+                                BroadcastStatus::Live
+                                    if self.pane == Pane::Search
+                                        && self.search_platform.is_none() =>
                                 {
                                     format!("●  {platform}")
-                                } else if room.live {
-                                    "●  直播中".into()
-                                } else {
-                                    platform.clone()
-                                },
-                            ),
+                                }
+                                BroadcastStatus::Live => "●  直播中".into(),
+                                BroadcastStatus::Offline => "未开播".into(),
+                                BroadcastStatus::Replay => "回放".into(),
+                                BroadcastStatus::Unknown => platform.clone(),
+                            }),
                     ),
             )
             .child(
@@ -527,22 +550,23 @@ impl Home {
     fn room_grid(&self, row_gap: f32, cx: &mut Context<Self>) -> UniformList {
         uniform_list(
             "room-grid",
-            self.rooms().len().div_ceil(3),
+            self.room_count().div_ceil(3),
             cx.processor(move |this, rows: Range<usize>, _, cx| {
                 rows.map(|row| {
                     let start = row * 3;
-                    let rooms = &this.rooms()[start..(start + 3).min(this.rooms().len())];
+                    let end = (start + 3).min(this.room_count());
                     div()
-                        .h_flex()
+                        .grid()
+                        .grid_cols(3)
+                        .grid_rows(1)
+                        .w_full()
+                        .h(px(ROOM_CARD_HEIGHT + row_gap))
                         .gap_3()
                         .pb(px(row_gap))
-                        .children(
-                            rooms
-                                .iter()
-                                .enumerate()
-                                .map(|(column, room)| this.room_card(start + column, room, cx)),
-                        )
-                        .children((rooms.len()..3).map(|_| div().flex_1().min_w_0()))
+                        .children((start..end).filter_map(|index| {
+                            this.room_at(index)
+                                .map(|room| this.room_card(index, room, cx))
+                        }))
                 })
                 .collect()
             }),
@@ -565,13 +589,6 @@ impl Home {
                     .h_flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_xl()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("热门"),
-                    )
                     .child(self.platform_strip(cx))
                     .child(
                         control("refresh-popular", "刷新", false).on_click(cx.listener(
@@ -579,7 +596,7 @@ impl Home {
                         )),
                     ),
             )
-            .when(self.rooms().is_empty() && !self.status.is_empty(), |view| {
+            .when(self.room_count() == 0 && !self.status.is_empty(), |view| {
                 view.child(
                     div()
                         .pt_2()
@@ -588,9 +605,55 @@ impl Home {
                         .child(self.status.clone()),
                 )
             })
-            .when(!self.rooms().is_empty(), |view| {
+            .when(self.room_count() != 0, |view| {
                 view.child(self.room_grid(8.0, cx))
             })
+    }
+
+    fn follow_tabs(&self, cx: &mut Context<Self>) -> Div {
+        div().h_flex().justify_center().child(
+            div()
+                .h_flex()
+                .rounded_full()
+                .border_1()
+                .border_color(rgb(DIVIDER))
+                .bg(rgb(PANEL))
+                .p(px(2.0))
+                .children(
+                    FollowFilter::TABS
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, filter)| {
+                            let active = self.follow_filter == filter;
+                            div()
+                                .id(("follow-filter", index))
+                                .h_flex()
+                                .items_center()
+                                .justify_center()
+                                .w(px(90.0))
+                                .h(px(32.0))
+                                .rounded_full()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(if active { MINT } else { MUTED }))
+                                .when(active, |tab| {
+                                    tab.bg(rgb(if self.room_selection.is_none() {
+                                        0x244638
+                                    } else {
+                                        0x17332d
+                                    }))
+                                })
+                                .when(!active, |tab| {
+                                    tab.hover(|style| style.text_color(rgb(TEXT)))
+                                })
+                                .cursor_pointer()
+                                .child(filter.label())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.select_follow_filter(filter, cx)
+                                }))
+                        }),
+                ),
+        )
     }
 
     fn directory_view(&self, cx: &mut Context<Self>) -> Div {
@@ -608,15 +671,17 @@ impl Home {
             .child(
                 div()
                     .h_flex()
+                    .relative()
                     .items_center()
                     .gap_2()
-                    .child(
+                    .child(div().flex_1().child(if self.pane == Pane::Follows {
+                        self.follow_tabs(cx)
+                    } else {
                         div()
-                            .flex_1()
                             .text_xl()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(heading),
-                    )
+                            .child(heading)
+                    }))
                     .when(self.pane != Pane::Follows, |row| {
                         row.child(
                             control("site-select", format!("{site}  ▾"), false).on_click(
@@ -626,6 +691,21 @@ impl Home {
                             ),
                         )
                     })
+                    .when(
+                        self.pane == Pane::Follows && !self.follows.is_empty(),
+                        |row| {
+                            let label = if self.room_status_task.is_some() {
+                                "刷新中…"
+                            } else {
+                                "刷新"
+                            };
+                            row.child(div().absolute().right_0().top_0().child(
+                                control("refresh-follows", label, false).on_click(cx.listener(
+                                    |this, _, window, cx| this.refresh_follow_statuses(window, cx),
+                                )),
+                            ))
+                        },
+                    )
                     .when(self.pane == Pane::Popular, |row| {
                         row.child(control("refresh", "刷新", false).on_click(cx.listener(
                             |this, _, window, cx| this.request_rooms(String::new(), window, cx),
@@ -649,7 +729,7 @@ impl Home {
                         ),
                 )
             })
-            .when(self.rooms().is_empty(), |view| {
+            .when(self.room_count() == 0, |view| {
                 view.child(
                     div()
                         .v_flex()
@@ -660,23 +740,31 @@ impl Home {
                         .pb_6()
                         .child(div().text_xl().text_color(rgb(MUTED)).child(
                             if self.pane == Pane::Follows {
-                                "还没有关注的直播间".to_owned()
+                                match self.follow_filter {
+                                    FollowFilter::Live => "没有已开播的关注房间",
+                                    FollowFilter::All => "还没有关注的直播间",
+                                    FollowFilter::Offline => "没有未开播的关注房间",
+                                }
+                                .to_owned()
                             } else if self.status.is_empty() {
                                 "搜索直播间".to_owned()
                             } else {
                                 self.status.clone()
                             },
                         ))
-                        .when(self.pane == Pane::Follows, |empty| {
-                            empty.child(control("browse-popular", "浏览热门", true).on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.select_pane(Pane::Popular, window, cx)
-                                }),
-                            ))
-                        }),
+                        .when(
+                            self.pane == Pane::Follows && self.follows.is_empty(),
+                            |empty| {
+                                empty.child(control("browse-popular", "浏览热门", true).on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.select_pane(Pane::Popular, window, cx)
+                                    }),
+                                ))
+                            },
+                        ),
                 )
             })
-            .when(!self.rooms().is_empty(), |view| {
+            .when(self.room_count() != 0, |view| {
                 view.child(self.room_grid(12.0, cx))
             })
     }

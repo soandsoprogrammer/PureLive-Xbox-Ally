@@ -20,6 +20,13 @@ Future<void> main() async {
     final proxy = _proxy();
     final base = client = IoLiveHttp(proxy: proxy);
     final cookies = MemoryCookieVault();
+    final action = request['action'] as String;
+    if (action == 'status') {
+      final rooms = request['rooms'] as List<dynamic>;
+      final accountCookies = request['account_cookies'] as Map<String, dynamic>;
+      await _reply({'room_statuses': await _roomStatuses(rooms, accountCookies, base, proxy, cookies)});
+      return;
+    }
     final platform = request['platform'] as String;
     final cookie = request['account_cookie'];
     final signedPlatform = _accountDomains.containsKey(platform) && cookie is String && cookie.isNotEmpty
@@ -29,16 +36,8 @@ Future<void> main() async {
     final http = _accountHttp(base, signedPlatform);
     final registry = SiteRegistry({
       for (final MapEntry(key: id, value: factory) in siteFactories(cookies: cookies).entries)
-        if (id == SiteIds.twitch)
-          id: () => TwitchSite(
-            http,
-            cookies: cookies,
-            gqlFallbacks: [_accountHttp(Http2LiveHttp(proxy: proxy), signedPlatform)],
-          )
-        else
-          id: () => factory(http, proxy),
+        id: () => _makeSite(id, factory, http, proxy, cookies, signedPlatform),
     });
-    final action = request['action'] as String;
     final query = request['query'] as String;
     if (action == 'catalog') {
       await _reply({
@@ -113,6 +112,58 @@ Future<void> main() async {
     client?.close();
     exit(0);
   }
+}
+
+LiveSite _makeSite(
+  String id, SiteFactory factory, LiveHttp http, ProxyPolicy proxy, CookieVault cookies, String? signedPlatform,
+) => id == SiteIds.twitch
+    ? TwitchSite(http, cookies: cookies, gqlFallbacks: [_accountHttp(Http2LiveHttp(proxy: proxy), signedPlatform)])
+    : factory(http, proxy);
+
+String _broadcastStatus(LiveRoom room) => switch (room.effectiveLiveStatus) {
+  LiveStatus.live => 'live',
+  LiveStatus.replay => 'replay',
+  LiveStatus.unknown => 'unknown',
+  _ => 'offline',
+};
+
+Future<List<Map<String, Object?>>> _roomStatuses(
+  List<dynamic> requests, Map<String, dynamic> accountCookies, LiveHttp base, ProxyPolicy proxy, MemoryCookieVault cookies,
+) async {
+  final rooms = requests.cast<Map<String, dynamic>>();
+  final factories = siteFactories(cookies: cookies);
+  final sites = <String, LiveSite?>{};
+  final statuses = List.filled(rooms.length, 'unknown');
+  var next = 0;
+  Future<void> worker() async {
+    while (next < rooms.length) {
+      final index = next++;
+      final room = rooms[index];
+      final platform = room['platform'] as String;
+      final id = room['id'] as String;
+      try {
+        final site = sites.putIfAbsent(platform, () {
+          final factory = factories[platform];
+          if (factory == null) return null;
+          final cookie = accountCookies[platform];
+          final signed = _accountDomains.containsKey(platform) && cookie is String && cookie.isNotEmpty
+              ? platform
+              : null;
+          if (signed != null) cookies.set(signed, cookie as String);
+          return _makeSite(platform, factory, _accountHttp(base, signed), proxy, cookies, signed);
+        });
+        if (site == null) continue;
+        final detail = await (site is LiveSiteRoomRefresher
+            ? (site as LiveSiteRoomRefresher).getRoomDetailForRefresh(roomId: id)
+            : site.getRoomDetail(roomId: id)).timeout(const Duration(seconds: 5));
+        statuses[index] = _broadcastStatus(detail);
+      } on Object {
+        // A failed lookup says nothing about whether the streamer is online.
+      }
+    }
+  }
+  await Future.wait([for (var i = 0; i < 4 && i < rooms.length; i++) worker()]);
+  return [for (var i = 0; i < rooms.length; i++) {...rooms[i], 'status': statuses[i]}];
 }
 
 Future<void> _reply(Map<String, Object?> result) async {
@@ -210,6 +261,7 @@ Map<String, Object?> _room(LiveSite site, LiveRoom room, {String? fallbackId}) =
   'nick': room.nick,
   'watching': room.watching,
   'live': room.isLiveNow,
+  'broadcast': _broadcastStatus(room),
   'id': room.roomId.isEmpty ? fallbackId : room.roomId,
   'title': room.title.isNotEmpty
       ? room.title

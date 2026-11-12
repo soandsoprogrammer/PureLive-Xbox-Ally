@@ -20,6 +20,7 @@ type WaitEvent = unsafe extern "C" fn(*mut c_void, f64) -> *const Event;
 
 const EVENT_NONE: c_int = 0;
 const EVENT_END_FILE: c_int = 7;
+const END_FILE_EOF: c_int = 0;
 const END_FILE_ERROR: c_int = 4;
 const FORMAT_STRING: c_int = 1;
 const FORMAT_INT64: c_int = 4;
@@ -59,6 +60,11 @@ struct EndFile {
     reason: c_int,
     error: c_int,
     playlist_entry_id: i64,
+}
+
+pub enum PlaybackEnd {
+    Error(c_int),
+    Eof,
 }
 
 struct SourceOptions {
@@ -418,7 +424,7 @@ impl Player {
         format!("硬解 {hardware}    掉帧 {dropped}    进度 {time} s")
     }
 
-    pub fn playback_error(&mut self) -> Option<c_int> {
+    pub fn playback_end(&mut self, track_eof: bool) -> Option<PlaybackEnd> {
         // mpv retains event memory until the next wait. Read the reason immediately.
         unsafe {
             loop {
@@ -429,12 +435,15 @@ impl Player {
                 if event.id == EVENT_END_FILE {
                     if let Some(end) = event.data.cast::<EndFile>().as_ref() {
                         // A replacement can leave end events for the previous source queued.
-                        if end.reason == END_FILE_ERROR
-                            && self
-                                .first_entry_id
-                                .is_none_or(|id| end.playlist_entry_id >= id)
+                        if self
+                            .first_entry_id
+                            .is_none_or(|id| end.playlist_entry_id >= id)
                         {
-                            return Some(end.error);
+                            match end.reason {
+                                END_FILE_ERROR => return Some(PlaybackEnd::Error(end.error)),
+                                END_FILE_EOF if track_eof => return Some(PlaybackEnd::Eof),
+                                _ => {}
+                            }
                         }
                     }
                 }

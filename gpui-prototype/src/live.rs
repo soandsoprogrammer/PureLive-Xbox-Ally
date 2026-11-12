@@ -5,6 +5,57 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BroadcastStatus {
+    #[default]
+    Unknown,
+    Live,
+    Offline,
+    Replay,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FollowFilter {
+    Live,
+    #[default]
+    All,
+    Offline,
+}
+
+impl FollowFilter {
+    pub const TABS: [Self; 3] = [Self::Live, Self::All, Self::Offline];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Live => "已开播",
+            Self::All => "全部",
+            Self::Offline => "未开播",
+        }
+    }
+
+    pub fn includes(self, status: BroadcastStatus) -> bool {
+        match self {
+            Self::Live => status == BroadcastStatus::Live,
+            Self::All => true,
+            Self::Offline => matches!(status, BroadcastStatus::Offline | BroadcastStatus::Replay),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RoomKey {
+    pub platform: String,
+    pub id: String,
+}
+
+#[derive(Deserialize)]
+pub struct RoomStatus {
+    #[serde(flatten)]
+    pub key: RoomKey,
+    pub status: BroadcastStatus,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Room {
     #[serde(deserialize_with = "room_key")]
@@ -16,8 +67,10 @@ pub struct Room {
     pub nick: String,
     #[serde(default)]
     pub watching: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub live: bool,
+    #[serde(default, skip_serializing)]
+    pub broadcast: Option<BroadcastStatus>,
     #[serde(default = "bilibili")]
     pub platform: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -50,6 +103,7 @@ impl Room {
             nick: String::new(),
             watching: String::new(),
             live: false,
+            broadcast: None,
             platform: bilibili(),
             headers: BTreeMap::new(),
         }
@@ -57,6 +111,21 @@ impl Room {
 
     pub fn same_channel(&self, other: &Self) -> bool {
         self.platform == other.platform && self.id == other.id
+    }
+
+    pub fn key(&self) -> RoomKey {
+        RoomKey {
+            platform: self.platform.clone(),
+            id: self.id.clone(),
+        }
+    }
+
+    pub fn broadcast_status(&self) -> BroadcastStatus {
+        self.broadcast.unwrap_or(if self.live {
+            BroadcastStatus::Live
+        } else {
+            BroadcastStatus::Unknown
+        })
     }
 }
 
@@ -321,10 +390,15 @@ fn stream_url(result: &Value) -> Option<String> {
 }
 
 pub fn load(path: &Path) -> Vec<Room> {
-    fs::read(path)
+    let mut rooms: Vec<Room> = fs::read(path)
         .ok()
         .and_then(|data| serde_json::from_slice(&data).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for room in &mut rooms {
+        room.live = false;
+        room.broadcast = None;
+    }
+    rooms
 }
 
 pub fn save(path: &Path, rooms: &[Room]) -> Result<(), String> {
@@ -343,6 +417,28 @@ pub fn save(path: &Path, rooms: &[Room]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follow_filters_keep_unknown_rooms_in_all_and_replays_out_of_live() {
+        let statuses = [
+            BroadcastStatus::Live,
+            BroadcastStatus::Offline,
+            BroadcastStatus::Replay,
+            BroadcastStatus::Unknown,
+        ];
+        assert_eq!(
+            statuses.map(|status| FollowFilter::Live.includes(status)),
+            [true, false, false, false]
+        );
+        assert_eq!(
+            statuses.map(|status| FollowFilter::All.includes(status)),
+            [true; 4]
+        );
+        assert_eq!(
+            statuses.map(|status| FollowFilter::Offline.includes(status)),
+            [false, true, true, false]
+        );
+    }
 
     #[test]
     fn existing_numeric_follows_keep_bilibili_identity() {
@@ -375,6 +471,31 @@ mod tests {
         assert_eq!(load(&path), vec![room]);
         save(&path, &[]).expect("replace follows");
         assert!(load(&path).is_empty());
+        fs::remove_file(path).expect("remove test file");
+        fs::remove_dir(folder).expect("remove test folder");
+    }
+
+    #[test]
+    fn saved_live_status_is_ignored_until_the_platform_confirms_it() {
+        let folder =
+            std::env::temp_dir().join(format!("purelive-status-test-{}", std::process::id()));
+        let path = folder.join("follows.json");
+        fs::create_dir_all(&folder).expect("create test folder");
+        fs::write(
+            &path,
+            r#"[{"id":"42","platform":"douyin","title":"旧关注","live":true}]"#,
+        )
+        .expect("write legacy follow");
+        let mut rooms = load(&path);
+        assert_eq!(rooms[0].id, "42");
+        assert_eq!(rooms[0].broadcast_status(), BroadcastStatus::Unknown);
+        rooms[0].live = true;
+        rooms[0].broadcast = Some(BroadcastStatus::Offline);
+        assert_eq!(rooms[0].broadcast_status(), BroadcastStatus::Offline);
+        save(&path, &rooms).expect("save follow");
+        let persisted = fs::read_to_string(&path).expect("read follow");
+        assert!(!persisted.contains("\"live\""));
+        assert!(!persisted.contains("\"broadcast\""));
         fs::remove_file(path).expect("remove test file");
         fs::remove_dir(folder).expect("remove test folder");
     }

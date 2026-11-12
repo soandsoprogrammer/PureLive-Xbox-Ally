@@ -24,10 +24,10 @@ use gpui_kit::base::StyledExt;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use live::Room;
+use live::{BroadcastStatus, FollowFilter, Room, RoomKey};
 use native::Surface;
 use playback::{AudioSettings, PlaybackUi};
-use player::Player;
+use player::{PlaybackEnd, Player};
 use style::Pane;
 use windows_sys::Win32::UI::Input::XboxController::{
     XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
@@ -159,6 +159,10 @@ struct Home {
     query: Entity<InputState>,
     follows_path: PathBuf,
     follows: Vec<Room>,
+    follow_filter: FollowFilter,
+    follow_rows: Vec<usize>,
+    room_status_task: Option<Task<()>>,
+    next_follow_check: Option<Instant>,
     results: Vec<Room>,
     show_follows: bool,
     room_selection: Option<usize>,
@@ -204,6 +208,7 @@ impl Home {
             .unwrap_or_else(|| options.directory.clone())
             .join("PureLiveRust/follows.json");
         let follows = live::load(&follows_path);
+        let follow_rows = (0..follows.len()).collect();
         let audio = AudioSettings::load(&follows_path.with_file_name("audio.json"));
         let danmaku_enabled =
             playback::load_danmaku_preference(&follows_path.with_file_name("danmaku.json"));
@@ -277,6 +282,10 @@ impl Home {
             query,
             follows_path,
             follows,
+            follow_filter: FollowFilter::All,
+            follow_rows,
+            room_status_task: None,
+            next_follow_check: None,
             results: Vec::new(),
             show_follows: true,
             room_selection: None,
@@ -548,6 +557,18 @@ impl Home {
             self.move_platform(if right { 1 } else { -1 }, 0, cx);
             return;
         }
+        if self.pane == Pane::Follows && self.content.is_none() && self.room_selection.is_none() {
+            let current = FollowFilter::TABS
+                .iter()
+                .position(|tab| *tab == self.follow_filter)
+                .expect("follow filter tab");
+            let step = if right { 1 } else { -1 };
+            let next = current
+                .saturating_add_signed(step)
+                .min(FollowFilter::TABS.len() - 1);
+            self.select_follow_filter(FollowFilter::TABS[next], cx);
+            return;
+        }
         if self.content.is_none() && self.pane != Pane::Settings {
             self.move_card(if right { 1 } else { -1 }, cx);
             return;
@@ -569,18 +590,89 @@ impl Home {
         cx.notify();
     }
 
-    fn rooms(&self) -> &[Room] {
+    fn room_count(&self) -> usize {
         if self.show_follows {
-            &self.follows
+            self.follow_rows.len()
         } else {
-            &self.results
+            self.results.len()
         }
     }
 
+    fn room_at(&self, index: usize) -> Option<&Room> {
+        if self.show_follows {
+            self.follow_rows
+                .get(index)
+                .and_then(|&row| self.follows.get(row))
+        } else {
+            self.results.get(index)
+        }
+    }
+
+    fn selected_follow(&self) -> Option<RoomKey> {
+        if !self.show_follows {
+            return None;
+        }
+        self.room_selection
+            .and_then(|index| self.room_at(index))
+            .map(Room::key)
+    }
+
+    fn rebuild_follow_rows(&mut self, selected: Option<RoomKey>) {
+        self.follow_rows.clear();
+        self.follow_rows
+            .extend(self.follows.iter().enumerate().filter_map(|(index, room)| {
+                self.follow_filter
+                    .includes(room.broadcast_status())
+                    .then_some(index)
+            }));
+        if self.show_follows {
+            self.room_selection = selected.and_then(|key| {
+                self.follow_rows.iter().position(|&index| {
+                    let room = &self.follows[index];
+                    room.platform == key.platform && room.id == key.id
+                })
+            });
+            if let Some(index) = self.room_selection {
+                self.rooms_scroll
+                    .scroll_to_item(index / 3, ScrollStrategy::Nearest);
+            }
+        }
+    }
+
+    fn select_follow_filter(&mut self, filter: FollowFilter, cx: &mut Context<Self>) {
+        if self.follow_filter == filter && self.room_selection.is_none() {
+            return;
+        }
+        self.follow_filter = filter;
+        self.rooms_scroll = UniformListScrollHandle::new();
+        self.rebuild_follow_rows(None);
+        cx.notify();
+    }
+
     fn move_room(&mut self, down: bool, cx: &mut Context<Self>) {
+        if self.pane == Pane::Follows && self.content.is_none() {
+            if down {
+                match self.room_selection {
+                    None => self.move_card(0, cx),
+                    Some(index) if index / 3 + 1 < self.room_count().div_ceil(3) => {
+                        let target = (index + 3).min(self.room_count() - 1);
+                        self.select_room_card(target, cx);
+                    }
+                    _ => {}
+                }
+            } else if let Some(index) = self.room_selection {
+                if index < 3 {
+                    self.room_selection = None;
+                    cx.notify();
+                } else {
+                    self.select_room_card(index - 3, cx);
+                }
+            }
+            return;
+        }
         if self.pane == Pane::Popular && self.content.is_none() {
             if self.platform_cursor.is_some() {
-                if down && !self.rooms().is_empty() {
+                if down && self.room_count() != 0 {
                     self.platform_cursor = None;
                     self.move_card(0, cx);
                 }
@@ -615,13 +707,17 @@ impl Home {
     }
 
     fn move_card(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let count = self.rooms().len();
+        let count = self.room_count();
         if self.content.is_some() || count == 0 {
             return;
         }
         let index = self.room_selection.map_or(0, |index| {
             (index as isize + delta).rem_euclid(count as isize) as usize
         });
+        self.select_room_card(index, cx);
+    }
+
+    fn select_room_card(&mut self, index: usize, cx: &mut Context<Self>) {
         self.room_selection = Some(index);
         self.rooms_scroll
             .scroll_to_item(index / 3, ScrollStrategy::Nearest);
@@ -646,12 +742,14 @@ impl Home {
         }
         if let Some(room) = self
             .room_selection
-            .and_then(|index| self.rooms().get(index))
+            .and_then(|index| self.room_at(index))
             .cloned()
         {
             self.play_room(room, window, cx);
         } else if self.pane == Pane::Settings || self.content.is_some() {
             self.choose(self.selected, window, cx);
+        } else if self.pane == Pane::Follows {
+            self.move_card(0, cx);
         }
     }
 
@@ -842,6 +940,7 @@ impl Home {
             .get(&room.platform)
             .map(|account| account.cookie.clone());
         let selected = selection.clone();
+        let room_key = room.key();
         let pending = cx.background_spawn(async move {
             live::resolve(&directory, &room, cookie.as_deref(), &selected)
         });
@@ -884,6 +983,9 @@ impl Home {
                         this.status = error;
                         this.show_controls(window, cx);
                         mark(&this.log, &this.status);
+                        if this.content.is_none() {
+                            this.check_room_statuses(vec![room_key], true, window, cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -891,6 +993,104 @@ impl Home {
         })
         .detach();
         cx.notify();
+    }
+
+    fn refresh_follow_statuses(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.room_status_task.is_some() {
+            return;
+        }
+        self.next_follow_check = Some(Instant::now() + Duration::from_secs(45));
+        self.check_room_statuses(
+            self.follows.iter().map(Room::key).collect(),
+            false,
+            window,
+            cx,
+        );
+        if self.room_status_task.is_some() {
+            cx.notify();
+        }
+    }
+
+    fn check_room_statuses(
+        &mut self,
+        mut rooms: Vec<RoomKey>,
+        verify_end: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        rooms.retain(|room| room.platform != "iptv");
+        if rooms.is_empty() {
+            return;
+        }
+        let directory = self.options.directory.clone();
+        let cookies = rooms
+            .iter()
+            .filter_map(|room| {
+                self.accounts
+                    .get(&room.platform)
+                    .map(|account| (room.platform.clone(), account.cookie.clone()))
+            })
+            .collect();
+        let ended_request = verify_end.then_some(self.request_id);
+        let pending = cx.background_spawn(async move {
+            let results = compat::room_statuses(&directory, &rooms, &cookies).unwrap_or_default();
+            let mut statuses: BTreeMap<_, _> = rooms
+                .into_iter()
+                .map(|key| (key, BroadcastStatus::Unknown))
+                .collect();
+            for result in results {
+                if let Some(status) = statuses.get_mut(&result.key) {
+                    *status = result.status;
+                }
+            }
+            statuses
+        });
+        self.room_status_task = Some(cx.spawn_in(window, async move |entity, cx| {
+            let statuses = pending.await;
+            let _ = entity.update_in(cx, |this, _, cx| {
+                this.room_status_task = None;
+                let selected_follow = this.selected_follow();
+                let mut follows_changed = false;
+                let mut changed = false;
+                for room in &mut this.follows {
+                    if let Some(&status) = statuses.get(&room.key()) {
+                        follows_changed |= room.broadcast_status() != status;
+                        room.broadcast = Some(status);
+                    }
+                }
+                if follows_changed {
+                    this.rebuild_follow_rows(selected_follow);
+                    changed = true;
+                }
+                for room in &mut this.results {
+                    if let Some(&status) = statuses.get(&room.key()) {
+                        changed |= room.broadcast_status() != status;
+                        room.broadcast = Some(status);
+                    }
+                }
+                if ended_request == Some(this.request_id)
+                    && this.content.is_none()
+                    && this.active_room.as_ref().is_some_and(|room| {
+                        statuses.get(&room.key()) == Some(&BroadcastStatus::Offline)
+                    })
+                {
+                    this.status = "直播已结束".into();
+                    mark(&this.log, &this.status);
+                    changed = true;
+                }
+                if this.log.is_some() {
+                    for (key, status) in &statuses {
+                        mark(
+                            &this.log,
+                            format!("room_status={}/{}:{status:?}", key.platform, key.id),
+                        );
+                    }
+                }
+                if changed || this.pane == Pane::Follows {
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn toggle_follow(&mut self, room: Room, cx: &mut Context<Self>) {
@@ -905,7 +1105,9 @@ impl Home {
             };
         match live::save(&self.follows_path, &updated) {
             Ok(()) => {
+                let selected_follow = self.selected_follow();
                 self.follows = updated;
+                self.rebuild_follow_rows(selected_follow);
                 if self.in_playback() {
                     self.status = if followed {
                         "已关注"
@@ -915,9 +1117,7 @@ impl Home {
                     .into();
                 }
                 if self.show_follows {
-                    self.room_selection = self
-                        .room_selection
-                        .filter(|index| *index < self.follows.len());
+                    self.next_follow_check = None;
                 }
             }
             Err(error) => self.status = error,
@@ -992,14 +1192,26 @@ impl Home {
                 self.play_stream(window, cx);
             }
         }
+        let track_live_end = self
+            .active_room
+            .as_ref()
+            .is_some_and(|room| room.platform != "iptv");
         if let Some(Content::Video { player, .. }) = &mut self.content
-            && let Some(code) = player.playback_error()
+            && let Some(end) = player.playback_end(track_live_end)
         {
             self.release_chat();
             self.content = None;
-            self.status = format!("播放失败（mpv {code}），请重新打开房间或更换播放源");
+            self.status = match end {
+                PlaybackEnd::Error(code) => {
+                    format!("播放失败（mpv {code}），请重新打开房间或更换播放源")
+                }
+                PlaybackEnd::Eof => "播放已结束，可刷新或更换线路".into(),
+            };
             mark(&self.log, &self.status);
             self.show_controls(window, cx);
+            if let Some(room) = &self.active_room {
+                self.check_room_statuses(vec![room.key()], true, window, cx);
+            }
         }
         if self.log.is_some() && !self.probe_reported {
             if let Some(Content::Video { player, .. }) = &self.content {
@@ -1022,6 +1234,12 @@ impl Home {
         }
         if self.in_playback() {
             self.hide_playback_controls(window, cx);
+        } else if self.pane == Pane::Follows
+            && self.content.is_none()
+            && window.is_window_active()
+            && self.next_follow_check.is_none_or(|at| at <= Instant::now())
+        {
+            self.refresh_follow_statuses(window, cx);
         }
     }
 
@@ -1118,7 +1336,7 @@ impl Home {
         if pressed & XINPUT_GAMEPAD_Y != 0 && self.platform_cursor.is_none() {
             if let Some(room) = self
                 .room_selection
-                .and_then(|index| self.rooms().get(index))
+                .and_then(|index| self.room_at(index))
                 .cloned()
             {
                 self.toggle_follow(room, cx);
@@ -1128,8 +1346,12 @@ impl Home {
             && self.content.is_none()
             && (self.platform_cursor.is_none() || self.pane == Pane::Popular)
         {
-            self.select_pane(Pane::Search, window, cx);
-            self.query.read(cx).focus_handle(cx).focus(window, cx);
+            if self.pane == Pane::Follows {
+                self.refresh_follow_statuses(window, cx);
+            } else {
+                self.select_pane(Pane::Search, window, cx);
+                self.query.read(cx).focus_handle(cx).focus(window, cx);
+            }
         }
         if pressed & XINPUT_GAMEPAD_START != 0
             && self.pane == Pane::Search
@@ -1188,10 +1410,16 @@ impl Render for Home {
                     "down" => this.move_room(true, cx),
                     "enter" => this.confirm(window, cx),
                     "escape" => this.go_back(window, cx),
+                    "r" if !event.is_held
+                        && this.pane == Pane::Follows
+                        && this.content.is_none() =>
+                    {
+                        this.refresh_follow_statuses(window, cx);
+                    }
                     "y" if !event.is_held && this.platform_cursor.is_none() => {
                         if let Some(room) = this
                             .room_selection
-                            .and_then(|index| this.rooms().get(index))
+                            .and_then(|index| this.room_at(index))
                             .cloned()
                         {
                             this.toggle_follow(room, cx);
