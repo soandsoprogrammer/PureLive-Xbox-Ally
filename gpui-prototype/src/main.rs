@@ -169,6 +169,8 @@ struct Home {
     status: String,
     reopen_video: bool,
     playback: PlaybackUi,
+    #[cfg(target_os = "macos")]
+    danmaku_frame_pending: bool,
     emotes: emotes::Cache,
     playback_epoch: u64,
     audio: AudioSettings,
@@ -297,6 +299,8 @@ impl Home {
             status: String::new(),
             reopen_video: false,
             playback: PlaybackUi::default(),
+            #[cfg(target_os = "macos")]
+            danmaku_frame_pending: false,
             emotes: emotes::Cache::default(),
             playback_epoch: 0,
             audio,

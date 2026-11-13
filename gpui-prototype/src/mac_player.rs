@@ -81,11 +81,12 @@ pub struct HardwarePlayer {
     volume: Cell<u8>,
     muted: Cell<bool>,
     drawn: Cell<(bool, bool)>,
+    bounds: Cell<NSRect>,
 }
 
 struct VisualLane {
     lane: Lane,
-    parts: Vec<(f32, Retained<CALayer>)>,
+    parts: Vec<(f32, Part, Retained<CALayer>)>,
 }
 
 impl HardwarePlayer {
@@ -135,11 +136,12 @@ impl HardwarePlayer {
             }
         };
         let layer = view.layer().ok_or("无法创建 macOS 视频图层")?;
+        let bounds = view.bounds();
         let video = unsafe { AVPlayerLayer::playerLayerWithPlayer(Some(&player)) };
-        video.setFrame(view.bounds());
+        video.setFrame(bounds);
         layer.addSublayer(&video);
         let overlay = CALayer::layer();
-        overlay.setFrame(view.bounds());
+        overlay.setFrame(bounds);
         overlay.setMasksToBounds(true);
         overlay.setZPosition(1.0);
         layer.addSublayer(&overlay);
@@ -155,6 +157,7 @@ impl HardwarePlayer {
             volume: Cell::new(audio.volume),
             muted: Cell::new(audio.muted),
             drawn: Cell::new((false, false)),
+            bounds: Cell::new(bounds),
         };
         this.set_volume(audio.volume);
         this.set_muted(audio.muted);
@@ -184,7 +187,9 @@ impl HardwarePlayer {
     }
 
     pub fn take_end(&self) -> Option<End> {
-        self.paint();
+        if self.bounds.get() != self.view.bounds() {
+            self.paint();
+        }
         if let Some(relay) = &self.relay {
             if relay.failed() && !relay.ready() {
                 return Some(End::Failed("无法读取 FLV 直播".into()));
@@ -215,42 +220,72 @@ impl HardwarePlayer {
     }
 
     pub fn set_danmaku(&self, lanes: Vec<Lane>) {
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
         let mut visuals = self.lanes.borrow_mut();
-        for lane in visuals.drain(..) {
-            for (_, layer) in lane.parts {
+        let mut previous = std::mem::take(&mut *visuals);
+        visuals.reserve(lanes.len());
+        for mut lane in lanes {
+            let mut parts = previous
+                .iter()
+                .position(|visual| visual.lane.y == lane.y && visual.lane.started == lane.started)
+                .map(|index| previous.swap_remove(index).parts)
+                .unwrap_or_default()
+                .into_iter()
+                .peekable();
+            let mut updated = Vec::with_capacity(lane.parts.len());
+            for (offset, part) in std::mem::take(&mut lane.parts) {
+                let layer = if let Some((_, _, layer)) =
+                    parts.next_if(|(x, old, _)| *x == offset && same_part(old, &part))
+                {
+                    layer
+                } else {
+                    // The content at this offset changed, usually from fallback
+                    // text to a loaded emote. Keep other parts of the lane.
+                    if let Some((_, _, layer)) = parts.next_if(|(x, _, _)| *x == offset) {
+                        layer.removeFromSuperlayer();
+                    }
+                    let Some(layer) = self.danmaku_layer(&part) else {
+                        continue;
+                    };
+                    self.overlay.addSublayer(&layer);
+                    layer
+                };
+                updated.push((offset, part, layer));
+            }
+            for (_, _, layer) in parts {
+                layer.removeFromSuperlayer();
+            }
+            visuals.push(VisualLane {
+                lane,
+                parts: updated,
+            });
+        }
+        for visual in previous {
+            for (_, _, layer) in visual.parts {
                 layer.removeFromSuperlayer();
             }
         }
-        for lane in lanes {
-            let parts = lane
-                .parts
-                .iter()
-                .filter_map(|(x, part)| {
-                    let layer = match part {
-                        Part::Text(text) => {
-                            let layer = CATextLayer::layer();
-                            let text = NSString::from_str(&String::from_utf16_lossy(text));
-                            unsafe { layer.setString(Some(&text)) };
-                            layer.setFontSize(24.0);
-                            layer.setContentsScale(
-                                self.view
-                                    .window()
-                                    .map_or(1.0, |window| window.backingScaleFactor()),
-                            );
-                            layer.setShadowOpacity(0.9);
-                            layer.setShadowRadius(2.0);
-                            Retained::into_super(layer)
-                        }
-                        Part::Image(bitmap) => self.image(bitmap)?,
-                    };
-                    self.overlay.addSublayer(&layer);
-                    Some((*x, layer))
-                })
-                .collect();
-            visuals.push(VisualLane { lane, parts });
-        }
         drop(visuals);
-        self.paint();
+        self.position_layers();
+        CATransaction::commit();
+    }
+
+    fn danmaku_layer(&self, part: &Part) -> Option<Retained<CALayer>> {
+        match part {
+            Part::Text(text) => {
+                let layer = CATextLayer::layer();
+                let text = NSString::from_str(&String::from_utf16_lossy(text));
+                unsafe { layer.setString(Some(&text)) };
+                layer.setFontSize(24.0);
+                // Keep contrast on bright video without an offset halo below the glyphs.
+                layer.setShadowOffset(NSSize::new(0.0, 0.0));
+                layer.setShadowOpacity(0.7);
+                layer.setShadowRadius(0.85);
+                Some(Retained::into_super(layer))
+            }
+            Part::Image(bitmap) => self.image(bitmap),
+        }
     }
 
     fn image(&self, bitmap: &Arc<Bitmap>) -> Option<Retained<CALayer>> {
@@ -279,23 +314,42 @@ impl HardwarePlayer {
         Some(layer)
     }
 
-    pub fn paint(&self) {
+    pub fn paint(&self) -> bool {
         CATransaction::begin();
         CATransaction::setDisableActions(true);
+        let animating = self.position_layers();
+        CATransaction::commit();
+        animating
+    }
+
+    fn position_layers(&self) -> bool {
         let bounds = self.view.bounds();
-        self.video.setFrame(bounds);
-        self.overlay.setFrame(bounds);
+        if self.bounds.replace(bounds) != bounds {
+            self.video.setFrame(bounds);
+            self.overlay.setFrame(bounds);
+        }
         let scale = (bounds.size.width / 1280.0).max(0.1);
+        let backing_scale = self
+            .view
+            .window()
+            .map_or(1.0, |window| window.backingScaleFactor());
+        // Fractional device pixels resample the glyph texture as it moves.
+        let snap = |points: f64| (points * backing_scale).round() / backing_scale;
         let now = Instant::now();
         let (mut text_drawn, mut image_drawn) = self.drawn.get();
+        let mut animating = false;
         for visual in &*self.lanes.borrow() {
             let elapsed = now.saturating_duration_since(visual.lane.started);
             let progress = (elapsed.as_secs_f64() / visual.lane.duration.as_secs_f64()).min(1.0);
             let x = 1280.0 - progress * (1280.0 + f64::from(visual.lane.width));
-            for ((offset, layer), (_, part)) in visual.parts.iter().zip(&visual.lane.parts) {
+            animating |= progress < 1.0;
+            for (offset, part, layer) in &visual.parts {
                 let (width, height) = match part {
                     Part::Text(_) => {
                         text_drawn |= progress < 1.0;
+                        if layer.contentsScale() != backing_scale {
+                            layer.setContentsScale(backing_scale);
+                        }
                         (1024.0, 40.0)
                     }
                     Part::Image(bitmap) => {
@@ -310,15 +364,15 @@ impl HardwarePlayer {
                 layer.setHidden(progress >= 1.0);
                 layer.setFrame(NSRect::new(
                     NSPoint::new(
-                        (x + f64::from(*offset)) * scale,
-                        bounds.size.height - (f64::from(visual.lane.y) + height) * scale,
+                        snap((x + f64::from(*offset)) * scale),
+                        snap(bounds.size.height - (f64::from(visual.lane.y) + height) * scale),
                     ),
-                    NSSize::new(width * scale, height * scale),
+                    NSSize::new(snap(width * scale), snap(height * scale)),
                 ));
             }
         }
         self.drawn.set((text_drawn, image_drawn));
-        CATransaction::commit();
+        animating
     }
 
     pub fn danmaku_rendered(&self) -> (bool, bool) {
@@ -343,6 +397,14 @@ impl HardwarePlayer {
             "AVFoundation 进度 {} s",
             self.property(c"time-pos").unwrap_or_default()
         )
+    }
+}
+
+fn same_part(left: &Part, right: &Part) -> bool {
+    match (left, right) {
+        (Part::Text(left), Part::Text(right)) => left == right,
+        (Part::Image(left), Part::Image(right)) => Arc::ptr_eq(left, right),
+        _ => false,
     }
 }
 

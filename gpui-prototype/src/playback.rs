@@ -618,9 +618,9 @@ impl Home {
                         } else {
                             Some(events.recv().await.map_err(|_| TryRecvError::Closed))
                         };
-                        let Ok(Some(next)) = entity
-                            .update_in(cx, |this, _, cx| this.update_chat(first, &events, cx))
-                        else {
+                        let Ok(Some(next)) = entity.update_in(cx, |this, window, cx| {
+                            this.update_chat(first, &events, window, cx)
+                        }) else {
                             break;
                         };
                         animating = next;
@@ -657,6 +657,7 @@ impl Home {
         &mut self,
         mut first: Option<Result<ChatEvent, TryRecvError>>,
         events: &Receiver<ChatEvent>,
+        _window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<bool> {
         let now = Instant::now();
@@ -784,10 +785,29 @@ impl Home {
             self.draw_chat();
         }
         #[cfg(target_os = "macos")]
-        if animating && let Some(Content::Video { player, .. }) = &self.content {
-            player.paint();
+        if changed && animating {
+            self.schedule_danmaku_frame(_window, cx);
         }
         Some(animating)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn schedule_danmaku_frame(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.danmaku_frame_pending {
+            return;
+        }
+        self.danmaku_frame_pending = true;
+        let entity = cx.weak_entity();
+        window.on_next_frame(move |window, app| {
+            let _ = entity.update(app, |this, cx| {
+                this.danmaku_frame_pending = false;
+                if let Some(Content::Video { player, .. }) = &this.content
+                    && player.paint()
+                {
+                    this.schedule_danmaku_frame(window, cx);
+                }
+            });
+        });
     }
 
     fn draw_chat(&self) {

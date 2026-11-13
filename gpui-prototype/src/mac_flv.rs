@@ -1,7 +1,7 @@
 use crate::{Result, hardware_player::Input, live_flv::LiveFlv};
 use oxideav_core::{Error, MediaType, RuntimeContext, TimeBase};
 use oxideav_h264::avcc::AvcDecoderConfigurationRecord;
-use oxideav_h264::nal::AvccSplitter;
+use oxideav_h264::nal::{AvccSplitter, NalUnitType};
 use std::{
     collections::VecDeque,
     io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
@@ -226,16 +226,12 @@ fn remux(input: Input, state: &State) -> Result<()> {
             return Err("FLV segment exceeds size limit".into());
         }
         if is_video {
-            let mut annex_b = if packet.flags.keyframe {
-                header.clone()
+            let parameter_sets = if packet.flags.keyframe {
+                &header[..]
             } else {
-                Vec::new()
+                &[]
             };
-            for nal in AvccSplitter::new(&packet.data, config.length_size)? {
-                annex_b.extend_from_slice(&[0, 0, 0, 1]);
-                annex_b.extend_from_slice(nal?);
-            }
-            packet.data = annex_b;
+            packet.data = h264_access_unit(&packet.data, config.length_size, parameter_sets)?;
         } else if let Some(audio) = &audio
             && packet.stream_index == audio.index
         {
@@ -261,6 +257,32 @@ fn remux(input: Input, state: &State) -> Result<()> {
         finish(state, muxer, buffer, last - start.unwrap_or(last) + 0.04)?;
     }
     Ok(())
+}
+
+fn h264_access_unit(data: &[u8], length_size: u8, parameter_sets: &[u8]) -> Result<Vec<u8>> {
+    const START_CODE: &[u8] = &[0, 0, 0, 1];
+    const DEFAULT_DELIMITER: &[u8] = &[0x09, 0xf0];
+
+    let mut nals = AvccSplitter::new(data, length_size)?.peekable();
+    // AVFoundation expects the access-unit delimiter before SPS/PPS and slices.
+    let delimiter = nals
+        .next_if(|nal| {
+            matches!(nal, Ok(nal) if nal.first().is_some_and(|byte| {
+                NalUnitType::from_u8(*byte) == NalUnitType::AccessUnitDelimiter
+            }))
+        })
+        .transpose()?
+        .unwrap_or(DEFAULT_DELIMITER);
+    let mut annex_b =
+        Vec::with_capacity(data.len() + parameter_sets.len() + START_CODE.len() + delimiter.len());
+    annex_b.extend_from_slice(START_CODE);
+    annex_b.extend_from_slice(delimiter);
+    annex_b.extend_from_slice(parameter_sets);
+    for nal in nals {
+        annex_b.extend_from_slice(START_CODE);
+        annex_b.extend_from_slice(nal?);
+    }
+    Ok(annex_b)
 }
 
 fn finish(
@@ -303,4 +325,33 @@ fn adts(config: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     ]);
     frame.extend_from_slice(data);
     Ok(frame)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::h264_access_unit;
+
+    #[test]
+    fn inserts_h264_delimiter_before_parameter_sets_and_slice() {
+        let avcc = [0, 0, 0, 2, 0x65, 0x88];
+        let parameter_sets = [0, 0, 0, 1, 0x67, 0x64, 0, 0, 0, 1, 0x68, 0xee];
+        assert_eq!(
+            h264_access_unit(&avcc, 4, &parameter_sets).unwrap(),
+            [
+                &[0, 0, 0, 1, 0x09, 0xf0][..],
+                &parameter_sets,
+                &[0, 0, 0, 1, 0x65, 0x88]
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn preserves_an_existing_h264_delimiter_without_duplicating_it() {
+        let avcc = [0, 2, 0x09, 0x50, 0, 2, 0x41, 0x9a];
+        assert_eq!(
+            h264_access_unit(&avcc, 2, &[]).unwrap(),
+            [0, 0, 0, 1, 0x09, 0x50, 0, 0, 0, 1, 0x41, 0x9a]
+        );
+    }
 }
