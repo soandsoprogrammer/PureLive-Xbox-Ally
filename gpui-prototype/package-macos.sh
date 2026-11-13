@@ -14,6 +14,7 @@ install -m 755 gpui-prototype/target/release/purelive-gpui "$bin/purelive-gpui"
 dart compile exe tools/live_cli/bin/handheld_platforms.dart -o "$bin/purelive-platforms"
 cp LICENSE "$resources/"
 cp gpui-prototype/Cargo.lock pubspec.lock "$resources/"
+install -m 644 gpui-prototype/assets/app.icns "$resources/PureLive.icns"
 grep -v -E 'libmpv|Microsoft' THIRD_PARTY.md > "$resources/THIRD_PARTY.md"
 printf '\nmacOS playback uses AVFoundation and OxideAV.\n' >> "$resources/THIRD_PARTY.md"
 triple=$(rustc -vV | sed -n 's/^host: //p')
@@ -45,6 +46,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>纯粹直播</string>
   <key>CFBundleExecutable</key><string>purelive-gpui</string>
   <key>CFBundleIdentifier</key><string>io.github.soandsoprogrammer.purelive</string>
+  <key>CFBundleIconFile</key><string>PureLive.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
