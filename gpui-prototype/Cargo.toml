@@ -26,7 +26,7 @@ wry = { version = "0.57", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-app-kit = "0.3.2"
-objc2-av-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = ["objc2-core-media"] }
 objc2-core-media = "0.3.2"
 objc2-core-graphics = "0.3.2"
 objc2-core-foundation = "0.3.2"

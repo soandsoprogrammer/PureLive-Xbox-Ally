@@ -39,8 +39,6 @@ jobs:
           sdk: 3.13.7
       - name: Resolve platform adapter dependencies
         run: dart pub get --enforce-lockfile
-      - name: Test Rust code
-        run: cargo test --manifest-path gpui-prototype/Cargo.toml --release --locked
       - name: Build macOS app
         run: bash gpui-prototype/package-macos.sh '${{ matrix.arch }}'
       - uses: actions/upload-artifact@v4
@@ -49,3 +47,5 @@ jobs:
           path: dist/PureLive-macOS-${{ matrix.arch }}.zip
           compression-level: 0
           if-no-files-found: error
+      - name: Test Rust code
+        run: cargo test --manifest-path gpui-prototype/Cargo.toml --release --locked
