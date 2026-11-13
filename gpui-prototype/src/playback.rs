@@ -783,6 +783,10 @@ impl Home {
         if changed {
             self.draw_chat();
         }
+        #[cfg(target_os = "macos")]
+        if animating && let Some(Content::Video { player, .. }) = &self.content {
+            player.paint();
+        }
         Some(animating)
     }
 

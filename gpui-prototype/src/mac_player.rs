@@ -279,7 +279,7 @@ impl HardwarePlayer {
         Some(layer)
     }
 
-    fn paint(&self) {
+    pub fn paint(&self) {
         CATransaction::begin();
         CATransaction::setDisableActions(true);
         let bounds = self.view.bounds();

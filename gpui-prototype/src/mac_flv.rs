@@ -1,5 +1,5 @@
 use crate::{Result, hardware_player::Input, live_flv::LiveFlv};
-use oxideav_core::{Error, MediaType, RuntimeContext};
+use oxideav_core::{Error, MediaType, RuntimeContext, TimeBase};
 use oxideav_h264::avcc::AvcDecoderConfigurationRecord;
 use oxideav_h264::nal::AvccSplitter;
 use std::{
@@ -180,8 +180,13 @@ fn remux(input: Input, state: &State) -> Result<()> {
             track.params.media_type == MediaType::Audio && track.params.codec_id.as_str() == "aac"
         })
         .cloned();
+    let transport_clock = TimeBase::new(1, 90_000);
     let tracks: Vec<_> = std::iter::once(video.clone())
         .chain(audio.clone())
+        .map(|mut track| {
+            track.time_base = transport_clock;
+            track
+        })
         .collect();
     let config = AvcDecoderConfigurationRecord::parse(&video.params.extradata)?;
     let mut header = Vec::new();
@@ -190,7 +195,7 @@ fn remux(input: Input, state: &State) -> Result<()> {
         header.extend_from_slice(nal);
     }
     let mut start = None;
-    let mut last = 0.0;
+    let mut last = 0.0_f64;
     let mut segment = None;
     while !state.stop.load(Relaxed) {
         let mut packet = match demux.next_packet() {
@@ -238,6 +243,17 @@ fn remux(input: Input, state: &State) -> Result<()> {
         } else {
             continue;
         }
+        let source_clock = packet.time_base;
+        packet.pts = packet
+            .pts
+            .map(|value| source_clock.rescale(value, transport_clock));
+        packet.dts = packet
+            .dts
+            .map(|value| source_clock.rescale(value, transport_clock));
+        packet.duration = packet
+            .duration
+            .map(|value| source_clock.rescale(value, transport_clock));
+        packet.time_base = transport_clock;
         muxer.write_packet(&packet)?;
         last = last.max(time);
     }
