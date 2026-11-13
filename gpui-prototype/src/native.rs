@@ -16,6 +16,10 @@ use wry::raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
 };
 
+pub fn profile_directory() -> Option<std::path::PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(Into::into)
+}
+
 pub fn window_handle(window: &Window) -> Result<HWND, String> {
     match HasWindowHandle::window_handle(window)
         .map_err(|err| err.to_string())?

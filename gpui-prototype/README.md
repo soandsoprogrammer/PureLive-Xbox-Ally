@@ -16,10 +16,10 @@ LB / RB 切换工具，方向键选房间或平台，Enter 或 A 打开，Y 切�
 
 在「设置 → 账号」选择平台，再点「登录账号」。在平台官方网页完成登录后，点击「完成登录」。当前支持哔哩哔哩、斗鱼、虎牙、抖音、快手、YY、Twitch 和 SOOP。应用用 Windows 用户级加密分别保存各站登录状态，并将其用于对应平台的直播请求。可在设置中单独清除某站的本地登录状态。
 
-可通过 PowerShell 直接打开直播流 URL 或本地视频文件。
+可通过 PowerShell 直接打开直播流 URL。
 
 ```powershell
-.\purelive-gpui.exe --stream 'C:\Videos\sample.mp4'
+.\purelive-gpui.exe --stream '<直播流 URL>'
 ```
 
 账号登录按需创建 WebView2，需要系统安装 Microsoft Edge WebView2 Runtime。返回后释放登录页面或播放器。最小化时释放播放器，恢复时重新打开播放源。

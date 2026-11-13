@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Read, Write},
-    os::windows::process::CommandExt,
     path::Path,
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
@@ -141,9 +140,16 @@ struct Reply {
 }
 
 fn launch(directory: &Path, message: serde_json::Value) -> Result<(ChildStdout, Bridge), String> {
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let child = Command::new(directory.join("purelive-platforms.exe"))
-        .creation_flags(CREATE_NO_WINDOW)
+    let mut command = Command::new(directory.join(format!(
+        "purelive-platforms{}",
+        std::env::consts::EXE_SUFFIX
+    )));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

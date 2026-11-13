@@ -1,0 +1,51 @@
+name: macOS preview
+
+on:
+  push:
+    branches: [macos-preview]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpui-prototype -> target
+          key: macos-${{ matrix.arch }}
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.13.7
+      - name: Resolve platform adapter dependencies
+        run: dart pub get --enforce-lockfile
+      - name: Test Rust code
+        run: cargo test --manifest-path gpui-prototype/Cargo.toml --release --locked
+      - name: Build macOS app
+        run: bash gpui-prototype/package-macos.sh '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PureLive-macOS-${{ matrix.arch }}
+          path: dist/PureLive-macOS-${{ matrix.arch }}.zip
+          compression-level: 0
+          if-no-files-found: error

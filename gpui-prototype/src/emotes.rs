@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     io::Cursor,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -204,12 +204,12 @@ pub struct Bitmap {
 
 #[derive(Default)]
 pub struct Cache {
-    ready: VecDeque<(Source, Option<Bitmap>)>,
+    ready: VecDeque<(Source, Option<Arc<Bitmap>>)>,
     pending: HashSet<Source>,
 }
 
 impl Cache {
-    pub fn get(&self, source: &Source) -> Option<&Bitmap> {
+    pub fn get(&self, source: &Source) -> Option<&Arc<Bitmap>> {
         self.ready
             .iter()
             .find(|(key, _)| key == source)
@@ -227,7 +227,7 @@ impl Cache {
         if self.ready.len() == MAX_CACHE_ENTRIES {
             self.ready.pop_front();
         }
-        self.ready.push_back((source, bitmap));
+        self.ready.push_back((source, bitmap.map(Arc::new)));
     }
 }
 

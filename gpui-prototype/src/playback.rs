@@ -1,7 +1,4 @@
-use std::{
-    fmt::Write,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, TryRecvError};
 
@@ -15,8 +12,7 @@ pub(super) const VOLUME_HEIGHT: f32 = 112.0;
 pub(super) const SUPER_CHAT_HEIGHT: f32 = 206.0;
 pub(super) const CHOICES_PER_PAGE: usize = 3;
 const ROOM_ACTIONS: [usize; 8] = [0, 1, 6, 2, 3, 4, 7, 5];
-const ROOM_ACTIONS_WITHOUT_SC: [usize; 7] = [0, 1, 6, 2, 3, 4, 5];
-const DIRECT_ACTIONS: [usize; 3] = [0, 1, 6];
+const DIRECT_ACTIONS: [usize; 4] = [0, 1, 6, 2];
 const HIDE_DELAY: Duration = Duration::from_secs(5);
 const CHAT_TICK: Duration = Duration::from_millis(16);
 const CHAT_DURATION: Duration = Duration::from_secs(7);
@@ -118,9 +114,6 @@ pub(super) struct PlaybackUi {
     chat: Option<compat::Chat>,
     chat_updates: Option<Task<()>>,
     messages: [Option<FlyingMessage>; 5],
-    picture_mask: u16,
-    /// Whether the lane's ASS overlay is currently set in mpv.
-    chat_lanes: [bool; 5],
 }
 
 struct FlyingMessage {
@@ -136,14 +129,19 @@ impl PlaybackUi {
         }
     }
 
-    pub fn actions(&self) -> &[usize] {
+    pub fn actions(&self) -> Vec<usize> {
         if self.direct {
-            &DIRECT_ACTIONS
-        } else if self.options.super_chat {
-            &ROOM_ACTIONS
-        } else {
-            &ROOM_ACTIONS_WITHOUT_SC
+            return DIRECT_ACTIONS.to_vec();
         }
+        ROOM_ACTIONS
+            .into_iter()
+            .filter(|action| match action {
+                3 => !self.options.lines.is_empty(),
+                4 => !self.options.qualities.is_empty(),
+                7 => self.options.super_chat,
+                _ => true,
+            })
+            .collect()
     }
 
     pub fn visible(&self) -> bool {
@@ -342,14 +340,13 @@ impl Home {
             0 => {
                 if let Some(Content::Video { player, .. }) = &self.content {
                     let paused = !self.playback.paused;
-                    match player.set_paused(paused) {
-                        Ok(()) => {
-                            self.playback.paused = paused;
-                            self.playback.update_chat_filter();
-                            mark(&self.log, format!("paused={paused}"));
-                        }
-                        Err(error) => self.status = error,
+                    player.set_paused(paused);
+                    self.playback.paused = paused;
+                    self.playback.update_chat_filter();
+                    if paused {
+                        self.clear_chat_overlay();
                     }
+                    mark(&self.log, format!("paused={paused}"));
                 }
             }
             1 if !self.playback.busy => self.refresh_playback(window, cx),
@@ -421,34 +418,22 @@ impl Home {
     pub(super) fn adjust_volume(&mut self, delta: i16, window: &Window, cx: &mut Context<Self>) {
         let volume = (i16::from(self.audio.volume) + delta).clamp(0, 100) as u8;
         if volume != self.audio.volume {
-            let result = match &self.content {
-                Some(Content::Video { player, .. }) => player.set_volume(volume),
-                _ => Ok(()),
-            };
-            match result {
-                Ok(()) => {
-                    self.audio.volume = volume;
-                    self.save_audio();
-                }
-                Err(error) => self.status = error,
+            if let Some(Content::Video { player, .. }) = &self.content {
+                player.set_volume(volume);
             }
+            self.audio.volume = volume;
+            self.save_audio();
         }
         self.show_controls(window, cx);
     }
 
     pub(super) fn toggle_mute(&mut self, window: &Window, cx: &mut Context<Self>) {
         let muted = !self.audio.muted;
-        let result = match &self.content {
-            Some(Content::Video { player, .. }) => player.set_muted(muted),
-            _ => Ok(()),
-        };
-        match result {
-            Ok(()) => {
-                self.audio.muted = muted;
-                self.save_audio();
-            }
-            Err(error) => self.status = error,
+        if let Some(Content::Video { player, .. }) = &self.content {
+            player.set_muted(muted);
         }
+        self.audio.muted = muted;
+        self.save_audio();
         self.show_controls(window, cx);
     }
 
@@ -553,12 +538,12 @@ impl Home {
     }
 
     fn toggle_chat(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if !self.playback.options.chat {
-            self.status = "当前直播间没有可用的弹幕接口".into();
-            return;
-        }
         self.danmaku_enabled = !self.danmaku_enabled;
-        self.playback.chat_enabled = self.danmaku_enabled;
+        self.playback.chat_enabled = self.danmaku_enabled && self.playback.options.chat;
+        mark(
+            &self.log,
+            format!("danmaku_enabled={}", self.danmaku_enabled),
+        );
         self.playback.update_chat_filter();
         if self.playback.chat_enabled {
             if self.playback.chat.is_some() {
@@ -571,7 +556,11 @@ impl Home {
             if !self.playback.super_chats.enabled {
                 self.release_chat();
             }
-            self.status = "弹幕已关闭".into();
+            self.status = if self.danmaku_enabled {
+                "已开启弹幕，当前直播间暂无弹幕接口".into()
+            } else {
+                "弹幕已关闭".into()
+            };
         }
         if save_preference(
             &self.follows_path.with_file_name("danmaku.json"),
@@ -596,15 +585,8 @@ impl Home {
 
     fn clear_chat_overlay(&mut self) {
         if let Some(Content::Video { player, .. }) = &self.content {
-            for lane in 0..self.playback.chat_lanes.len() {
-                if self.playback.chat_lanes[lane] {
-                    player.chat_overlay(lane as u32 + 1, "", (1280, 720));
-                    self.playback.chat_lanes[lane] = false;
-                }
-            }
-            clear_emotes(player, self.playback.picture_mask);
+            player.set_danmaku(Vec::new());
         }
-        self.playback.picture_mask = 0;
         self.playback.messages.fill_with(|| None);
     }
 
@@ -746,6 +728,7 @@ impl Home {
                                     width,
                                     time: now,
                                 });
+                                changed = true;
                             }
                         }
                     }
@@ -759,6 +742,15 @@ impl Home {
         }
         if !super_chats.is_empty() {
             self.merge_super_chats(super_chats);
+            if self.log.is_some() {
+                mark(
+                    &self.log,
+                    format!(
+                        "super_chat_count={}",
+                        self.playback.super_chats.entries.len()
+                    ),
+                );
+            }
             if self.playback.visible() {
                 cx.notify();
             }
@@ -779,137 +771,65 @@ impl Home {
                 let task = cx.background_spawn(async move { emotes::load(&requested) });
                 cx.spawn(async move |entity, cx| {
                     let bitmap = task.await;
-                    let _ = entity.update(cx, |this, _| this.emotes.finish(source, bitmap));
+                    let _ = entity.update(cx, |this, _| {
+                        this.emotes.finish(source, bitmap);
+                        this.draw_chat();
+                    });
                 })
                 .detach();
             }
         }
         let animating = self.playback.messages.iter().any(Option::is_some);
-        if changed || animating {
-            self.draw_chat(now, changed);
+        if changed {
+            self.draw_chat();
         }
         Some(animating)
     }
 
-    fn draw_chat(&mut self, now: Instant, _changed: bool) {
+    fn draw_chat(&self) {
         let Some(Content::Video { player, .. }) = &self.content else {
-            self.playback.picture_mask = 0;
             return;
         };
-        // The OSD is rasterised at this size and then scaled with the video, so
-        // matching the video's own size keeps the danmaku text sharp.
-        let (osd_width, osd_height) = player.osd_size().unwrap_or((1280.0, 720.0));
-        let scale = (osd_width / 1280.0).max(0.5);
-        let size = (
-            osd_width.round().max(1.0) as u32,
-            osd_height.round().max(1.0) as u32,
-        );
-        let total = CHAT_DURATION.as_secs_f32();
-        let mut pictures = 0;
-        for (lane, message) in self.playback.messages.iter().enumerate() {
-            let id = lane as u32 + 1;
-            let Some(message) = message else {
-                if self.playback.chat_lanes[lane] {
-                    player.chat_overlay(id, "", size);
-                    self.playback.chat_lanes[lane] = false;
-                }
-                continue;
-            };
-            let elapsed = now.duration_since(message.time).as_secs_f32().min(total);
-            let travel = 1280.0 + message.width as f32;
-            // Positions are recomputed every chat tick and sent as \pos: mpv only
-            // guarantees a frame at the moment an overlay is set, so the flight has to
-            // be drawn by us rather than left to libass timing.
-            let mut x = 1280.0 - elapsed / total * travel;
-            let y = (30 + 39 * lane as i32) as f32;
-            let mut overlay = String::new();
-            let mut picture = 0;
-            for part in &message.parts {
-                match part {
-                    emotes::Segment::Text(text) => {
-                        ass_line(&mut overlay, x, y, scale, text);
-                    }
-                    emotes::Segment::Picture { source, alt } => {
-                        let picture_id = (lane * 3 + picture) as u8;
-                        picture += 1;
-                        let mut drawn = false;
-                        if x < 1280.0 && x + emotes::EMOTE_WIDTH as f32 > 0.0 {
-                            let bitmap = self.emotes.get(source);
-                            if let Some(bitmap) = bitmap
-                                && let Some((w, h)) = player.osd_size()
-                            {
-                                let scaled_x = (x * w / 1280.0).round() as i32;
-                                let scaled_y = (y * h / 720.0).round() as i32;
-                                let side = (emotes::EMOTE_WIDTH as f32 * h / 720.0).round().max(1.0);
-                                let longest = bitmap.width.max(bitmap.height) as f32;
-                                let emote_size = (
-                                    (side * bitmap.width as f32 / longest).round().max(1.0) as u32,
-                                    (side * bitmap.height as f32 / longest).round().max(1.0) as u32,
-                                );
-                                if player.emote_overlay(
-                                    picture_id,
-                                    (scaled_x, scaled_y),
-                                    emote_size,
-                                    bitmap,
-                                ) {
-                                    pictures |= 1 << picture_id;
-                                    drawn = true;
-                                }
+        let lanes = self
+            .playback
+            .messages
+            .iter()
+            .enumerate()
+            .filter_map(|(lane, message)| {
+                let message = message.as_ref()?;
+                let mut offset = 0.0;
+                let parts = message
+                    .parts
+                    .iter()
+                    .map(|segment| {
+                        use crate::native_danmaku::Part;
+                        let part = match segment {
+                            emotes::Segment::Text(text) => {
+                                Part::Text(text.encode_utf16().collect())
                             }
-                        }
-                        if !drawn {
-                            ass_line(&mut overlay, x, y, scale, alt);
-                        }
-                    }
-                }
-                x += part.width() as f32;
-            }
-            if player.chat_overlay(id, &overlay, size) {
-                self.playback.chat_lanes[lane] = true;
-            }
-        }
-        clear_emotes(player, self.playback.picture_mask & !pictures);
-        self.playback.picture_mask = pictures;
+                            emotes::Segment::Picture { source, alt } => {
+                                self.emotes.get(source).map_or_else(
+                                    || Part::Text(alt.encode_utf16().collect()),
+                                    |bitmap| Part::Image(bitmap.clone()),
+                                )
+                            }
+                        };
+                        let positioned = (offset, part);
+                        offset += segment.width() as f32;
+                        positioned
+                    })
+                    .collect();
+                Some(crate::native_danmaku::Lane {
+                    started: message.time,
+                    duration: CHAT_DURATION,
+                    width: message.width as f32,
+                    y: 30.0 + 39.0 * lane as f32,
+                    parts,
+                })
+            })
+            .collect();
+        player.set_danmaku(lanes);
     }
-
-    fn playback_chat_probe_pending(&self) -> bool {
-        self.log.is_some() && !self.chat_probe_reported
-    }
-}
-
-fn clear_emotes(player: &Player, mask: u16) {
-    for id in 0..15 {
-        if mask & (1 << id) != 0 {
-            player.remove_emote(id);
-        }
-    }
-}
-
-fn ass_line(overlay: &mut String, x: f32, y: f32, scale: f32, text: &str) {
-    let font = (28.0 * scale).round();
-    let border = (2.0 * scale).round();
-    let _ = writeln!(
-        overlay,
-        r"{{\an7\pos({:.2},{:.2})\fs{}\bord{}\shad1}}{}",
-        x * scale,
-        y * scale,
-        font,
-        border,
-        safe_chat_text(text)
-    );
-}
-
-fn safe_chat_text(text: &str) -> String {
-    text.chars()
-        .filter(|ch| !ch.is_control())
-        .take(90)
-        .map(|ch| match ch {
-            '{' => '｛',
-            '}' => '｝',
-            '\\' => '＼',
-            other => other,
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -956,6 +876,7 @@ mod tests {
     #[test]
     fn super_chat_control_is_only_available_for_supported_rooms() {
         let mut ui = PlaybackUi::default();
+        assert_eq!(ui.actions(), [0, 1, 6, 2, 5]);
         assert!(!ui.actions().contains(&7));
         ui.options.super_chat = true;
         assert!(ui.actions().contains(&7));

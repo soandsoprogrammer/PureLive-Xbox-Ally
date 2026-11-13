@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::path::Path;
+#[cfg(windows)]
 use std::{
     fs,
-    path::Path,
     ptr::{null, null_mut},
     slice,
 };
+#[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::LocalFree,
     Security::Cryptography::{
@@ -170,6 +172,7 @@ pub struct Account {
     pub cookie: String,
 }
 
+#[cfg(windows)]
 fn dpapi(bytes: &[u8], encrypt: bool) -> std::io::Result<Vec<u8>> {
     let input = CRYPT_INTEGER_BLOB {
         cbData: bytes.len() as u32,
@@ -212,6 +215,7 @@ fn dpapi(bytes: &[u8], encrypt: bool) -> std::io::Result<Vec<u8>> {
     }
 }
 
+#[cfg(windows)]
 pub fn load(path: &Path) -> Option<Account> {
     let encrypted = fs::read(path).ok()?;
     if encrypted.len() > 16 * 1024 {
@@ -220,6 +224,7 @@ pub fn load(path: &Path) -> Option<Account> {
     serde_json::from_slice(&dpapi(&encrypted, false).ok()?).ok()
 }
 
+#[cfg(windows)]
 pub fn save(path: &Path, account: &Account) -> Result<(), String> {
     let result = (|| -> std::io::Result<()> {
         let bytes = serde_json::to_vec(account)?;
@@ -234,11 +239,46 @@ pub fn save(path: &Path, account: &Account) -> Result<(), String> {
     result.map_err(|_| "无法加密保存账号登录状态".into())
 }
 
+#[cfg(windows)]
 pub fn logout(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => Err("无法清除本地登录状态".into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "PureLiveRust";
+
+#[cfg(target_os = "macos")]
+pub fn load(path: &Path) -> Option<Account> {
+    let id = path.file_stem()?.to_str()?;
+    let data = security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, id).ok()?;
+    serde_json::from_slice(&data).ok()
+}
+
+#[cfg(target_os = "macos")]
+pub fn save(path: &Path, account: &Account) -> Result<(), String> {
+    let id = path
+        .file_stem()
+        .and_then(|id| id.to_str())
+        .ok_or("无效的平台账号")?;
+    let data = serde_json::to_vec(account).map_err(|_| "无法保存账号")?;
+    security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, id, &data)
+        .map_err(|_| "无法保存账号到 macOS 钥匙串".into())
+}
+
+#[cfg(target_os = "macos")]
+pub fn logout(path: &Path) -> Result<(), String> {
+    let id = path
+        .file_stem()
+        .and_then(|id| id.to_str())
+        .ok_or("无效的平台账号")?;
+    match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, id) {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == -25300 => Ok(()),
+        Err(_) => Err("无法清除钥匙串中的账号".into()),
     }
 }
 
@@ -269,7 +309,7 @@ pub fn cookie_header<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{PLATFORMS, cookie_header, dpapi};
+    use super::{PLATFORMS, cookie_header};
 
     #[test]
     fn only_read_only_bilibili_cookie_names_are_collected() {
@@ -286,7 +326,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn windows_dpapi_round_trip() {
+        use super::dpapi;
         let bytes = b"test credential only";
         let encrypted = dpapi(bytes, true).unwrap();
         assert_ne!(encrypted, bytes);

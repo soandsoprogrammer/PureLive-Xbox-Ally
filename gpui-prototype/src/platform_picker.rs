@@ -121,13 +121,11 @@ impl Home {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("选择平台"),
                     )
-                    .child(
-                        div().text_sm().text_color(rgb(MUTED)).child(format!(
+                    .child(div().text_sm().text_color(rgb(MUTED)).child(format!(
                             "当前 · {}",
                             self.search_platform
                                 .map_or("全部", |index| label(&self.platforms[index]))
-                        )),
-                    ),
+                        ))),
             )
             .child(
                 div()
