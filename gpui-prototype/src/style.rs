@@ -341,7 +341,7 @@ impl Home {
             &[
                 ("Ⓐ", "观看"),
                 ("Ⓨ", "关注"),
-                ("F2", "筛选平台"),
+                ("View / F2", "筛选平台"),
                 ("Ⓧ", "输入搜索"),
                 ("Ⓑ", "返回"),
             ]
@@ -372,7 +372,8 @@ impl Home {
                 ("Ⓨ", "关注"),
                 ("Ⓑ", "返回"),
                 ("Ⓧ", "搜索"),
-                ("LB / RB", "切换栏目"),
+                ("LB / RB", "切换平台"),
+                ("LT / RT", "切换栏目"),
             ]
         };
         div()
@@ -427,7 +428,9 @@ impl Home {
             .bg(rgb(if selected { SURFACE } else { PANEL }))
             .cursor_pointer()
             // Hover must not look like the selection ring: only a dim edge.
-            .hover(|style| style.border_color(rgb(0x3d5866)))
+            .when(!selected, |card| {
+                card.hover(|style| style.border_color(rgb(0x3d5866)))
+            })
             .on_click(
                 cx.listener(move |this, _, window, cx| this.play_room(play.clone(), window, cx)),
             )
@@ -949,7 +952,7 @@ impl Home {
             }
             .into(),
             "↻  刷新".into(),
-            if self.playback.chat_enabled {
+            if self.danmaku_enabled {
                 "弹幕 · 开"
             } else {
                 "弹幕 · 关"
@@ -1016,7 +1019,7 @@ impl Home {
                                             ("playback-control", index),
                                             labels[index].clone(),
                                             self.playback.focus == index,
-                                            (index == 2 && self.playback.chat_enabled)
+                                            (index == 2 && self.danmaku_enabled)
                                                 || (index == 5 && followed),
                                             (index == 5).then_some(followed),
                                         )

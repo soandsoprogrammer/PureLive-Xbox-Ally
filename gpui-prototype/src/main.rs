@@ -2,13 +2,25 @@
 
 mod account;
 mod compat;
+#[cfg(windows)]
+mod dxva;
+#[cfg(windows)]
+mod dxva_render;
 mod emotes;
+#[cfg(windows)]
+mod hardware_player;
+#[cfg(windows)]
+mod hls;
 mod live;
+mod live_flv;
+#[cfg(windows)]
 mod native;
+#[cfg(windows)]
+mod native_audio;
+mod native_danmaku;
 mod platform_icons;
 mod platform_picker;
 mod playback;
-mod player;
 mod style;
 mod voice;
 
@@ -25,19 +37,22 @@ use gpui_kit::base::StyledExt;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use hardware_player::{End as PlaybackEnd, HardwarePlayer as Player};
 use live::{BroadcastStatus, FollowFilter, Room, RoomKey};
 use native::Surface;
 use playback::{AudioSettings, PlaybackUi};
-use player::{PlaybackEnd, Player};
 use style::Pane;
+#[cfg(windows)]
 use windows_sys::Win32::UI::Input::XboxController::{
-    XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
-    XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_LEFT_SHOULDER,
-    XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_START, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
+    XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_BACK, XINPUT_GAMEPAD_DPAD_DOWN,
+    XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_UP,
+    XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_START,
+    XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
 };
 use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, dpi::PhysicalSize};
 
 const TOOLBAR: f32 = 88.0;
+type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -64,7 +79,6 @@ struct Options {
     probe: Option<String>,
     launch_platform: Option<String>,
     launch_room: Option<String>,
-    vsync: bool,
     started: Instant,
 }
 
@@ -78,7 +92,6 @@ impl Options {
             probe: None,
             launch_platform: None,
             launch_room: None,
-            vsync: false,
             started: Instant::now(),
         };
         let mut args = std::env::args().skip(1);
@@ -88,7 +101,6 @@ impl Options {
                 "--probe" => options.probe = args.next(),
                 "--platform" => options.launch_platform = args.next(),
                 "--room" => options.launch_room = args.next(),
-                "--vsync" => options.vsync = true,
                 _ => {}
             }
         }
@@ -311,7 +323,7 @@ impl Home {
             platforms: live::platforms(),
             platform: 0,
             search_platform: None,
-            platform_cursor: (pane == Pane::Popular).then_some(0),
+            platform_cursor: None,
             platform_scroll: ScrollHandle::new(),
             pane,
             rooms_scroll: UniformListScrollHandle::new(),
@@ -353,29 +365,22 @@ impl Home {
     fn open_video(
         &mut self,
         window: &mut Window,
-        source: Source,
+        mut source: Source,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let reused = match &mut self.content {
-            Some(Content::Video { player, .. }) => player.try_reload(&source),
-            _ => false,
-        };
-        if !reused {
-            let surface = Surface::video(window, self.playback.height())?;
-            let player = Player::start(
-                &self.options.directory,
-                surface.id(),
-                &source,
-                self.options.vsync,
-                self.playback.paused,
-                self.audio,
-            )?;
-            self.content = Some(Content::Video {
-                player,
-                surface,
-                _lease: source.lease,
-            });
-        }
+        let surface = Surface::video(window, self.playback.height())?;
+        let player = Player::start(
+            surface.id(),
+            hardware_player::Input::from_source(&source),
+            self.playback.paused,
+            self.audio,
+        )
+        .map_err(|error| format!("无法启动播放：{error}"))?;
+        self.content = Some(Content::Video {
+            player,
+            surface,
+            _lease: source.lease.take(),
+        });
         self.playback.selection = compat::Selection {
             quality: source.playback.quality.clone(),
             line: source.playback.line.clone(),
@@ -383,14 +388,7 @@ impl Home {
         self.playback.options = source.playback;
         self.playback.chat_enabled = self.danmaku_enabled && self.playback.options.chat;
         self.reopen_video = false;
-        mark(
-            &self.log,
-            if reused {
-                "player_reused"
-            } else {
-                "player_created"
-            },
-        );
+        mark(&self.log, "player_created");
         if self.playback.options.chat {
             self.playback.update_chat_filter();
             self.connect_chat(window, cx);
@@ -977,9 +975,7 @@ impl Home {
         self.reload_room(compat::Selection::default(), window, cx);
     }
 
-    /// Bumpers (or left/right) while watching a room opened from the follow list:
-    /// plays the next followed room that is live, wrapping around, and shows which
-    /// one it is ("3/6 神棍老师") over the video.
+    /// Cycle through live followed rooms and show their position while connecting.
     fn switch_follow(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.pane != Pane::Follows {
             return;
@@ -987,29 +983,22 @@ impl Home {
         let Some(current) = self.active_room.as_ref().map(Room::key) else {
             return;
         };
-        let mut candidates: Vec<usize> = self
+        let candidates: Vec<usize> = self
             .follows
             .iter()
             .enumerate()
             .filter(|(_, room)| room.broadcast_status() == BroadcastStatus::Live)
             .map(|(index, _)| index)
             .collect();
-        if candidates.len() < 2 {
-            candidates = (0..self.follows.len()).collect();
-        }
-        if candidates.len() < 2 {
-            return;
-        }
-        let Some(position) = candidates
+        let position = candidates
             .iter()
-            .position(|&index| self.follows[index].key() == current)
-        else {
-            return;
-        };
-        let next = if forward {
-            (position + 1) % candidates.len()
-        } else {
-            (position + candidates.len() - 1) % candidates.len()
+            .position(|&index| self.follows[index].key() == current);
+        let next = match (candidates.len(), position, forward) {
+            (0, _, _) | (1, Some(_), _) => return,
+            (_, Some(position), true) => (position + 1) % candidates.len(),
+            (_, Some(position), false) => (position + candidates.len() - 1) % candidates.len(),
+            (_, None, true) => 0,
+            (_, None, false) => candidates.len() - 1,
         };
         let room = self.follows[candidates[next]].clone();
         self.play_room(room, window, cx);
@@ -1028,16 +1017,11 @@ impl Home {
             .iter()
             .filter(|followed| followed.broadcast_status() == BroadcastStatus::Live)
             .collect();
-        let list: Vec<&Room> = if live.len() >= 2 {
-            live
-        } else {
-            self.follows.iter().collect()
-        };
-        match list
+        match live
             .iter()
             .position(|followed| followed.key() == room.key())
         {
-            Some(index) => format!("{}/{}  {}", index + 1, list.len(), name),
+            Some(index) => format!("{}/{}  {}", index + 1, live.len(), name),
             None => name.to_string(),
         }
     }
@@ -1069,11 +1053,7 @@ impl Home {
             "正在连接直播…"
         }
         .into();
-        if let Some(label) = self
-            .active_room
-            .as_ref()
-            .map(|room| self.room_label(room))
-        {
+        if let Some(label) = self.active_room.as_ref().map(|room| self.room_label(room)) {
             self.status = format!("{}  {label}", self.status);
         }
         let directory = self.options.directory.clone();
@@ -1334,25 +1314,41 @@ impl Home {
                 self.play_stream(window, cx);
             }
         }
-        let track_live_end = self
-            .active_room
-            .as_ref()
-            .is_some_and(|room| room.platform != "iptv");
-        if let Some(Content::Video { player, .. }) = &mut self.content
-            && let Some(end) = player.playback_end(track_live_end)
-        {
+        let end = match &self.content {
+            Some(Content::Video { player, .. }) => player.take_end(),
+            _ => None,
+        };
+        if let Some(end) = end {
             self.release_chat();
             self.content = None;
             self.status = match end {
-                PlaybackEnd::Error(code) => {
-                    format!("播放失败（mpv {code}），请重新打开房间或更换播放源")
-                }
                 PlaybackEnd::Eof => "播放已结束，可刷新或更换线路".into(),
+                PlaybackEnd::Failed(error) => {
+                    let summary = error
+                        .split(':')
+                        .next()
+                        .filter(|part| !part.contains('/'))
+                        .unwrap_or("播放错误");
+                    format!("播放失败（{summary}），可刷新或更换线路")
+                }
             };
             mark(&self.log, &self.status);
             self.show_controls(window, cx);
             if let Some(room) = &self.active_room {
                 self.check_room_statuses(vec![room.key()], true, window, cx);
+            }
+        }
+        if self.log.is_some()
+            && let Some(Content::Video { player, .. }) = &self.content
+        {
+            let (text, emote) = player.danmaku_rendered();
+            if text && !self.chat_probe_reported {
+                mark(&self.log, "danmaku_rendered");
+                self.chat_probe_reported = true;
+            }
+            if emote && !self.emote_probe_reported {
+                mark(&self.log, "emote_rendered");
+                self.emote_probe_reported = true;
             }
         }
         if self.log.is_some() && !self.probe_reported {
@@ -1362,14 +1358,7 @@ impl Home {
                     .and_then(|s| s.parse::<f64>().ok())
                     .is_some_and(|pos| pos >= 6.0)
                 {
-                    mark(
-                        &self.log,
-                        format!(
-                            "video_playing {} {}",
-                            player.stats(),
-                            player.display_stats()
-                        ),
-                    );
+                    mark(&self.log, format!("video_playing {}", player.stats()));
                     self.probe_reported = true;
                 }
             }
@@ -1413,20 +1402,20 @@ impl Home {
                         if let (Some(current), Some(last)) = (buttons, previous) {
                             let now = Instant::now();
                             let pressed = current & !last;
-                            let mut send = pressed;
+                            let mut repeated = 0;
                             if pressed & DIRECTION_BUTTONS != 0 {
                                 repeat_at = Some(now + Duration::from_millis(REPEAT_DELAY_MS));
                             } else if current & DIRECTION_BUTTONS != 0 {
                                 if repeat_at.is_some_and(|at| at <= now) {
-                                    send |= current & DIRECTION_BUTTONS;
+                                    repeated = current & DIRECTION_BUTTONS;
                                     repeat_at =
                                         Some(now + Duration::from_millis(REPEAT_INTERVAL_MS));
                                 }
                             } else {
                                 repeat_at = None;
                             }
-                            if send != 0 {
-                                let _ = input.try_send(send);
+                            if pressed != 0 || repeated != 0 {
+                                let _ = input.try_send((pressed, repeated));
                             }
                         }
                         previous = buttons;
@@ -1435,11 +1424,19 @@ impl Home {
                     }
                 }
             });
-            while let Ok(pressed) = presses.recv().await {
+            while let Ok((pressed, repeated)) = presses.recv().await {
                 if entity
                     .update_in(cx, |this, window, cx| {
                         if window.is_window_active() && !native::minimized(window) {
-                            this.on_gamepad(pressed, window, cx);
+                            let repeated = if this.in_playback()
+                                && this.playback.menu.is_none()
+                                && !this.playback.visible()
+                            {
+                                repeated & !(XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT)
+                            } else {
+                                repeated
+                            };
+                            this.on_gamepad(pressed | repeated, window, cx);
                         }
                     })
                     .is_err()
@@ -1551,8 +1548,11 @@ impl Home {
                 self.query.read(cx).focus_handle(cx).focus(window, cx);
             }
         }
-        // The pad's menu button opens the settings page from anywhere outside
-        // playback; the platform picker in search stays on F2.
+        // Menu opens settings. View opens the platform picker on Search.
+        if pressed & XINPUT_GAMEPAD_BACK != 0 && self.pane == Pane::Search && self.content.is_none()
+        {
+            self.choose(Action::SearchPlatform, window, cx);
+        }
         if pressed & XINPUT_GAMEPAD_START != 0 && self.content.is_none() {
             self.select_pane(Pane::Settings, window, cx);
         }
@@ -1576,9 +1576,7 @@ impl Render for Home {
                     match event.keystroke.key.as_str() {
                         "left" => this.move_playback(-1, window, cx),
                         "right" => this.move_playback(1, window, cx),
-                        "up" if this.playback.menu.is_none() => {
-                            this.adjust_volume(5, window, cx)
-                        }
+                        "up" if this.playback.menu.is_none() => this.adjust_volume(5, window, cx),
                         "down" if this.playback.menu.is_none() => {
                             this.adjust_volume(-5, window, cx)
                         }

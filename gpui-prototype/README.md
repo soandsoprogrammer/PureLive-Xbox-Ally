@@ -1,14 +1,14 @@
 # PureLive Rust 掌机版
 
-Windows x64 掌机版使用 GPUI Kit、XInput、libmpv 和 WebView2。平台目录包括旧版的 34 个直播站点和 IPTV。Rust 程序在需要时调用便携包中的 `purelive-platforms.exe`，复用旧版 Dart 游客适配器和需要持续保持连接的播放中继。首页和播放界面由 Rust 提供。
+Windows x64 掌机版使用 GPUI Kit、XInput、Media Foundation、D3D11、WASAPI 和 WebView2。平台目录包括旧版的 34 个直播站点和 IPTV。Rust 程序在需要时调用便携包中的 `purelive-platforms.exe`，复用旧版 Dart 游客适配器和需要持续保持连接的播放中继。首页和播放界面由 Rust 提供。
 
 ## 试用
 
-解压便携包后运行 `purelive-gpui.exe`。平台横排在「热门」右边，按左右键移动，平台栏会跟随焦点滚动。选站后按下浏览该站直播。「搜索」默认查找全部直播平台，可输入关键词或粘贴直播间链接。按手柄菜单键或 F2 筛选平台。查数字房间号或 `@频道名` 可先选平台，选 IPTV 后可输入 M3U / TXT 播放列表文件路径或网址。
+解压便携包后运行 `purelive-gpui.exe`。平台横排在「热门」右边，按左右键移动，平台栏会跟随焦点滚动。选站后按下浏览该站直播。「搜索」默认查找全部直播平台，可输入关键词或粘贴直播间链接。按手柄 View 键或 F2 筛选平台。查数字房间号或 `@频道名` 可先选平台，选 IPTV 后可输入 M3U / TXT 播放列表文件路径或网址。
 
 搜索框也能直接说话：光标在搜索框里时按 A 开始聆听，说完再按 A 结束，识别结果会填进搜索框并立即搜索。键盘上按 F9 等同于这个 A。识别在本机完成，模型优先读 EXE 旁的 `models/sensevoice/`（`model.int8.onnx` 和 `tokens.txt`），没有时复用 DeepSeek Harness 语音输入已经下载的那份。录到一半按 B 放弃这次录音。
 
-LB / RB 切换工具，方向键选房间或平台，Enter 或 A 打开，Y 切换选中房间的关注状态，Esc 或 B 返回。关注保存在 `%LOCALAPPDATA%\PureLiveRust\follows.json`。各站的游客搜索与播放能力依平台而异。兼容组件可读取 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量。
+LT / RT 切换栏目，LB / RB 切热门平台或关注筛选，方向键选房间，Enter 或 A 打开，Y 切换选中房间的关注状态，Esc 或 B 返回。关注保存在 `%LOCALAPPDATA%\PureLiveRust\follows.json`。各站的游客搜索与播放能力依平台而异。兼容组件可读取 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量。
 
 播放时轻点画面或按 A 唤出控制栏，方向键选按钮，A 确认，LB / RB 翻线路或画质选项。X 刷新直播，Y 切换关注，B 依次关闭选项、收起控制栏、返回列表。键盘也可用空格暂停或播放、R 刷新、D 开关弹幕。线路和画质选项由当前平台提供。支持弹幕的直播间默认开启弹幕，开关选择会保存在本机。
 
@@ -18,15 +18,13 @@ LB / RB 切换工具，方向键选房间或平台，Enter 或 A 打开，Y 切�
 
 在「设置 → 账号」选择平台，再点「登录账号」。在平台官方网页完成登录后，点击「完成登录」。当前支持哔哩哔哩、斗鱼、虎牙、抖音、快手、YY、Twitch 和 SOOP。应用用 Windows 用户级加密分别保存各站登录状态，并将其用于对应平台的直播请求。可在设置中单独清除某站的本地登录状态。
 
-可通过 PowerShell 直接打开直播流 URL 或本地视频文件。
+可通过 PowerShell 直接打开直播流 URL。
 
 ```powershell
-.\purelive-gpui.exe --stream 'C:\Videos\sample.mp4'
+.\purelive-gpui.exe --stream '<直播流 URL>'
 ```
 
 账号登录按需创建 WebView2，需要系统安装 Microsoft Edge WebView2 Runtime。返回后释放登录页面或播放器。最小化时释放播放器，恢复时重新打开播放源。
-
-测试版默认把 mpv 的 D3D11 呈现间隔设为 0。在同一块屏幕上加 `--vsync` 可以对比间隔为 1 时的掉帧与画面表现。
 
 ## 构建
 
@@ -41,7 +39,7 @@ dart pub get --enforce-lockfile
 dart compile exe tools/live_cli/bin/handheld_platforms.dart -o dist/purelive-platforms.exe
 ```
 
-按第三方组件说明下载并校验 Windows x64 libmpv 归档。将其中的 `libmpv-2.dll` 和 Windows x64 MSVC 可再发行运行库放入一个目录，再打包。[第三方组件](https://github.com/soandsoprogrammer/PureLive-Xbox-Ally/blob/rust-handheld/THIRD_PARTY.md)
+将 Windows x64 MSVC 可再发行运行库放入一个目录，然后打包。构建生成的语音识别 DLL 会从 Rust EXE 所在目录一并收录。
 
 ```powershell
 python gpui-prototype/package.py --native-dir 'C:\path\to\native'
