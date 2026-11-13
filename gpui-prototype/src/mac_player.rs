@@ -7,9 +7,9 @@ use crate::{
     playback::AudioSettings,
 };
 use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject};
-use objc2_app_kit::NSView;
+use objc2_app_kit::{NSFont, NSFontAttributeName, NSStringDrawing, NSView};
 use objc2_av_foundation::{AVPlayer, AVPlayerItem, AVPlayerLayer, AVURLAsset};
-use objc2_core_foundation::CFData;
+use objc2_core_foundation::{CFData, CFString};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
 };
@@ -19,8 +19,16 @@ use std::{
     cell::{Cell, RefCell},
     ffi::CStr,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
+
+const DANMAKU_SPEED: f64 = 120.0;
+const DANMAKU_FONT: &str = "PingFangSC-Medium";
+const DANMAKU_FONT_SIZE: f64 = 20.0;
+const DANMAKU_TEXT_HEIGHT: f64 = 29.0;
+const DANMAKU_ROW_HEIGHT: f64 = 30.0;
+const DANMAKU_TOP: f64 = 12.0;
+const DANMAKU_GAP: f64 = 40.0;
 
 pub struct Input {
     pub url: String,
@@ -82,6 +90,7 @@ pub struct HardwarePlayer {
     muted: Cell<bool>,
     drawn: Cell<(bool, bool)>,
     bounds: Cell<NSRect>,
+    danmaku_font: Retained<NSFont>,
 }
 
 struct VisualLane {
@@ -158,6 +167,11 @@ impl HardwarePlayer {
             muted: Cell::new(audio.muted),
             drawn: Cell::new((false, false)),
             bounds: Cell::new(bounds),
+            danmaku_font: NSFont::fontWithName_size(
+                &NSString::from_str(DANMAKU_FONT),
+                DANMAKU_FONT_SIZE,
+            )
+            .unwrap_or_else(|| NSFont::systemFontOfSize(DANMAKU_FONT_SIZE)),
         };
         this.set_volume(audio.volume);
         this.set_muted(audio.muted);
@@ -276,8 +290,16 @@ impl HardwarePlayer {
             Part::Text(text) => {
                 let layer = CATextLayer::layer();
                 let text = NSString::from_str(&String::from_utf16_lossy(text));
-                unsafe { layer.setString(Some(&text)) };
-                layer.setFontSize(24.0);
+                let font = CFString::from_str(&self.danmaku_font.fontName().to_string());
+                unsafe {
+                    layer.setFont(Some(&font));
+                    layer.setString(Some(&text));
+                }
+                layer.setFontSize(DANMAKU_FONT_SIZE);
+                layer.setBounds(NSRect::new(
+                    NSPoint::new(0.0, 0.0),
+                    NSSize::new(self.measure_danmaku_text(&text), DANMAKU_TEXT_HEIGHT),
+                ));
                 // Keep contrast on bright video without an offset halo below the glyphs.
                 layer.setShadowOffset(NSSize::new(0.0, 0.0));
                 layer.setShadowOpacity(0.7);
@@ -322,13 +344,48 @@ impl HardwarePlayer {
         animating
     }
 
+    pub fn danmaku_segment_width(&self, segment: &crate::emotes::Segment) -> f32 {
+        (match segment {
+            crate::emotes::Segment::Text(text) => {
+                self.measure_danmaku_text(&NSString::from_str(text))
+            }
+            crate::emotes::Segment::Picture { alt, .. } => self
+                .measure_danmaku_text(&NSString::from_str(alt))
+                .max(36.0),
+        }) as f32
+    }
+
+    fn measure_danmaku_text(&self, text: &NSString) -> f64 {
+        unsafe {
+            let attributes = NSDictionary::from_slices(
+                &[NSFontAttributeName],
+                &[&*self.danmaku_font as &AnyObject],
+            );
+            text.sizeWithAttributes(Some(&attributes)).width.ceil() + 2.0
+        }
+    }
+
+    pub fn danmaku_duration(&self, message_width: f32) -> Duration {
+        danmaku_duration(self.view.bounds().size.width, message_width)
+    }
+
+    pub fn danmaku_rows(&self) -> usize {
+        let height = self.view.bounds().size.height;
+        ((height - DANMAKU_TOP) / DANMAKU_ROW_HEIGHT).max(0.0) as usize
+    }
+
+    pub fn danmaku_spacing(&self, message_width: f32) -> Duration {
+        Duration::from_secs_f64((f64::from(message_width) + DANMAKU_GAP) / DANMAKU_SPEED)
+    }
+
     fn position_layers(&self) -> bool {
         let bounds = self.view.bounds();
         if self.bounds.replace(bounds) != bounds {
             self.video.setFrame(bounds);
             self.overlay.setFrame(bounds);
         }
-        let scale = (bounds.size.width / 1280.0).max(0.1);
+        let width = bounds.size.width;
+        let rows = self.danmaku_rows();
         let backing_scale = self
             .view
             .window()
@@ -340,34 +397,40 @@ impl HardwarePlayer {
         let mut animating = false;
         for visual in &*self.lanes.borrow() {
             let elapsed = now.saturating_duration_since(visual.lane.started);
-            let progress = (elapsed.as_secs_f64() / visual.lane.duration.as_secs_f64()).min(1.0);
-            let x = 1280.0 - progress * (1280.0 + f64::from(visual.lane.width));
-            animating |= progress < 1.0;
+            let visible = elapsed < danmaku_duration(width, visual.lane.width);
+            let x = width - elapsed.as_secs_f64() * DANMAKU_SPEED;
+            let row_visible = visible && (visual.lane.y as usize) < rows;
+            animating |= visible;
             for (offset, part, layer) in &visual.parts {
                 let (width, height) = match part {
                     Part::Text(_) => {
-                        text_drawn |= progress < 1.0;
+                        text_drawn |= row_visible;
                         if layer.contentsScale() != backing_scale {
                             layer.setContentsScale(backing_scale);
                         }
-                        (1024.0, 40.0)
+                        (layer.bounds().size.width, DANMAKU_TEXT_HEIGHT)
                     }
                     Part::Image(bitmap) => {
-                        image_drawn |= progress < 1.0;
-                        let ratio = 32.0 / f64::from(bitmap.width.max(bitmap.height));
+                        image_drawn |= row_visible;
+                        let ratio = 24.0 / f64::from(bitmap.width.max(bitmap.height));
                         (
                             f64::from(bitmap.width) * ratio,
                             f64::from(bitmap.height) * ratio,
                         )
                     }
                 };
-                layer.setHidden(progress >= 1.0);
+                layer.setHidden(!row_visible);
                 layer.setFrame(NSRect::new(
                     NSPoint::new(
-                        snap((x + f64::from(*offset)) * scale),
-                        snap(bounds.size.height - (f64::from(visual.lane.y) + height) * scale),
+                        snap(x + f64::from(*offset)),
+                        snap(
+                            bounds.size.height
+                                - DANMAKU_TOP
+                                - f64::from(visual.lane.y) * DANMAKU_ROW_HEIGHT
+                                - height,
+                        ),
                     ),
-                    NSSize::new(snap(width * scale), snap(height * scale)),
+                    NSSize::new(width, height),
                 ));
             }
         }
@@ -398,6 +461,11 @@ impl HardwarePlayer {
             self.property(c"time-pos").unwrap_or_default()
         )
     }
+}
+
+fn danmaku_duration(view_width: f64, message_width: f32) -> Duration {
+    let distance = view_width + f64::from(message_width);
+    Duration::from_secs_f64(distance / DANMAKU_SPEED)
 }
 
 fn same_part(left: &Part, right: &Part) -> bool {

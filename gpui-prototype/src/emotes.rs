@@ -6,12 +6,14 @@ use std::{
 };
 
 use serde::Deserialize;
+#[cfg(windows)]
 use unicode_width::UnicodeWidthStr;
 
 const MAX_IMAGES_PER_MESSAGE: usize = 3;
 const MAX_CACHE_ENTRIES: usize = 80;
 const MAX_PENDING: usize = 4;
 const IMAGE_SIDE: u32 = 48;
+#[cfg(windows)]
 pub const EMOTE_WIDTH: i32 = 32;
 
 type Index = BTreeMap<String, [usize; 2]>;
@@ -97,6 +99,7 @@ pub enum Segment {
     Picture { source: Source, alt: String },
 }
 
+#[cfg(windows)]
 impl Segment {
     pub fn width(&self) -> i32 {
         match self {

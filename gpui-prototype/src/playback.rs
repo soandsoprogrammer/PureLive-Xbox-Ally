@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, TryRecvError};
@@ -15,6 +17,7 @@ const ROOM_ACTIONS: [usize; 8] = [0, 1, 6, 2, 3, 4, 7, 5];
 const DIRECT_ACTIONS: [usize; 4] = [0, 1, 6, 2];
 const HIDE_DELAY: Duration = Duration::from_secs(5);
 const CHAT_TICK: Duration = Duration::from_millis(16);
+#[cfg(windows)]
 const CHAT_DURATION: Duration = Duration::from_secs(7);
 const SUPER_CHAT_INTERVAL: Duration = Duration::from_secs(30);
 const SUPER_CHAT_LIMIT: usize = 100;
@@ -113,13 +116,17 @@ pub(super) struct PlaybackUi {
     hide_at: Option<Instant>,
     chat: Option<compat::Chat>,
     chat_updates: Option<Task<()>>,
-    messages: [Option<FlyingMessage>; 5],
+    messages: Vec<FlyingMessage>,
+    #[cfg(target_os = "macos")]
+    waiting_messages: VecDeque<FlyingMessage>,
 }
 
 struct FlyingMessage {
     parts: Vec<emotes::Segment>,
-    width: i32,
+    widths: Vec<f32>,
+    width: f32,
     time: Instant,
+    row: usize,
 }
 
 impl PlaybackUi {
@@ -587,7 +594,9 @@ impl Home {
         if let Some(Content::Video { player, .. }) = &self.content {
             player.set_danmaku(Vec::new());
         }
-        self.playback.messages.fill_with(|| None);
+        self.playback.messages.clear();
+        #[cfg(target_os = "macos")]
+        self.playback.waiting_messages.clear();
     }
 
     pub(super) fn connect_chat(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -661,19 +670,21 @@ impl Home {
         cx: &mut Context<Self>,
     ) -> Option<bool> {
         let now = Instant::now();
-        let mut changed = false;
-        for message in &mut self.playback.messages {
-            if message
-                .as_ref()
-                .is_some_and(|message| now.duration_since(message.time) >= CHAT_DURATION)
-            {
-                *message = None;
-                changed = true;
-            }
-        }
+        let count = self.playback.messages.len();
+        self.playback.messages.retain(|message| {
+            #[cfg(windows)]
+            let duration = CHAT_DURATION;
+            #[cfg(target_os = "macos")]
+            let duration = match &self.content {
+                Some(Content::Video { player, .. }) => player.danmaku_duration(message.width),
+                _ => Duration::ZERO,
+            };
+            now.duration_since(message.time) < duration
+        });
+        let mut changed = self.playback.messages.len() != count;
         let mut closed = None;
         let mut super_chats = Vec::new();
-        let mut pictures = Vec::new();
+        let mut incoming = Vec::new();
         let platform = self
             .active_room
             .as_ref()
@@ -711,25 +722,29 @@ impl Home {
                     }
                     if self.playback.chat_enabled && !self.playback.paused {
                         if let Some(text) = event.text {
-                            if let Some(lane) = self
-                                .playback
-                                .messages
-                                .iter_mut()
-                                .find(|lane| lane.is_none())
-                            {
-                                let parts = emotes::segments(platform, &text, &event.emotes);
-                                for part in &parts {
-                                    if let emotes::Segment::Picture { source, .. } = part {
-                                        pictures.push(source.clone());
-                                    }
-                                }
-                                let width = parts.iter().map(emotes::Segment::width).sum();
-                                *lane = Some(FlyingMessage {
+                            let parts = emotes::segments(platform, &text, &event.emotes);
+                            if !parts.is_empty() {
+                                #[cfg(target_os = "macos")]
+                                let Some(Content::Video { player, .. }) = &self.content else {
+                                    continue;
+                                };
+                                let widths: Vec<f32> = parts
+                                    .iter()
+                                    .map(|part| {
+                                        #[cfg(windows)]
+                                        return part.width() as f32;
+                                        #[cfg(target_os = "macos")]
+                                        return player.danmaku_segment_width(part);
+                                    })
+                                    .collect();
+                                let width = widths.iter().sum();
+                                incoming.push(FlyingMessage {
                                     parts,
+                                    widths,
                                     width,
                                     time: now,
+                                    row: 0,
                                 });
-                                changed = true;
                             }
                         }
                     }
@@ -766,6 +781,33 @@ impl Home {
             cx.notify();
             return None;
         }
+        #[cfg(target_os = "macos")]
+        let incoming = self.admit_danmaku(incoming, now);
+        #[cfg(windows)]
+        let incoming = incoming
+            .into_iter()
+            .zip((0..5).filter(|row| {
+                !self
+                    .playback
+                    .messages
+                    .iter()
+                    .any(|message| message.row == *row)
+            }))
+            .map(|(mut message, row)| {
+                message.row = row;
+                message
+            })
+            .collect::<Vec<_>>();
+        changed |= !incoming.is_empty();
+        let pictures: Vec<_> = incoming
+            .iter()
+            .flat_map(|message| &message.parts)
+            .filter_map(|part| match part {
+                emotes::Segment::Picture { source, .. } => Some(source.clone()),
+                _ => None,
+            })
+            .collect();
+        self.playback.messages.extend(incoming);
         for source in pictures {
             if self.emotes.begin(&source) {
                 let requested = source.clone();
@@ -780,7 +822,7 @@ impl Home {
                 .detach();
             }
         }
-        let animating = self.playback.messages.iter().any(Option::is_some);
+        let animating = !self.playback.messages.is_empty();
         if changed {
             self.draw_chat();
         }
@@ -788,7 +830,62 @@ impl Home {
         if changed && animating {
             self.schedule_danmaku_frame(_window, cx);
         }
+        #[cfg(target_os = "macos")]
+        let animating = animating || !self.playback.waiting_messages.is_empty();
         Some(animating)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn admit_danmaku(&mut self, incoming: Vec<FlyingMessage>, now: Instant) -> Vec<FlyingMessage> {
+        const MAX_VISIBLE: usize = 48;
+        const MAX_PENDING: usize = 120;
+        const MAX_WAIT: Duration = Duration::from_secs(5);
+        const MAX_PER_TICK: usize = 4;
+
+        let pending = &mut self.playback.waiting_messages;
+        if !self.playback.chat_enabled || self.playback.paused {
+            pending.clear();
+            return Vec::new();
+        }
+        let Some(Content::Video { player, .. }) = &self.content else {
+            pending.clear();
+            return Vec::new();
+        };
+        pending.extend(incoming);
+        while pending.front().is_some_and(|message| {
+            pending.len() > MAX_PENDING || now.duration_since(message.time) >= MAX_WAIT
+        }) {
+            pending.pop_front();
+        }
+
+        let messages = &self.playback.messages;
+        let mut rows = vec![None; player.danmaku_rows()];
+        for message in messages {
+            if let Some(last) = rows.get_mut(message.row) {
+                *last = Some(message.time + player.danmaku_spacing(message.width));
+            }
+        }
+
+        let mut admitted = Vec::new();
+        let limit = MAX_VISIBLE.saturating_sub(messages.len()).min(MAX_PER_TICK);
+        for _ in 0..limit {
+            let Some((row, available)) = rows
+                .iter_mut()
+                .enumerate()
+                .filter(|(_, time)| time.is_none_or(|time| time <= now))
+                .min_by_key(|(_, time)| **time)
+            else {
+                break;
+            };
+            let Some(mut message) = pending.pop_front() else {
+                break;
+            };
+            message.time = now;
+            message.row = row;
+            *available = Some(now + player.danmaku_spacing(message.width));
+            admitted.push(message);
+        }
+        admitted
     }
 
     #[cfg(target_os = "macos")]
@@ -818,14 +915,13 @@ impl Home {
             .playback
             .messages
             .iter()
-            .enumerate()
-            .filter_map(|(lane, message)| {
-                let message = message.as_ref()?;
+            .map(|message| {
                 let mut offset = 0.0;
                 let parts = message
                     .parts
                     .iter()
-                    .map(|segment| {
+                    .zip(&message.widths)
+                    .map(|(segment, width)| {
                         use crate::native_danmaku::Part;
                         let part = match segment {
                             emotes::Segment::Text(text) => {
@@ -839,17 +935,21 @@ impl Home {
                             }
                         };
                         let positioned = (offset, part);
-                        offset += segment.width() as f32;
+                        offset += width;
                         positioned
                     })
                     .collect();
-                Some(crate::native_danmaku::Lane {
+                crate::native_danmaku::Lane {
                     started: message.time,
+                    #[cfg(windows)]
                     duration: CHAT_DURATION,
-                    width: message.width as f32,
-                    y: 30.0 + 39.0 * lane as f32,
+                    width: message.width,
+                    #[cfg(windows)]
+                    y: 30.0 + 39.0 * message.row as f32,
+                    #[cfg(target_os = "macos")]
+                    y: message.row as f32,
                     parts,
-                })
+                }
             })
             .collect();
         player.set_danmaku(lanes);

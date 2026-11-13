@@ -3,10 +3,9 @@ use crate::Result;
 use crate::emotes::Bitmap;
 #[cfg(windows)]
 use std::collections::VecDeque;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+#[cfg(windows)]
+use std::time::Duration;
+use std::{sync::Arc, time::Instant};
 #[cfg(windows)]
 use windows::{
     Win32::Graphics::{
@@ -19,6 +18,7 @@ use windows::{
 
 pub struct Lane {
     pub started: Instant,
+    #[cfg(windows)]
     pub duration: Duration,
     pub width: f32,
     pub y: f32,
