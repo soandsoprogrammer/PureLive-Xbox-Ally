@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fmt::Write,
     time::{Duration, Instant},
 };
@@ -19,7 +20,14 @@ const ROOM_ACTIONS_WITHOUT_SC: [usize; 7] = [0, 1, 6, 2, 3, 4, 5];
 const DIRECT_ACTIONS: [usize; 3] = [0, 1, 6];
 const HIDE_DELAY: Duration = Duration::from_secs(5);
 const CHAT_TICK: Duration = Duration::from_millis(16);
-const CHAT_DURATION: Duration = Duration::from_secs(7);
+/// Danmaku speed in 1280-space pixels per second. Using one speed for every
+/// message means long ones take longer instead of flying past faster.
+const DANMAKU_SPEED: f32 = 210.0;
+const DANMAKU_MIN: Duration = Duration::from_secs(4);
+const DANMAKU_MAX: Duration = Duration::from_secs(14);
+/// Messages that found every lane busy wait here instead of being dropped.
+const DANMAKU_PENDING_LIMIT: usize = 48;
+const DANMAKU_PENDING_MAX_WAIT: Duration = Duration::from_secs(5);
 const SUPER_CHAT_INTERVAL: Duration = Duration::from_secs(30);
 const SUPER_CHAT_LIMIT: usize = 100;
 
@@ -118,6 +126,8 @@ pub(super) struct PlaybackUi {
     chat: Option<compat::Chat>,
     chat_updates: Option<Task<()>>,
     messages: [Option<FlyingMessage>; 5],
+    /// Danmaku waiting for a free lane, oldest first.
+    pending: VecDeque<FlyingMessage>,
     picture_mask: u16,
     /// Whether the lane's ASS overlay is currently set in mpv.
     chat_lanes: [bool; 5],
@@ -127,6 +137,8 @@ struct FlyingMessage {
     parts: Vec<emotes::Segment>,
     width: i32,
     time: Instant,
+    /// How long this message needs to cross at [`DANMAKU_SPEED`].
+    duration: Duration,
 }
 
 impl PlaybackUi {
@@ -606,6 +618,7 @@ impl Home {
         }
         self.playback.picture_mask = 0;
         self.playback.messages.fill_with(|| None);
+        self.playback.pending.clear();
     }
 
     pub(super) fn connect_chat(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -682,7 +695,7 @@ impl Home {
         for message in &mut self.playback.messages {
             if message
                 .as_ref()
-                .is_some_and(|message| now.duration_since(message.time) >= CHAT_DURATION)
+                .is_some_and(|message| now.duration_since(message.time) >= message.duration)
             {
                 *message = None;
                 changed = true;
@@ -728,24 +741,37 @@ impl Home {
                     }
                     if self.playback.chat_enabled && !self.playback.paused {
                         if let Some(text) = event.text {
-                            if let Some(lane) = self
-                                .playback
-                                .messages
-                                .iter_mut()
-                                .find(|lane| lane.is_none())
-                            {
-                                let parts = emotes::segments(platform, &text, &event.emotes);
+                            let parts = emotes::segments(platform, &text, &event.emotes);
+                            if !parts.is_empty() {
                                 for part in &parts {
                                     if let emotes::Segment::Picture { source, .. } = part {
                                         pictures.push(source.clone());
                                     }
                                 }
                                 let width = parts.iter().map(emotes::Segment::width).sum();
-                                *lane = Some(FlyingMessage {
+                                let travel = 1280.0 + width as f32;
+                                let duration = Duration::from_secs_f32(
+                                    (travel / DANMAKU_SPEED).clamp(
+                                        DANMAKU_MIN.as_secs_f32(),
+                                        DANMAKU_MAX.as_secs_f32(),
+                                    ),
+                                );
+                                let message = FlyingMessage {
                                     parts,
                                     width,
                                     time: now,
-                                });
+                                    duration,
+                                };
+                                if let Some(lane) = self
+                                    .playback
+                                    .messages
+                                    .iter_mut()
+                                    .find(|lane| lane.is_none())
+                                {
+                                    *lane = Some(message);
+                                } else if self.playback.pending.len() < DANMAKU_PENDING_LIMIT {
+                                    self.playback.pending.push_back(message);
+                                }
                             }
                         }
                     }
@@ -756,6 +782,21 @@ impl Home {
                     break;
                 }
             }
+        }
+        // Free lanes take the oldest waiting message, as long as it is not stale.
+        while self
+            .playback
+            .pending
+            .front()
+            .is_some_and(|message| now.duration_since(message.time) > DANMAKU_PENDING_MAX_WAIT)
+        {
+            self.playback.pending.pop_front();
+        }
+        while let Some(lane) = self.playback.messages.iter_mut().find(|lane| lane.is_none()) {
+            let Some(message) = self.playback.pending.pop_front() else {
+                break;
+            };
+            *lane = Some(FlyingMessage { time: now, ..message });
         }
         if !super_chats.is_empty() {
             self.merge_super_chats(super_chats);
@@ -804,7 +845,6 @@ impl Home {
             osd_width.round().max(1.0) as u32,
             osd_height.round().max(1.0) as u32,
         );
-        let total = CHAT_DURATION.as_secs_f32();
         let mut pictures = 0;
         for (lane, message) in self.playback.messages.iter().enumerate() {
             let id = lane as u32 + 1;
@@ -815,6 +855,7 @@ impl Home {
                 }
                 continue;
             };
+            let total = message.duration.as_secs_f32();
             let elapsed = now.duration_since(message.time).as_secs_f32().min(total);
             let travel = 1280.0 + message.width as f32;
             // Positions are recomputed every chat tick and sent as \pos: mpv only
@@ -888,11 +929,13 @@ fn clear_emotes(player: &Player, mask: u16) {
 fn ass_line(overlay: &mut String, x: f32, y: f32, scale: f32, text: &str) {
     let font = (28.0 * scale).round();
     let border = (2.0 * scale).round();
+    // Integer device pixels: fractional \pos values make libass anti-alias the
+    // glyphs against the video and the danmaku looks soft.
     let _ = writeln!(
         overlay,
-        r"{{\an7\pos({:.2},{:.2})\fs{}\bord{}\shad1}}{}",
-        x * scale,
-        y * scale,
+        r"{{\an7\pos({:.0},{:.0})\fs{}\bord{}\shad1}}{}",
+        (x * scale).round(),
+        (y * scale).round(),
         font,
         border,
         safe_chat_text(text)
