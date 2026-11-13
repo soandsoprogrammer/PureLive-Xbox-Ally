@@ -207,10 +207,16 @@ struct Home {
 
 impl Home {
     fn new(options: Options, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let log = options
-            .probe
-            .as_ref()
-            .map(|_| options.directory.join("probe.log"));
+        let log = options.probe.as_ref().map(|_| {
+            #[cfg(target_os = "macos")]
+            if let Some(profile) = native::profile_directory() {
+                let directory = profile.join("PureLiveRust");
+                if fs::create_dir_all(&directory).is_ok() {
+                    return directory.join("probe.log");
+                }
+            }
+            options.directory.join("probe.log")
+        });
         if let Some(path) = &log {
             let _ = fs::remove_file(path);
         }

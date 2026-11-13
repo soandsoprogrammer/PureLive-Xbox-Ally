@@ -62,8 +62,27 @@ codesign --force --sign - "$bin/purelive-platforms"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
 file "$bin/purelive-gpui" "$bin/purelive-platforms"
-printf '%s\n' '{"action":"catalog","platform":"bilibili","query":""}' | "$bin/purelive-platforms" | grep -q 'bilibili'
+catalog=$(printf '%s\n' '{"action":"catalog","platform":"bilibili","query":""}' | "$bin/purelive-platforms")
+grep -q 'bilibili' <<< "$catalog"
 if find "$app" -type f \( -iname '*.mp4' -o -iname '*.flv' -o -iname '*.m4s' -o -iname '*.ts' -o -iname '*.m3u8' -o -iname '*libmpv*' \) | grep .; then
   exit 1
 fi
 ditto -c -k --sequesterRsrc --keepParent "$app" "dist/PureLive-macOS-$arch.zip"
+
+if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+  export PURELIVE_PROFILE_ROOT="$RUNNER_TEMP/purelive-smoke"
+  "$bin/purelive-gpui" --probe smoke > "$RUNNER_TEMP/purelive-smoke.log" 2>&1 &
+  pid=$!
+  trap 'kill "$pid" 2>/dev/null || true' EXIT
+  for attempt in {1..25}; do
+    if grep -q '^first_frame_ms=' "$PURELIVE_PROFILE_ROOT/PureLiveRust/probe.log" 2>/dev/null; then
+      echo 'The app rendered its first window frame.'
+      exit 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then break; fi
+    sleep 1
+  done
+  cat "$RUNNER_TEMP/purelive-smoke.log"
+  exit 1
+fi
+echo 'GUI smoke skipped because the runner has no logged-in GUI session.'

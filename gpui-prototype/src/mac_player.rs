@@ -271,7 +271,7 @@ impl HardwarePlayer {
                 Some(&provider),
                 std::ptr::null(),
                 true,
-                CGColorRenderingIntent::Default,
+                CGColorRenderingIntent::RenderingIntentDefault,
             )?
         };
         let layer = CALayer::layer();
