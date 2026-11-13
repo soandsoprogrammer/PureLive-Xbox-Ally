@@ -26,11 +26,6 @@ def package(root, rust_exe, native_dir, output):
     }
     for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
         payload[name] = native_dir / name
-    # The sherpa-onnx build copies its own runtime DLLs next to the executable.
-    for name in ("onnxruntime.dll", "onnxruntime_providers_shared.dll", "sherpa-onnx-c-api.dll", "sherpa-onnx-cxx-api.dll"):
-        payload[name] = rust_exe.parent / name
-    for path in sorted((root / "licenses/onnxruntime").iterdir()):
-        payload[f"licenses/onnxruntime/{path.name}"] = path
 
     cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
     registry = cargo_home / "registry/src"

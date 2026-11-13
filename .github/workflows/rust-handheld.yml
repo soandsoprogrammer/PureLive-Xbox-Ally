@@ -31,22 +31,6 @@ jobs:
         with:
           workspaces: gpui-prototype -> target
 
-      # sherpa-onnx (voice search) links its prebuilt Windows library; fetch it
-      # here so the build never depends on the crate's own download succeeding.
-      - name: Fetch sherpa-onnx prebuilt
-        shell: pwsh
-        run: |
-          $url = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-v2.0.1-win-x64-shared-MT-Release-lib.tar.bz2'
-          $root = 'gpui-prototype/target/sherpa-onnx-prebuilt'
-          New-Item -ItemType Directory -Force $root | Out-Null
-          curl.exe -sSL --retry 5 --retry-delay 2 -o sherpa.tar.bz2 $url
-          tar -xjf sherpa.tar.bz2 -C $root
-          $lib = Get-ChildItem $root -Recurse -Directory |
-            Where-Object { Test-Path (Join-Path $_.FullName 'sherpa-onnx-c-api.lib') } |
-            Select-Object -First 1
-          if (-not $lib) { throw 'sherpa-onnx-c-api.lib not found in the prebuilt archive' }
-          "SHERPA_ONNX_LIB_DIR=$($lib.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-
       # windows-latest ships Visual Studio with the C++ workload and the Windows
       # SDK, so fxc.exe (the HLSL compiler gpui needs in release) is present.
       - name: Build
@@ -57,14 +41,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item gpui-prototype/target/release/purelive-gpui.exe dist/
-          # sherpa-onnx copies its runtime DLLs next to the executable.
-          Get-ChildItem gpui-prototype/target/release/*.dll -ErrorAction SilentlyContinue |
-            Copy-Item -Destination dist/
-          Get-ChildItem dist | Format-Table Name, Length
           Get-FileHash dist/purelive-gpui.exe -Algorithm SHA256 | Format-List
 
       - uses: actions/upload-artifact@v4
         with:
           name: purelive-gpui-windows-x64
-          path: dist/
+          path: dist/purelive-gpui.exe
           if-no-files-found: error

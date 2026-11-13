@@ -22,7 +22,6 @@ mod platform_icons;
 mod platform_picker;
 mod playback;
 mod style;
-mod voice;
 
 use std::{
     collections::BTreeMap,
@@ -170,7 +169,6 @@ struct Home {
     emote_probe_reported: bool,
     first_poll: bool,
     query: Entity<InputState>,
-    dictation: voice::Dictation,
     follows_path: PathBuf,
     follows: Vec<Room>,
     follow_filter: FollowFilter,
@@ -217,7 +215,6 @@ impl Home {
         window.set_window_title("纯粹直播 · Rust 掌机版");
         let query =
             cx.new(|cx| InputState::new(window, cx).placeholder("关键词、房间号或直播间链接"));
-        let (dictation, transcripts) = voice::Dictation::new(&options.directory);
         let follows_path = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|| options.directory.clone())
@@ -242,19 +239,6 @@ impl Home {
         cx.subscribe_in(&query, window, |this, _, event, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.search(window, cx);
-            }
-        })
-        .detach();
-        cx.spawn_in(window, async move |entity, cx| {
-            while let Ok(report) = transcripts.recv().await {
-                if entity
-                    .update_in(cx, |this, window, cx| {
-                        this.report_dictation(report, window, cx)
-                    })
-                    .is_err()
-                {
-                    break;
-                }
             }
         })
         .detach();
@@ -308,7 +292,6 @@ impl Home {
             emote_probe_reported: false,
             first_poll: true,
             query,
-            dictation,
             follows_path,
             follows,
             follow_filter: FollowFilter::All,
@@ -860,45 +843,6 @@ impl Home {
             return;
         }
         self.request_rooms(input, window, cx);
-    }
-
-    /// A inside the search box: start talking, or stop and recognize.
-    fn toggle_dictation(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        match self.dictation.phase() {
-            voice::Phase::Listening => self.dictation.stop(),
-            voice::Phase::Recognizing => {}
-            voice::Phase::Idle => {
-                if let Err(message) = self.dictation.start() {
-                    self.status = message;
-                }
-            }
-        }
-        cx.notify();
-    }
-
-    /// A finished recording: fill the search box and search with it.
-    fn report_dictation(
-        &mut self,
-        report: voice::Report,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.dictation.settle();
-        match report {
-            voice::Report::Text(text) => {
-                let text = text.trim().to_owned();
-                if text.is_empty() {
-                    self.status = "没有识别到语音，再按 A 说一次".into();
-                } else {
-                    self.status = format!("语音：{text}");
-                    self.query
-                        .update(cx, |state, cx| state.set_value(text, window, cx));
-                    self.search(window, cx);
-                }
-            }
-            voice::Report::Failed(message) => self.status = message,
-        }
-        cx.notify();
     }
 
     fn request_rooms(&mut self, input: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -1507,20 +1451,7 @@ impl Home {
             self.move_selection(true, cx);
         }
         if pressed & XINPUT_GAMEPAD_A != 0 {
-            let searching = self.pane == Pane::Search
-                && self.content.is_none()
-                && self.platform_cursor.is_none();
-            if self.dictation.phase() != voice::Phase::Idle {
-                // A always ends a recording, wherever the focus moved to.
-                self.toggle_dictation(window, cx);
-            } else if searching && self.room_selection.is_none() {
-                // Nothing to open yet: the search box takes the press and starts
-                // listening, which saves reaching for the on-screen keyboard.
-                self.query.read(cx).focus_handle(cx).focus(window, cx);
-                self.toggle_dictation(window, cx);
-            } else {
-                self.confirm(window, cx);
-            }
+            self.confirm(window, cx);
         }
         if pressed & XINPUT_GAMEPAD_DPAD_UP != 0 {
             self.move_room(false, cx);
@@ -1557,11 +1488,7 @@ impl Home {
             self.select_pane(Pane::Settings, window, cx);
         }
         if pressed & XINPUT_GAMEPAD_B != 0 {
-            if self.dictation.cancel() {
-                cx.notify();
-            } else if self.dictation.phase() == voice::Phase::Idle {
-                self.go_back(window, cx);
-            }
+            self.go_back(window, cx);
         }
     }
 }
@@ -1593,10 +1520,6 @@ impl Render for Home {
                         "+" | "=" if !event.is_held => this.adjust_volume(5, window, cx),
                         _ => {}
                     }
-                    return;
-                }
-                if event.keystroke.key == "f9" && !event.is_held {
-                    this.toggle_dictation(window, cx);
                     return;
                 }
                 if event.keystroke.key == "f2"
