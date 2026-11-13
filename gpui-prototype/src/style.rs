@@ -728,6 +728,13 @@ impl Home {
                         ),
                 )
             })
+            .when(self.pane == Pane::Search, |view| {
+                view.children(
+                    self.dictation
+                        .hint()
+                        .map(|hint| div().text_sm().text_color(rgb(MUTED)).child(hint)),
+                )
+            })
             .when(self.room_count() == 0, |view| {
                 view.child(
                     div()

@@ -26,6 +26,9 @@ def package(root, rust_exe, native_dir, output):
     }
     for name in ("libmpv-2.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
         payload[name] = native_dir / name
+    # The sherpa-onnx build copies its own runtime DLLs next to the executable.
+    for path in sorted(rust_exe.parent.glob("*.dll")):
+        payload.setdefault(path.name, path)
     for path in sorted((root / "licenses/mpv").iterdir()):
         payload[f"licenses/mpv/{path.name}"] = path
 
