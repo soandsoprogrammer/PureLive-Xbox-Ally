@@ -29,6 +29,35 @@ unsafe extern "system" {
     fn timeEndPeriod(uperiod: u32) -> u32;
 }
 
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn SetThreadExecutionState(flags: u32) -> u32;
+}
+
+const ES_CONTINUOUS: u32 = 0x8000_0000;
+const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
+const ES_DISPLAY_REQUIRED: u32 = 0x0000_0002;
+
+/// Keeps Windows from sleeping or blanking the screen while a stream plays.
+struct Awake;
+
+impl Awake {
+    fn new() -> Self {
+        unsafe {
+            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+        }
+        Self
+    }
+}
+
+impl Drop for Awake {
+    fn drop(&mut self) {
+        unsafe {
+            SetThreadExecutionState(ES_CONTINUOUS);
+        }
+    }
+}
+
 pub struct Input {
     pub url: String,
     pub headers: BTreeMap<String, String>,
@@ -235,6 +264,7 @@ fn play(window: usize, source: Input, state: &State) -> Result<()> {
     // 60 fps live needs 16.7 ms sleeps; the default 15.6 ms Windows timer makes
     // every sleep overshoot to ~31 ms, which reads as constant stutter.
     let _timer = TimerResolution::new();
+    let _awake = Awake::new();
     let _runtime = dxva::Runtime::new()?;
     let mut context = RuntimeContext::new();
     oxideav_flv::register(&mut context);
