@@ -22,6 +22,7 @@ use symphonia_core::{
     formats::Packet as AudioPacket,
 };
 use windows::Win32::Foundation::HWND;
+use windows::Win32::Media::Multimedia::{timeBeginPeriod, timeEndPeriod};
 
 pub struct Input {
     pub url: String,
@@ -187,7 +188,48 @@ impl Drop for HardwarePlayer {
     }
 }
 
+/// Raises the Windows timer resolution while playback runs, so `thread::sleep`
+/// can actually hit a 16.7 ms frame deadline.
+struct TimerResolution;
+
+impl TimerResolution {
+    fn new() -> Self {
+        unsafe {
+            timeBeginPeriod(1);
+        }
+        Self
+    }
+}
+
+impl Drop for TimerResolution {
+    fn drop(&mut self) {
+        unsafe {
+            timeEndPeriod(1);
+        }
+    }
+}
+
+/// Sleep until `deadline` (at most `cap`), spinning for the last millisecond so
+/// the frame is not late by a whole timer tick.
+fn sleep_until(deadline: Instant, cap: Duration) {
+    let target = deadline.min(Instant::now() + cap);
+    loop {
+        let now = Instant::now();
+        let Some(left) = target.checked_duration_since(now) else {
+            break;
+        };
+        if left > Duration::from_millis(2) {
+            thread::sleep(left - Duration::from_millis(1));
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+}
+
 fn play(window: usize, source: Input, state: &State) -> Result<()> {
+    // 60 fps live needs 16.7 ms sleeps; the default 15.6 ms Windows timer makes
+    // every sleep overshoot to ~31 ms, which reads as constant stutter.
+    let _timer = TimerResolution::new();
     let _runtime = dxva::Runtime::new()?;
     let mut context = RuntimeContext::new();
     oxideav_flv::register(&mut context);
@@ -442,7 +484,13 @@ impl Clock {
             if distance > Duration::from_secs(1) {
                 self.anchor = Some((pts, now));
             } else if let Some(wait) = deadline.checked_duration_since(now) {
-                thread::sleep(wait.min(Duration::from_millis(200)));
+                sleep_until(deadline, wait.min(Duration::from_millis(200)));
+            } else if now.duration_since(deadline) > Duration::from_millis(600) {
+                // Far behind the live edge (network burst or stall): jump to the
+                // newest frame instead of grinding through stale ones one by one.
+                self.anchor = Some((pts, now));
+                state.dropped.fetch_add(1, Relaxed);
+                return Ok(());
             } else if now.duration_since(deadline) > Duration::from_millis(80) {
                 state.dropped.fetch_add(1, Relaxed);
                 return Ok(());
