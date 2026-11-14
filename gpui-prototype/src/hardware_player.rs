@@ -22,7 +22,12 @@ use symphonia_core::{
     formats::Packet as AudioPacket,
 };
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Media::Multimedia::{timeBeginPeriod, timeEndPeriod};
+
+#[link(name = "winmm")]
+unsafe extern "system" {
+    fn timeBeginPeriod(uperiod: u32) -> u32;
+    fn timeEndPeriod(uperiod: u32) -> u32;
+}
 
 pub struct Input {
     pub url: String,
