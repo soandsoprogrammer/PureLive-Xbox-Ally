@@ -323,30 +323,32 @@ pub fn resolve(
             ..Source::default()
         });
     }
-    let result = compat::resolve(directory, room, cookie, selection);
-    if result.is_err()
-        && room.platform == "bilibili"
-        && selection.quality.is_none()
-        && selection.line.is_none()
-    {
-        if let Ok(url) = resolve_bili(room, cookie) {
+    if room.platform == "bilibili" {
+        if let Ok((url, playback)) = resolve_bili(room, cookie, selection) {
             return Ok(Source {
                 url,
                 headers: BTreeMap::from([("referer".into(), "https://live.bilibili.com/".into())]),
-                playback: compat::Playback {
-                    chat: true,
-                    super_chat: true,
-                    super_chat_board: true,
-                    ..compat::Playback::default()
-                },
+                playback,
                 ..Source::default()
             });
         }
     }
-    result
+    compat::resolve(directory, room, cookie, selection)
 }
 
-fn resolve_bili(room: &Room, cookie: Option<&str>) -> Result<String, String> {
+/// Resolve a Bilibili room ourselves so the player can offer every quality and
+/// CDN line the room exposes, instead of a single hard-coded URL.
+fn resolve_bili(
+    room: &Room,
+    cookie: Option<&str>,
+    selection: &compat::Selection,
+) -> Result<(String, compat::Playback), String> {
+    let quality = selection
+        .quality
+        .as_deref()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(10_000);
+    let qn = quality.to_string();
     let result = request(
         "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo",
         &[
@@ -354,39 +356,112 @@ fn resolve_bili(room: &Room, cookie: Option<&str>) -> Result<String, String> {
             ("protocol", "0,1"),
             ("format", "0,1,2"),
             ("codec", "0"),
-            ("qn", "150"),
+            ("qn", qn.as_str()),
             ("platform", "web"),
             ("ptype", "8"),
         ],
         cookie,
     )?;
-    stream_url(&result).ok_or_else(|| "直播间当前没有可用的游客播放线路".into())
-}
-
-fn stream_url(result: &Value) -> Option<String> {
-    let streams = result["data"]["playurl_info"]["playurl"]["stream"].as_array()?;
+    let play = &result["data"]["playurl_info"]["playurl"];
+    let streams = play["stream"]
+        .as_array()
+        .ok_or_else(|| "直播间当前没有可用的播放线路".to_owned())?;
+    let names: BTreeMap<String, String> = play["g_qn_desc"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            Some((
+                entry["qn"].as_u64()?.to_string(),
+                entry["desc"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    let mut qualities: Vec<compat::Choice> = Vec::new();
+    let mut lines: Vec<compat::Choice> = Vec::new();
+    let mut urls: Vec<(String, String)> = Vec::new();
+    let mut current = quality;
     for stream in streams {
+        let protocol = stream["protocol_name"].as_str().unwrap_or("http_stream");
         for format in stream["format"].as_array().into_iter().flatten() {
+            let name = format["format_name"].as_str().unwrap_or_default();
             for codec in format["codec"].as_array().into_iter().flatten() {
-                let Some(base) = codec["base_url"].as_str() else {
-                    continue;
-                };
-                for line in codec["url_info"].as_array().into_iter().flatten() {
-                    let (Some(host), Some(extra)) = (line["host"].as_str(), line["extra"].as_str())
-                    else {
+                if let Some(qn) = codec["current_qn"].as_u64() {
+                    current = qn;
+                }
+                for qn in codec["accept_qn"].as_array().into_iter().flatten() {
+                    let Some(qn) = qn.as_u64() else {
                         continue;
                     };
-                    let url = format!("{host}{base}{extra}");
-                    if Url::parse(&url)
-                        .is_ok_and(|parsed| matches!(parsed.scheme(), "http" | "https"))
-                    {
-                        return Some(url);
+                    let id = qn.to_string();
+                    if qualities.iter().any(|choice| choice.id == id) {
+                        continue;
                     }
+                    let label = names
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("画质 {qn}"));
+                    qualities.push(compat::Choice { id, label });
+                }
+                for (index, info) in codec["url_info"].as_array().into_iter().flatten().enumerate()
+                {
+                    let (Some(host), Some(base), Some(extra)) = (
+                        info["host"].as_str(),
+                        codec["base_url"].as_str(),
+                        info["extra"].as_str(),
+                    ) else {
+                        continue;
+                    };
+                    let video = match (protocol, name) {
+                        ("http_stream", _) => "FLV".to_owned(),
+                        ("http_hls", "fmp4") => "HLS fMP4".to_owned(),
+                        ("http_hls", _) => "HLS TS".to_owned(),
+                        _ => protocol.to_owned(),
+                    };
+                    let id = format!("{protocol}/{name}/{index}");
+                    let label = format!("{video} 线路{}", index + 1);
+                    lines.push(compat::Choice {
+                        id: id.clone(),
+                        label,
+                    });
+                    urls.push((id, format!("{host}{base}{extra}")));
                 }
             }
         }
     }
-    None
+    if urls.is_empty() {
+        return Err("直播间当前没有可用的游客播放线路".into());
+    }
+    if qualities.is_empty() {
+        qualities.push(compat::Choice {
+            id: current.to_string(),
+            label: names
+                .get(&current.to_string())
+                .cloned()
+                .unwrap_or_else(|| "原画".into()),
+        });
+    }
+    let chosen = selection
+        .line
+        .as_deref()
+        .and_then(|id| urls.iter().find(|(line, _)| line == id))
+        .or_else(|| urls.iter().find(|(line, _)| line.starts_with("http_stream/")))
+        .unwrap_or(&urls[0]);
+    let quality_id = current.to_string();
+    let quality_label = names.get(&quality_id).cloned();
+    Ok((
+        chosen.1.clone(),
+        compat::Playback {
+            qualities,
+            quality: Some(quality_id),
+            quality_label,
+            lines,
+            line: Some(chosen.0.clone()),
+            chat: true,
+            super_chat: true,
+            super_chat_board: true,
+        },
+    ))
 }
 
 pub fn load(path: &Path) -> Vec<Room> {
