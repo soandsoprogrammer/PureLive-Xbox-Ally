@@ -366,6 +366,14 @@ fn resolve_bili(
         ],
         cookie,
     )?;
+    bili_playback(&result, quality, selection)
+}
+
+fn bili_playback(
+    result: &Value,
+    quality: u64,
+    selection: &compat::Selection,
+) -> Result<(String, compat::Playback), String> {
     let play = &result["data"]["playurl_info"]["playurl"];
     let streams = play["stream"]
         .as_array()
@@ -590,13 +598,15 @@ mod tests {
     }
 
     #[test]
-    fn joins_playback_line_without_losing_query() {
+    fn bili_playback_line_keeps_signed_query() {
         let result = serde_json::json!({"data":{"playurl_info":{"playurl":{"stream":[{"format":[{"codec":[
             {"base_url":"/room.flv","url_info":[{"host":"https://cdn.example.com","extra":"?token=abc&x=1"}]}
         ]}]}]}}}});
         assert_eq!(
-            stream_url(&result).as_deref(),
-            Some("https://cdn.example.com/room.flv?token=abc&x=1")
+            bili_playback(&result, 10_000, &compat::Selection::default())
+                .expect("playback line")
+                .0,
+            "https://cdn.example.com/room.flv?token=abc&x=1"
         );
     }
 }
