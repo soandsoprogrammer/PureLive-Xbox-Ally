@@ -1189,6 +1189,9 @@ impl Home {
                         let current = self.active_room.as_ref().is_some_and(|active| room.same_channel(active));
                         let focused = !menu.exit_selected && menu.cursor == index;
                         let name = if room.nick.trim().is_empty() { &room.title } else { &room.nick };
+                        let cover = room.cover.clone();
+                        let covers = self.covers.clone();
+                        let thumb_height = if compact { 30.0 } else { 54.0 };
                         div()
                             .id(("playback-room", index))
                             .h_flex()
@@ -1204,7 +1207,26 @@ impl Home {
                             .bg(rgb(if focused { SURFACE } else { BG }))
                             .cursor_pointer()
                             .hover(|style| style.bg(rgb(SURFACE)))
-                            .child(div().w(px(20.0)).flex_shrink_0().text_sm().text_color(rgb(MUTED)).child((index + 1).to_string()))
+                            .child(
+                                div()
+                                    .relative()
+                                    .w(px(thumb_height * 16.0 / 9.0))
+                                    .h(px(thumb_height))
+                                    .flex_shrink_0()
+                                    .rounded_md()
+                                    .overflow_hidden()
+                                    .bg(rgb(DIVIDER))
+                                    .child(div().absolute().inset_0().h_flex().items_center().justify_center()
+                                        .text_color(rgb(MUTED)).child("▶"))
+                                    .when(!cover.is_empty(), |frame| frame.child(
+                                        img(ImageSource::Custom(Arc::new(move |window, cx| {
+                                            covers.get(&cover, window, cx).map(Ok)
+                                        })))
+                                        .absolute().inset_0().size_full().object_fit(ObjectFit::Cover),
+                                    ))
+                                    .child(div().absolute().top_0().left_0().px_1().text_xs()
+                                        .bg(rgba(0x0b131ae8)).text_color(rgb(TEXT)).child((index + 1).to_string())),
+                            )
                             .child(div().v_flex().flex_1().min_w_0().gap_1()
                                 .child(div().text_ellipsis().child(name.clone()))
                                 .when(!compact, |column| column.child(
