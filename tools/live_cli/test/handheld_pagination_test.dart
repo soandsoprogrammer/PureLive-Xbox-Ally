@@ -22,6 +22,20 @@ class PagedSite extends LiveSite {
 }
 
 void main() {
+  test('Douyin follow live links use the room path, not the anchor id', () {
+    final site = DouyinSite(ReplayHttp([]));
+    expect(site.roomIdFromUrl('https://www.douyin.com/follow/live/952854931534?anchor_id=418233413547824'), '952854931534');
+    expect(site.roomIdFromUrl('https://live.douyin.com/952854931534'), '952854931534');
+    for (final url in [
+      'https://www.douyin.com/video/952854931534',
+      'https://www.douyin.com/follow/live/not-a-room',
+      'https://www.douyin.com/follow/live/952854931534/extra',
+      'https://www.douyin.com.example.com/follow/live/952854931534',
+    ]) {
+      expect(site.roomIdFromUrl(url), isNull);
+    }
+  });
+
   test('carousel and replay remain distinct from offline and live', () {
     for (final entry in {
       LiveStatus.live: 'live', LiveStatus.replay: 'replay',
