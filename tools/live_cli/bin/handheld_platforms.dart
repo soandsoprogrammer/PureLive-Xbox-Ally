@@ -17,7 +17,7 @@ Future<void> main() async {
   try {
     if (!await commands.moveNext()) return;
     final request = jsonDecode(commands.current) as Map<String, dynamic>;
-    final proxy = _proxy();
+    const proxy = FixedProxyPolicy();
     final base = client = IoLiveHttp(proxy: proxy);
     final cookies = MemoryCookieVault();
     final action = request['action'] as String;
@@ -47,7 +47,9 @@ Future<void> main() async {
         ],
       });
     } else if (action == 'find') {
-      final rooms = await _find(registry, http, platform, query).timeout(const Duration(seconds: 24));
+      final page = request['page'] is int ? request['page'] as int : 1;
+      final rooms = await findRooms(registry, http, platform, query, page: page)
+          .timeout(const Duration(seconds: 24));
       await _reply({'rooms': rooms});
     } else if (action == 'play') {
       final site = registry.maybeOf(platform);
@@ -171,17 +173,9 @@ Future<void> _reply(Map<String, Object?> result) async {
   await stdout.flush();
 }
 
-FixedProxyPolicy _proxy() {
-  final env = Platform.environment;
-  final raw = env['HTTPS_PROXY'] ?? env['https_proxy'] ?? env['HTTP_PROXY'] ?? env['http_proxy'];
-  final uri = raw == null ? null : Uri.tryParse(raw);
-  if (uri == null || uri.scheme != 'http' || uri.host.isEmpty || uri.userInfo.isNotEmpty) {
-    return const FixedProxyPolicy();
-  }
-  return FixedProxyPolicy(global: HttpProxyRoute(uri.host, uri.port));
-}
-
-Future<List<Map<String, Object?>>> _find(SiteRegistry registry, LiveHttp http, String platform, String text) async {
+Future<List<Map<String, Object?>>> findRooms(
+  SiteRegistry registry, LiveHttp http, String platform, String text, {int page = 1}
+) async {
   if (platform == 'iptv') return _iptv(http, text);
   final links = LinkParser(registry, http);
   final isLink = LinkParser.sharedHttpUrls(text).isNotEmpty;
@@ -200,9 +194,14 @@ Future<List<Map<String, Object?>>> _find(SiteRegistry registry, LiveHttp http, S
     if (id.isEmpty) throw const FormatException('请输入房间号或频道 ID');
     return [_room(site, await site.getRoomDetail(roomId: id), fallbackId: id)];
   }
-  final rooms = text.isEmpty ? await site.getRecommendRooms(pageSize: 24) : await site.searchRooms(text, pageSize: 24);
+  final number = page < 1 ? 1 : page;
+  final rooms = text.isEmpty
+      ? await site.getRecommendRooms(page: number, pageSize: 24)
+      : await site.searchRooms(text, page: number, pageSize: 24);
   return [
-    for (final room in rooms.take(24))
+    // Sites such as Douyu and Huya have fixed native page sizes. Truncating
+    // their pages to 24 would permanently skip the remaining rooms.
+    for (final room in text.isEmpty ? rooms : rooms.take(24))
       if (room.roomId.isNotEmpty) _room(site, room),
   ];
 }

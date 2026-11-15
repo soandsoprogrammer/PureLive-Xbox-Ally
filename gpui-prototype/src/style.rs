@@ -221,6 +221,7 @@ impl Home {
         self.pane = pane;
         self.platform_cursor = None;
         self.request_id += 1;
+        self.popular_pages.reset();
         self.room_selection = None;
         self.rooms_scroll = UniformListScrollHandle::new();
         self.status.clear();
@@ -566,6 +567,9 @@ impl Home {
             "room-grid",
             self.room_count().div_ceil(3),
             cx.processor(move |this, rows: Range<usize>, _, cx| {
+                if this.pane == Pane::Popular && !this.show_follows {
+                    this.popular_pages.visible_end = rows.end;
+                }
                 rows.map(|row| {
                     let start = row * 3;
                     let end = (start + 3).min(this.room_count());
@@ -621,6 +625,27 @@ impl Home {
             })
             .when(self.room_count() != 0, |view| {
                 view.child(self.room_grid(8.0, cx))
+                    .child(
+                        div().h_flex().items_center().justify_center().gap_2().pb_2().text_sm()
+                            .text_color(rgb(MUTED))
+                            .child(if self.popular_pages.loading {
+                                "正在加载更多…".to_owned()
+                            } else if self.popular_pages.error.is_some() {
+                                "下一页加载失败，已保留当前房间".to_owned()
+                            } else if self.popular_pages.exhausted {
+                                format!("已显示 {} 个房间 · 没有更多了", self.results.len())
+                            } else {
+                                format!("已加载 {} 个房间 · 向下滚动加载更多", self.results.len())
+                            })
+                            .when(self.popular_pages.error.is_some(), |row| {
+                                row.child(control("retry-popular", "重试", false).on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.popular_pages.error = None;
+                                        this.load_more_rooms(window, cx);
+                                    },
+                                )))
+                            }),
+                    )
             })
     }
 

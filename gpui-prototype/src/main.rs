@@ -18,6 +18,7 @@ mod native;
 #[cfg(windows)]
 mod native_audio;
 mod native_danmaku;
+mod pagination;
 mod platform_icons;
 mod platform_picker;
 mod playback;
@@ -176,6 +177,7 @@ struct Home {
     room_status_task: Option<Task<()>>,
     next_follow_check: Option<Instant>,
     results: Vec<Room>,
+    popular_pages: pagination::Pages,
     show_follows: bool,
     room_selection: Option<usize>,
     request_id: u64,
@@ -307,6 +309,7 @@ impl Home {
             room_status_task: None,
             next_follow_check: None,
             results: Vec::new(),
+            popular_pages: pagination::Pages::default(),
             show_follows: true,
             room_selection,
             request_id: 0,
@@ -737,7 +740,11 @@ impl Home {
             return;
         }
         let index = self.room_selection.map_or(0, |index| {
-            (index as isize + delta).rem_euclid(count as isize) as usize
+            if self.pane == Pane::Popular {
+                index.saturating_add_signed(delta).min(count - 1)
+            } else {
+                (index as isize + delta).rem_euclid(count as isize) as usize
+            }
         });
         self.select_room_card(index, cx);
     }
@@ -859,6 +866,7 @@ impl Home {
 
     fn request_rooms(&mut self, input: String, window: &mut Window, cx: &mut Context<Self>) {
         self.request_id += 1;
+        let epoch = self.popular_pages.reset();
         let request = self.request_id;
         let site = if self.pane == Pane::Search {
             self.search_platform.map(|index| &self.platforms[index])
@@ -896,7 +904,9 @@ impl Home {
                 this.status = match result {
                     Ok(rooms) => {
                         mark(&this.log, format!("rooms_loaded={}", rooms.len()));
-                        this.results = rooms;
+                        let received = rooms.len();
+                        let added = pagination::append_unique(&mut this.results, rooms);
+                        this.popular_pages.complete(epoch, 1, received, added);
                         this.room_selection = (this.pane == Pane::Popular
                             && !this.results.is_empty())
                             .then_some(0);
@@ -910,8 +920,46 @@ impl Home {
                             format!("找到 {} 个房间", this.results.len())
                         }
                     }
-                    Err(error) => error,
+                    Err(error) => {
+                        this.popular_pages.fail(epoch, error.clone());
+                        error
+                    }
                 };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn load_more_rooms(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pane != Pane::Popular || self.content.is_some() || self.show_follows {
+            return;
+        }
+        let Some((epoch, page)) = self.popular_pages.begin_next() else {
+            return;
+        };
+        let platform = self.platforms[self.platform].id.clone();
+        let directory = self.options.directory.clone();
+        let cookie = self.accounts.get(&platform).map(|account| account.cookie.clone());
+        let pending = cx.background_spawn(async move {
+            compat::popular_page(&directory, &platform, page, cookie.as_deref())
+        });
+        cx.spawn_in(window, async move |entity, cx| {
+            let result = pending.await;
+            let _ = entity.update_in(cx, |this, _, cx| {
+                if this.popular_pages.epoch != epoch {
+                    return;
+                }
+                match result {
+                    Ok(rooms) => {
+                        let received = rooms.len();
+                        let added = pagination::append_unique(&mut this.results, rooms);
+                        this.popular_pages.complete(epoch, page, received, added);
+                        mark(&this.log, format!("rooms_page={page} added={added} total={}", this.results.len()));
+                    }
+                    Err(error) => this.popular_pages.fail(epoch, error),
+                }
                 cx.notify();
             });
         })
@@ -1205,6 +1253,13 @@ impl Home {
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_gamepad(window, cx);
+        if self.pane == Pane::Popular
+            && self.content.is_none()
+            && window.is_window_active()
+            && self.popular_pages.near_end(self.results.len())
+        {
+            self.load_more_rooms(window, cx);
+        }
         if self.first_poll {
             self.first_poll = false;
             if let Some(id) = self.options.launch_room.take() {

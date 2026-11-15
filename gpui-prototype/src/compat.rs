@@ -209,6 +209,22 @@ pub fn room_statuses(
     Ok(reply.room_statuses)
 }
 
+pub fn popular_page(
+    directory: &Path,
+    platform: &str,
+    page: u32,
+    cookie: Option<&str>,
+) -> Result<Vec<Room>, String> {
+    let (reply, _) = request(
+        directory,
+        serde_json::json!({
+            "action": "find", "platform": platform, "query": "", "page": page,
+            "account_cookie": cookie,
+        }),
+    )?;
+    Ok(reply.rooms)
+}
+
 pub fn resolve(
     directory: &Path,
     room: &Room,
