@@ -805,6 +805,7 @@ impl Home {
     }
 
     fn select_platform(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.popular_pages.invalidate();
         self.platform = index;
         self.platform_cursor = None;
         self.show_follows = false;
@@ -833,6 +834,7 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.popular_pages.invalidate();
         self.search_platform = index.checked_sub(1);
         self.platform_cursor = None;
         self.request_id += 1;
@@ -854,6 +856,7 @@ impl Home {
     }
 
     fn search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.popular_pages.invalidate();
         let input = self.query.read(cx).value().to_string();
         self.pane = Pane::Search;
         if self.search_platform.is_none() && input.trim().is_empty() {
@@ -979,37 +982,41 @@ impl Home {
         self.reload_room(compat::Selection::default(), window, cx);
     }
 
-    /// Cycle through live followed rooms and show their position while connecting.
-    fn switch_follow(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pane != Pane::Follows {
-            return;
+    fn playback_rooms(&self) -> &[Room] {
+        match self.pane {
+            Pane::Follows => &self.follows,
+            Pane::Popular => &self.results,
+            _ => &[],
         }
+    }
+
+    /// Cycle through the current follow or popular list without moving tab focus.
+    fn switch_room(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(current) = self.active_room.as_ref().map(Room::key) else {
             return;
         };
-        let candidates: Vec<usize> = self
-            .follows
-            .iter()
-            .enumerate()
-            .filter(|(_, room)| room.broadcast_status() == BroadcastStatus::Live)
-            .map(|(index, _)| index)
-            .collect();
-        let position = candidates
-            .iter()
-            .position(|&index| self.follows[index].key() == current);
-        let next = match (candidates.len(), position, forward) {
-            (0, _, _) | (1, Some(_), _) => return,
-            (_, Some(position), true) => (position + 1) % candidates.len(),
-            (_, Some(position), false) => (position + candidates.len() - 1) % candidates.len(),
-            (_, None, true) => 0,
-            (_, None, false) => candidates.len() - 1,
+        let Some(index) = live::next_room_index(
+            self.playback_rooms(),
+            &current,
+            forward,
+            self.pane == Pane::Popular,
+        ) else {
+            return;
         };
-        let room = self.follows[candidates[next]].clone();
+        let room = self.playback_rooms()[index].clone();
+        self.room_selection = if self.pane == Pane::Follows {
+            self.follow_rows.iter().position(|&follow| follow == index)
+        } else {
+            Some(index)
+        };
+        if let Some(selected) = self.room_selection {
+            self.rooms_scroll
+                .scroll_to_item(selected / 3, ScrollStrategy::Nearest);
+        }
         self.play_room(room, window, cx);
     }
 
-    /// The room's place in the follow list ("3/6 神棍老师"), or just its name when
-    /// it is not a follow; used in the status line while the source connects.
+    /// Show the room's position in the current playback list while connecting.
     fn room_label(&self, room: &Room) -> String {
         let name = if room.nick.trim().is_empty() {
             room.title.trim()
@@ -1017,9 +1024,9 @@ impl Home {
             room.nick.trim()
         };
         let live: Vec<&Room> = self
-            .follows
+            .playback_rooms()
             .iter()
-            .filter(|followed| followed.broadcast_status() == BroadcastStatus::Live)
+            .filter(|room| room.is_playback_candidate(self.pane == Pane::Popular))
             .collect();
         match live
             .iter()
@@ -1475,12 +1482,12 @@ impl Home {
             } else if self.playback.menu.is_none()
                 && pressed & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0
             {
-                self.switch_follow(pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0, window, cx);
+                self.switch_room(pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0, window, cx);
             } else if self.playback.menu.is_none()
                 && !self.playback.visible()
                 && pressed & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT) != 0
             {
-                self.switch_follow(pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0, window, cx);
+                self.switch_room(pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0, window, cx);
             } else if self.playback.menu.is_none() && pressed & XINPUT_GAMEPAD_DPAD_UP != 0 {
                 self.adjust_volume(5, window, cx);
             } else if self.playback.menu.is_none() && pressed & XINPUT_GAMEPAD_DPAD_DOWN != 0 {

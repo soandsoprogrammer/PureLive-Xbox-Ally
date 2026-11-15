@@ -40,11 +40,8 @@ jobs:
       - name: Build
         run: cargo build --manifest-path gpui-prototype/Cargo.toml --release --locked
 
-      - name: Test direct network routing
-        run: |
-          cargo test --manifest-path gpui-prototype/Cargo.toml --release --locked network_
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --manifest-path gpui-prototype/Cargo.toml --release --locked pagination_
+      - name: Run all Rust unit tests
+        run: cargo test --manifest-path gpui-prototype/Cargo.toml --release --locked
 
       - uses: dart-lang/setup-dart@v1
         with:

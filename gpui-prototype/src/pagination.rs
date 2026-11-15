@@ -12,6 +12,14 @@ pub struct Pages {
 }
 
 impl Pages {
+    pub fn invalidate(&mut self) {
+        *self = Self {
+            epoch: self.epoch.wrapping_add(1),
+            exhausted: true,
+            ..Self::default()
+        };
+    }
+
     pub fn reset(&mut self) -> u64 {
         *self = Self {
             epoch: self.epoch.wrapping_add(1),
@@ -88,6 +96,22 @@ mod tests {
         assert!(pages.error.is_none());
         pages.complete(current, 1, 24, 24);
         assert_eq!(pages.begin_next(), Some((current, 2)));
+    }
+
+    #[test]
+    fn pagination_leaving_for_nonpaged_view_invalidates_inflight_page() {
+        let mut pages = Pages::default();
+        let old = pages.reset();
+        pages.complete(old, 1, 24, 24);
+        assert_eq!(pages.begin_next(), Some((old, 2)));
+        pages.invalidate();
+        pages.complete(old, 2, 24, 24);
+        pages.fail(old, "late failure".into());
+        assert_ne!(old, pages.epoch);
+        assert_eq!(pages.page, 0);
+        assert!(!pages.loading);
+        assert!(pages.error.is_none());
+        assert_eq!(pages.begin_next(), None);
     }
 
     #[test]

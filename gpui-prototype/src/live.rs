@@ -127,6 +127,42 @@ impl Room {
             BroadcastStatus::Unknown
         })
     }
+
+    pub fn is_playback_candidate(&self, include_unknown: bool) -> bool {
+        match self.broadcast_status() {
+            BroadcastStatus::Live => true,
+            BroadcastStatus::Unknown => include_unknown,
+            BroadcastStatus::Offline | BroadcastStatus::Replay => false,
+        }
+    }
+}
+
+/// Follow the displayed order, wrapping at either end and skipping known
+/// unavailable rooms. Popular lists may omit live status, unlike checked follows.
+pub fn next_room_index(
+    rooms: &[Room],
+    current: &RoomKey,
+    forward: bool,
+    include_unknown: bool,
+) -> Option<usize> {
+    if rooms.is_empty() {
+        return None;
+    }
+    let matches_current = |room: &Room| room.platform == current.platform && room.id == current.id;
+    let position = rooms.iter().position(matches_current);
+    let start = position.unwrap_or(if forward { rooms.len() - 1 } else { 0 });
+    (1..=rooms.len())
+        .map(|step| {
+            if forward {
+                (start + step) % rooms.len()
+            } else {
+                (start + rooms.len() - step) % rooms.len()
+            }
+        })
+        .find(|&index| {
+            !matches_current(&rooms[index])
+                && rooms[index].is_playback_candidate(include_unknown)
+        })
 }
 
 #[derive(Deserialize)]
@@ -504,6 +540,55 @@ pub fn save(path: &Path, rooms: &[Room]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn room(id: u64, status: BroadcastStatus) -> Room {
+        Room {
+            broadcast: Some(status),
+            ..Room::bili(id, String::new())
+        }
+    }
+
+    #[test]
+    fn popular_room_switching_preserves_order_wraps_and_skips_unavailable_rooms() {
+        let rooms = vec![
+            room(1, BroadcastStatus::Live),
+            room(2, BroadcastStatus::Offline),
+            room(3, BroadcastStatus::Unknown),
+            room(4, BroadcastStatus::Replay),
+            room(5, BroadcastStatus::Live),
+        ];
+        assert_eq!(next_room_index(&rooms, &rooms[0].key(), true, true), Some(2));
+        assert_eq!(next_room_index(&rooms, &rooms[4].key(), false, true), Some(2));
+        assert_eq!(next_room_index(&rooms, &rooms[4].key(), true, true), Some(0));
+        assert_eq!(next_room_index(&rooms, &rooms[0].key(), false, true), Some(4));
+        // A room going offline during playback must not reset our position.
+        assert_eq!(next_room_index(&rooms, &rooms[1].key(), true, true), Some(2));
+        // Follow switching still requires a confirmed live status.
+        assert_eq!(next_room_index(&rooms, &rooms[0].key(), true, false), Some(4));
+    }
+
+    #[test]
+    fn room_switching_handles_empty_single_and_missing_current_rooms() {
+        let current = room(1, BroadcastStatus::Live);
+        assert_eq!(next_room_index(&[], &current.key(), true, true), None);
+        assert_eq!(next_room_index(std::slice::from_ref(&current), &current.key(), true, true), None);
+        let rooms = vec![current.clone(), room(2, BroadcastStatus::Replay)];
+        assert_eq!(next_room_index(&rooms, &current.key(), false, true), None);
+        let rooms = vec![room(2, BroadcastStatus::Live), room(3, BroadcastStatus::Live)];
+        assert_eq!(next_room_index(&rooms, &current.key(), true, true), Some(0));
+        assert_eq!(next_room_index(&rooms, &current.key(), false, true), Some(1));
+    }
+
+    #[test]
+    fn room_switching_uses_platform_and_id_for_identity() {
+        let current = room(1, BroadcastStatus::Live);
+        let other = Room {
+            platform: "douyu".into(),
+            ..current.clone()
+        };
+        let rooms = vec![current.clone(), other];
+        assert_eq!(next_room_index(&rooms, &current.key(), true, true), Some(1));
+    }
 
     #[test]
     fn follow_filters_keep_unknown_rooms_in_all_and_replays_out_of_live() {

@@ -22,6 +22,17 @@ class PagedSite extends LiveSite {
 }
 
 void main() {
+  test('carousel and replay remain distinct from offline and live', () {
+    for (final entry in {
+      LiveStatus.live: 'live', LiveStatus.replay: 'replay',
+      LiveStatus.carousel: 'replay', LiveStatus.offline: 'offline',
+      LiveStatus.unknown: 'unknown',
+    }.entries) {
+      final room = LiveRoom(roomId: '1', platform: 'bilibili', liveStatus: entry.key);
+      expect(handheld.broadcastStatus(room), entry.value);
+    }
+  });
+
   test('passes page numbers and retains every room in native-sized pages', () async {
     final site = PagedSite();
     final registry = SiteRegistry({'douyu': () => site});

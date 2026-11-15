@@ -122,9 +122,9 @@ LiveSite _makeSite(
     ? TwitchSite(http, cookies: cookies, gqlFallbacks: [_accountHttp(Http2LiveHttp(proxy: proxy), signedPlatform)])
     : factory(http, proxy);
 
-String _broadcastStatus(LiveRoom room) => switch (room.effectiveLiveStatus) {
+String broadcastStatus(LiveRoom room) => switch (room.effectiveLiveStatus) {
   LiveStatus.live => 'live',
-  LiveStatus.replay => 'replay',
+  LiveStatus.replay || LiveStatus.carousel => 'replay',
   LiveStatus.unknown => 'unknown',
   _ => 'offline',
 };
@@ -158,7 +158,7 @@ Future<List<Map<String, Object?>>> _roomStatuses(
         final detail = await (site is LiveSiteRoomRefresher
             ? (site as LiveSiteRoomRefresher).getRoomDetailForRefresh(roomId: id)
             : site.getRoomDetail(roomId: id)).timeout(const Duration(seconds: 5));
-        statuses[index] = _broadcastStatus(detail);
+        statuses[index] = broadcastStatus(detail);
       } on Object {
         // A failed lookup says nothing about whether the streamer is online.
       }
@@ -260,7 +260,7 @@ Map<String, Object?> _room(LiveSite site, LiveRoom room, {String? fallbackId}) =
   'nick': room.nick,
   'watching': room.watching,
   'live': room.isLiveNow,
-  'broadcast': _broadcastStatus(room),
+  'broadcast': broadcastStatus(room),
   'id': room.roomId.isEmpty ? fallbackId : room.roomId,
   'title': room.title.isNotEmpty
       ? room.title

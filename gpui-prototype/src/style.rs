@@ -221,7 +221,7 @@ impl Home {
         self.pane = pane;
         self.platform_cursor = None;
         self.request_id += 1;
-        self.popular_pages.reset();
+        self.popular_pages.invalidate();
         self.room_selection = None;
         self.rooms_scroll = UniformListScrollHandle::new();
         self.status.clear();
