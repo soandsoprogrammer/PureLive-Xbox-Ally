@@ -63,7 +63,7 @@ impl Overlay {
             let text = write.CreateTextFormat(
                 w!("Sarasa UI SC"),
                 None,
-                DWRITE_FONT_WEIGHT_BOLD,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
                 28.0 * scale,
