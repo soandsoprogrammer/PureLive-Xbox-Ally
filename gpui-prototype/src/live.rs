@@ -17,8 +17,8 @@ pub enum BroadcastStatus {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FollowFilter {
-    Live,
     #[default]
+    Live,
     All,
     Offline,
 }

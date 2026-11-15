@@ -225,7 +225,10 @@ impl Home {
         self.status.clear();
         self.show_follows = pane == Pane::Follows;
         match pane {
-            Pane::Follows => self.next_follow_check = None,
+            Pane::Follows => {
+                self.next_follow_check = None;
+                self.move_card(0, cx);
+            }
             Pane::Popular => {
                 self.request_rooms(String::new(), window, cx);
             }

@@ -220,7 +220,15 @@ impl Home {
             .unwrap_or_else(|| options.directory.clone())
             .join("PureLiveRust/follows.json");
         let follows = live::load(&follows_path);
-        let follow_rows = (0..follows.len()).collect();
+        let follow_filter = FollowFilter::default();
+        let follow_rows: Vec<usize> = follows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, room)| {
+                follow_filter.includes(room.broadcast_status()).then_some(index)
+            })
+            .collect();
+        let room_selection = (!follow_rows.is_empty()).then_some(0);
         let audio = AudioSettings::load(&follows_path.with_file_name("audio.json"));
         let danmaku_enabled =
             playback::load_danmaku_preference(&follows_path.with_file_name("danmaku.json"));
@@ -294,13 +302,13 @@ impl Home {
             query,
             follows_path,
             follows,
-            follow_filter: FollowFilter::All,
+            follow_filter,
             follow_rows,
             room_status_task: None,
             next_follow_check: None,
             results: Vec::new(),
             show_follows: true,
-            room_selection: None,
+            room_selection,
             request_id: 0,
             active_room: None,
             platforms: live::platforms(),
@@ -612,12 +620,14 @@ impl Home {
                     .then_some(index)
             }));
         if self.show_follows {
-            self.room_selection = selected.and_then(|key| {
-                self.follow_rows.iter().position(|&index| {
-                    let room = &self.follows[index];
-                    room.platform == key.platform && room.id == key.id
+            self.room_selection = selected
+                .and_then(|key| {
+                    self.follow_rows.iter().position(|&index| {
+                        let room = &self.follows[index];
+                        room.platform == key.platform && room.id == key.id
+                    })
                 })
-            });
+                .or_else(|| (!self.follow_rows.is_empty()).then_some(0));
             if let Some(index) = self.room_selection {
                 self.rooms_scroll
                     .scroll_to_item(index / 3, ScrollStrategy::Nearest);
@@ -626,7 +636,7 @@ impl Home {
     }
 
     fn select_follow_filter(&mut self, filter: FollowFilter, cx: &mut Context<Self>) {
-        if self.follow_filter == filter && self.room_selection.is_none() {
+        if self.follow_filter == filter {
             return;
         }
         self.follow_filter = filter;
@@ -654,6 +664,7 @@ impl Home {
                 };
                 let next = (current + step) % FollowFilter::TABS.len();
                 self.select_follow_filter(FollowFilter::TABS[next], cx);
+                self.focus.focus(window, cx);
             }
             Pane::Popular => {
                 let count = self.platforms.len();
@@ -885,9 +896,9 @@ impl Home {
                     Ok(rooms) => {
                         mark(&this.log, format!("rooms_loaded={}", rooms.len()));
                         this.results = rooms;
-                        // Do not pre-select a card: the mint ring means the user moved
-                        // to it, not that the list has just loaded.
-                        this.room_selection = None;
+                        this.room_selection = (this.pane == Pane::Popular
+                            && !this.results.is_empty())
+                            .then_some(0);
                         if this.results.is_empty() {
                             if this.pane == Pane::Search && this.search_platform.is_none() {
                                 "暂无结果，可换个关键词或粘贴直播间链接".into()
