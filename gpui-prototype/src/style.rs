@@ -274,6 +274,11 @@ impl Home {
 
     fn header(&self, cx: &mut Context<Self>) -> Div {
         div()
+            .on_mouse_down(MouseButton::Left, |event, window, _| {
+                if event.click_count == 2 {
+                    window.zoom_window();
+                }
+            })
             .h_flex()
             .h(px(57.0))
             .flex_shrink_0()
@@ -301,6 +306,7 @@ impl Home {
                         let active = pane == self.pane;
                         div()
                             .id(("tab", index))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .h_flex()
                             .h_full()
                             .items_center()
@@ -323,9 +329,11 @@ impl Home {
                     })),
             )
             .child(div().h_flex().min_w(px(120.0)).justify_end().child(
-                control("settings-tab", "⚙  设置", self.pane == Pane::Settings).on_click(
-                    cx.listener(|this, _, window, cx| this.select_pane(Pane::Settings, window, cx)),
-                ),
+                control("settings-tab", "⚙  设置", self.pane == Pane::Settings)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.select_pane(Pane::Settings, window, cx)
+                    })),
             ))
     }
 
@@ -983,7 +991,13 @@ impl Home {
                     .items_center()
                     .justify_center()
                     .when(!video_open, |view| view.child(self.status.clone()))
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_controls(window, cx))),
+                    .on_click(cx.listener(|this, event, window, cx| {
+                        if event.click_count() == 2 {
+                            window.zoom_window();
+                        } else if event.click_count() == 1 {
+                            this.toggle_controls(window, cx);
+                        }
+                    })),
             )
             .when_some(self.playback.menu, |view, menu| {
                 view.child(match menu {
