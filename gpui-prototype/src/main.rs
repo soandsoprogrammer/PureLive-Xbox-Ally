@@ -1465,7 +1465,10 @@ impl Home {
     fn on_gamepad(&mut self, pressed: u16, held: u16, window: &mut Window, cx: &mut Context<Self>) {
         // Check the held state before either bumper's normal navigation action.
         // Real presses usually arrive in separate polls, even when used as a chord.
-        if exit_chord_pressed(pressed, held) {
+        if self.in_playback()
+            && self.playback.menu == Some(ChoiceMenu::Rooms)
+            && exit_chord_pressed(pressed, held)
+        {
             self.choose(Action::Exit, window, cx);
             return;
         }
