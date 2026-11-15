@@ -41,7 +41,7 @@ use gpui_kit::*;
 use hardware_player::{End as PlaybackEnd, HardwarePlayer as Player};
 use live::{BroadcastStatus, FollowFilter, Room, RoomKey};
 use native::Surface;
-use playback::{AudioSettings, PlaybackUi};
+use playback::{AudioSettings, ChoiceMenu, PlaybackUi};
 use style::Pane;
 #[cfg(windows)]
 use windows_sys::Win32::UI::Input::XboxController::{
