@@ -145,6 +145,7 @@ impl Asset for Cover {
             }
             static HTTP: LazyLock<ureq::Agent> = LazyLock::new(|| {
                 ureq::Agent::config_builder()
+                    .proxy(None)
                     .timeout_global(Some(Duration::from_secs(6)))
                     .max_idle_connections(12)
                     .max_idle_connections_per_host(2)

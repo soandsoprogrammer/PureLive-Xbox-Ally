@@ -20,7 +20,6 @@ use crate::live::{Room, RoomKey, RoomStatus};
 pub struct Source {
     pub url: String,
     pub headers: BTreeMap<String, String>,
-    pub proxy: String,
     pub lease: Option<Bridge>,
     pub playback: Playback,
 }
@@ -134,38 +133,25 @@ struct Reply {
     room_statuses: Vec<RoomStatus>,
     url: String,
     headers: BTreeMap<String, String>,
-    proxy: String,
     lease: bool,
     playback: Playback,
     super_chats: Vec<SuperChat>,
 }
 
-fn bili_request(message: &serde_json::Value) -> bool {
-    if message["platform"] == "bilibili" {
-        return true;
+fn configure_network(command: &mut Command) {
+    // Keep all helper connections direct without changing the parent's environment.
+    for key in [
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
+    ] {
+        command.env_remove(key);
     }
-    message["action"] == "status"
-        && message["rooms"].as_array().is_some_and(|rooms| {
-            !rooms.is_empty() && rooms.iter().all(|room| room["platform"] == "bilibili")
-        })
-}
-
-fn configure_network(command: &mut Command, message: &serde_json::Value) {
-    if bili_request(message) {
-        // Scope this to the Bilibili helper, preserving proxies for other sites
-        // and never changing the parent process or the user's system settings.
-        for key in [
-            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
-        ] {
-            command.env_remove(key);
-        }
-    }
+    command.env("NO_PROXY", "*").env("no_proxy", "*");
 }
 
 fn launch(directory: &Path, message: serde_json::Value) -> Result<(ChildStdout, Bridge), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut command = Command::new(directory.join("purelive-platforms.exe"));
-    configure_network(&mut command, &message);
+    configure_network(&mut command);
     let child = command
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())
@@ -214,27 +200,6 @@ pub fn room_statuses(
     rooms: &[RoomKey],
     cookies: &BTreeMap<String, String>,
 ) -> Result<Vec<RoomStatus>, String> {
-    // A mixed batch must not force overseas sites off their configured proxy,
-    // or make Bilibili inherit it. Keep successful results if either batch fails.
-    let (bili, other): (Vec<_>, Vec<_>) = rooms
-        .iter()
-        .cloned()
-        .partition(|room| room.platform == "bilibili");
-    if !bili.is_empty() && !other.is_empty() {
-        return thread::scope(|scope| {
-            let bili = scope.spawn(|| room_statuses(directory, &bili, cookies));
-            let other = room_statuses(directory, &other, cookies);
-            let bili = bili.join().unwrap_or_else(|_| Err("B 站状态查询中断".into()));
-            match (bili, other) {
-                (Ok(mut bili), Ok(other)) => {
-                    bili.extend(other);
-                    Ok(bili)
-                }
-                (Ok(rooms), Err(_)) | (Err(_), Ok(rooms)) => Ok(rooms),
-                (Err(error), Err(_)) => Err(error),
-            }
-        });
-    }
     let (reply, _) = request(
         directory,
         serde_json::json!({
@@ -263,7 +228,6 @@ pub fn resolve(
     Ok(Source {
         url: reply.url,
         headers: reply.headers,
-        proxy: reply.proxy,
         lease: reply.lease.then_some(guard),
         playback: reply.playback,
     })
@@ -325,28 +289,22 @@ pub fn super_chats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn bili_network_policy_is_scoped_to_one_platform() {
-        for action in ["find", "play", "chat", "super_chat"] {
-            let mut command = Command::new("helper.exe");
-            configure_network(&mut command, &json!({"action": action, "platform": "bilibili"}));
-            assert!(command.get_envs().any(|(key, value)| key == "HTTPS_PROXY" && value.is_none()));
+    fn network_helper_removes_proxies_and_disables_proxy_discovery() {
+        let mut command = Command::new("helper.exe");
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+            command.env(key, "http://127.0.0.1:9");
         }
-        for platform in ["douyu", "twitch", "all", ""] {
-            let mut command = Command::new("helper.exe");
-            configure_network(&mut command, &json!({"action": "find", "platform": platform}));
-            assert_eq!(command.get_envs().count(), 0);
+        configure_network(&mut command);
+        for expected in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+            assert!(command.get_envs().any(|(key, value)| {
+                key.to_string_lossy().eq_ignore_ascii_case(expected) && value.is_none()
+            }));
         }
-    }
-
-    #[test]
-    fn bili_status_routing_requires_a_nonempty_homogeneous_batch() {
-        let bili = json!({"platform": "bilibili", "id": "1"});
-        let twitch = json!({"platform": "twitch", "id": "channel"});
-        assert!(bili_request(&json!({"action": "status", "rooms": [bili.clone()]})));
-        assert!(!bili_request(&json!({"action": "status", "rooms": [bili, twitch]})));
-        assert!(!bili_request(&json!({"action": "status", "rooms": []})));
+        assert!(command.get_envs().any(|(key, value)| {
+            key.to_string_lossy().eq_ignore_ascii_case("NO_PROXY")
+                && value == Some(std::ffi::OsStr::new("*"))
+        }));
     }
 }

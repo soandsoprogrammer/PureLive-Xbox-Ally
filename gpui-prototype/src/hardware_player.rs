@@ -64,7 +64,6 @@ impl Drop for Awake {
 pub struct Input {
     pub url: String,
     pub headers: BTreeMap<String, String>,
-    pub proxy: String,
 }
 
 impl Input {
@@ -72,17 +71,13 @@ impl Input {
         Self {
             url: source.url.clone(),
             headers: source.headers.clone(),
-            proxy: source.proxy.clone(),
         }
     }
 
     pub fn agent(&self) -> Result<ureq::Agent> {
-        let proxy = (!self.proxy.is_empty())
-            .then(|| ureq::Proxy::new(&self.proxy))
-            .transpose()?;
         let timeout = Some(Duration::from_secs(7));
         Ok(ureq::Agent::config_builder()
-            .proxy(proxy)
+            .proxy(None)
             .timeout_connect(timeout)
             .timeout_recv_response(timeout)
             .timeout_per_read(timeout)

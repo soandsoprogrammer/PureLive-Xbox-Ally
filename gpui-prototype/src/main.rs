@@ -48,7 +48,7 @@ use windows_sys::Win32::UI::Input::XboxController::{
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_START,
     XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
 };
-use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, dpi::PhysicalSize};
+use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows, dpi::PhysicalSize};
 
 const TOOLBAR: f32 = 88.0;
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -396,6 +396,7 @@ impl Home {
         let site_index = self.account_site;
         let site = &account::PLATFORMS[site_index];
         let web = WebViewBuilder::new()
+            .with_additional_browser_args("--no-proxy-server")
             .with_bounds(web_bounds(width, height))
             .with_navigation_handler(move |url| url == "about:blank" || site.allows(&url))
             .with_on_page_load_handler(move |event, url| {
