@@ -504,7 +504,8 @@ fn bili_playback(
             quality: Some(quality_id),
             quality_label,
             lines,
-            line: Some(chosen.0.clone()),
+            // Keep automatic selection distinct from the resolved playback URL.
+            line: selection.line.as_ref().filter(|id| **id == chosen.0).cloned(),
             chat: true,
             super_chat: true,
             super_chat_board: true,
