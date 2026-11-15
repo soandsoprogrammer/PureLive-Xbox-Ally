@@ -7,7 +7,8 @@ use windows_sys::Win32::{
     UI::{
         Input::XboxController::{XINPUT_STATE, XInputGetState},
         WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, GetClientRect, IsIconic, SWP_NOACTIVATE, SWP_NOZORDER,
+            CreateWindowExW, DestroyWindow, GetClientRect, IsIconic, IsZoomed, ShowWindow, SW_MAXIMIZE,
+            SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER,
             SetWindowPos, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_DISABLED, WS_VISIBLE,
         },
     },
@@ -28,6 +29,15 @@ pub fn window_handle(window: &Window) -> Result<HWND, String> {
 
 pub fn minimized(window: &Window) -> bool {
     window_handle(window).is_ok_and(|hwnd| unsafe { IsIconic(hwnd) != 0 })
+}
+
+pub fn toggle_maximized(window: &Window) {
+    if let Ok(hwnd) = window_handle(window) {
+        unsafe {
+            let command = if IsZoomed(hwnd) != 0 { SW_RESTORE } else { SW_MAXIMIZE };
+            ShowWindow(hwnd, command);
+        }
+    }
 }
 
 /// The buttons, the left thumbstick and the triggers of the first connected pad.

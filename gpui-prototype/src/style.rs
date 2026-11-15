@@ -276,7 +276,7 @@ impl Home {
         div()
             .on_mouse_down(MouseButton::Left, |event, window, _| {
                 if event.click_count == 2 {
-                    window.zoom_window();
+                    native::toggle_maximized(window);
                 }
             })
             .h_flex()
@@ -993,7 +993,7 @@ impl Home {
                     .when(!video_open, |view| view.child(self.status.clone()))
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                         if event.click_count() == 2 {
-                            window.zoom_window();
+                            native::toggle_maximized(window);
                         } else if event.click_count() == 1 {
                             this.toggle_controls(window, cx);
                         }
