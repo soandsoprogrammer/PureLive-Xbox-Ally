@@ -9,7 +9,7 @@ use windows::{
         Media::MediaFoundation::*,
         System::{Com::*, Variant::VARIANT},
     },
-    core::{AgileReference, Interface},
+    core::Interface,
 };
 
 pub struct Runtime;
@@ -89,18 +89,27 @@ pub struct RenderFrame {
     pub width: u32,
     pub height: u32,
     // Pin the decoder's surface until the renderer replaces this frame.
-    _sample: AgileReference<IMFSample>,
+    _sample: RenderSample,
 }
 
+struct RenderSample {
+    _sample: IMFSample,
+}
+
+// SAFETY: The decoder obtains this sample in the process MTA and the render
+// worker joins that same MTA before receiving frames. It retains the sample
+// only to pin the surface and releases it before leaving the apartment.
+unsafe impl Send for RenderSample {}
+
 impl Frame {
-    pub fn into_render_frame(self) -> Result<RenderFrame> {
-        Ok(RenderFrame {
+    pub fn into_render_frame(self) -> RenderFrame {
+        RenderFrame {
             texture: self.texture,
             subresource: self.subresource,
             width: self.width,
             height: self.height,
-            _sample: AgileReference::new(&self._sample)?,
-        })
+            _sample: RenderSample { _sample: self._sample },
+        }
     }
 }
 

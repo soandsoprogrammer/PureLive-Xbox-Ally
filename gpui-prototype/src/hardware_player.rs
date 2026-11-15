@@ -282,11 +282,20 @@ fn play(window: usize, source: Input, state: &State) -> Result<()> {
         let (frames, receiver) = sync_channel(1);
         let render_device = device.device.clone();
         let render_context = device.context.clone();
-        let renderer = scope.spawn(move || {
-            render_frames(window, &render_device, &render_context, receiver, state)
-                .map_err(|error| error.to_string())
+        let (ready, started) = sync_channel(0);
+        let renderer = scope.spawn(move || -> Result<(), String> {
+            let _runtime = dxva::Runtime::new().map_err(|error| error.to_string())?;
+            let receiver = receiver;
+            if ready.send(()).is_ok() {
+                render_frames(window, &render_device, &render_context, receiver, state)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
         });
-        let playback = play_source(source, &url, is_hls, &context, &device, &frames, state);
+        let playback = match started.recv() {
+            Ok(()) => play_source(source, &url, is_hls, &context, &device, &frames, state),
+            Err(_) => Ok(()),
+        };
         drop(frames);
         renderer.join().map_err(|_| "画面渲染线程异常退出")??;
         playback?;
@@ -389,7 +398,6 @@ fn render_frames(
 ) -> Result<()> {
     const TICK: Duration = Duration::from_nanos(1_000_000_000 / 60);
 
-    let _runtime = dxva::Runtime::new()?;
     let mut renderer = dxva_render::Renderer::new(HWND(window as *mut c_void), device, context)?;
     let mut current = None;
     let mut pending = None;
@@ -634,7 +642,7 @@ impl Clock {
             }
         }
         if !state.stopped.load(Relaxed) {
-            frames.send(frame.into_render_frame()?)
+            frames.send(frame.into_render_frame())
                 .map_err(|_| "画面渲染线程已退出")?;
         }
         Ok(())
