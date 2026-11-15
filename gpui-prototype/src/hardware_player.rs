@@ -415,7 +415,9 @@ fn render_frames(
         let overlay = lanes.iter().any(|lane| {
             last_draw.saturating_duration_since(lane.started) < lane.duration
         });
-        if !new_video && (state.paused.load(Relaxed) || (!overlay && !had_overlay)) {
+        let animate = overlay && !state.paused.load(Relaxed);
+        let clear_overlay = had_overlay && !overlay;
+        if !new_video && !animate && !clear_overlay {
             continue;
         }
 
