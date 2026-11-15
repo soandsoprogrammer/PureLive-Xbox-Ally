@@ -991,7 +991,7 @@ impl Home {
                     .items_center()
                     .justify_center()
                     .when(!video_open, |view| view.child(self.status.clone()))
-                    .on_click(cx.listener(|this, event, window, cx| {
+                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                         if event.click_count() == 2 {
                             window.zoom_window();
                         } else if event.click_count() == 1 {
