@@ -138,7 +138,7 @@ impl Overlay {
                 }
                 match part {
                     Part::Text(text) => {
-                        self.draw_text(text, x.round(), y.round(), scale);
+                        self.draw_text(text, x, y.round(), scale);
                         drawn.text = true;
                     }
                     Part::Image(source) => {
@@ -192,7 +192,7 @@ impl Overlay {
                     &self.text,
                     &bounds,
                     brush,
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    D2D1_DRAW_TEXT_OPTIONS_NO_SNAP,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
             }
