@@ -35,9 +35,9 @@ struct Processor {
 }
 
 impl Renderer {
-    pub fn new(window: HWND, gpu: &dxva::Device) -> Result<Self> {
+    pub fn new(window: HWND, device: &ID3D11Device, context: &ID3D11DeviceContext) -> Result<Self> {
         unsafe {
-            let adapter = gpu.device.cast::<IDXGIDevice>()?.GetAdapter()?;
+            let adapter = device.cast::<IDXGIDevice>()?.GetAdapter()?;
             let factory: IDXGIFactory2 = adapter.GetParent()?;
             let description = DXGI_SWAP_CHAIN_DESC1 {
                 Format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -53,15 +53,15 @@ impl Renderer {
                 ..Default::default()
             };
             let swap_chain =
-                factory.CreateSwapChainForHwnd(&gpu.device, window, &description, None, None)?;
+                factory.CreateSwapChainForHwnd(device, window, &description, None, None)?;
             factory.MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER)?;
             let back_buffer: ID3D11Texture2D = swap_chain.GetBuffer(0)?;
             let mut desc = D3D11_TEXTURE2D_DESC::default();
             back_buffer.GetDesc(&mut desc);
             Ok(Self {
                 swap_chain,
-                video_device: gpu.device.cast()?,
-                context: gpu.context.cast()?,
+                video_device: device.cast()?,
+                context: context.cast()?,
                 processor: None,
                 window,
                 output_size: (desc.Width, desc.Height),
@@ -69,7 +69,7 @@ impl Renderer {
         }
     }
 
-    pub fn frame(&mut self, frame: &dxva::Frame, lanes: &[Lane]) -> Result<Drawn> {
+    pub fn frame(&mut self, frame: &dxva::RenderFrame, lanes: &[Lane]) -> Result<Drawn> {
         let mut client = RECT::default();
         unsafe {
             GetClientRect(self.window, &mut client)?;

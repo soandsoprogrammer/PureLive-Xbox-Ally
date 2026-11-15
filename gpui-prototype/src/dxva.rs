@@ -9,7 +9,7 @@ use windows::{
         Media::MediaFoundation::*,
         System::{Com::*, Variant::VARIANT},
     },
-    core::Interface,
+    core::{AgileReference, Interface},
 };
 
 pub struct Runtime;
@@ -81,6 +81,27 @@ pub struct Frame {
     pub height: u32,
     pub pts: Option<i64>,
     _sample: IMFSample,
+}
+
+pub struct RenderFrame {
+    pub texture: ID3D11Texture2D,
+    pub subresource: u32,
+    pub width: u32,
+    pub height: u32,
+    // Pin the decoder's surface until the renderer replaces this frame.
+    _sample: AgileReference<IMFSample>,
+}
+
+impl Frame {
+    pub fn into_render_frame(self) -> Result<RenderFrame> {
+        Ok(RenderFrame {
+            texture: self.texture,
+            subresource: self.subresource,
+            width: self.width,
+            height: self.height,
+            _sample: AgileReference::new(&self._sample)?,
+        })
+    }
 }
 
 pub struct Decoder {

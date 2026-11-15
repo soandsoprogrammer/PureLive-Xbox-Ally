@@ -11,7 +11,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed},
-        mpsc::sync_channel,
+        mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel},
     },
     thread,
     time::{Duration, Instant},
@@ -21,7 +21,10 @@ use symphonia_core::{
     codecs::{CODEC_TYPE_AAC, CodecParameters, Decoder, DecoderOptions},
     formats::Packet as AudioPacket,
 };
-use windows::Win32::Foundation::HWND;
+use windows::Win32::{
+    Foundation::HWND,
+    Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext},
+};
 
 #[link(name = "winmm")]
 unsafe extern "system" {
@@ -275,7 +278,34 @@ fn play(window: usize, source: Input, state: &State) -> Result<()> {
     if state.stopped.load(Relaxed) {
         return Ok(());
     }
-    let mut renderer = dxva_render::Renderer::new(HWND(window as *mut c_void), &device)?;
+    thread::scope(|scope| {
+        let (frames, receiver) = sync_channel(1);
+        let render_device = device.device.clone();
+        let render_context = device.context.clone();
+        let renderer = scope.spawn(move || {
+            render_frames(window, &render_device, &render_context, receiver, state)
+                .map_err(|error| error.to_string())
+        });
+        let playback = play_source(source, &url, is_hls, &context, &device, &frames, state);
+        drop(frames);
+        renderer.join().map_err(|_| "画面渲染线程异常退出")??;
+        playback?;
+        if state.frames.load(Relaxed) == 0 && !state.stopped.load(Relaxed) {
+            return Err("播放源没有可用的视频帧".into());
+        }
+        Ok(())
+    })
+}
+
+fn play_source(
+    source: Input,
+    url: &url::Url,
+    is_hls: bool,
+    context: &RuntimeContext,
+    device: &dxva::Device,
+    frames: &SyncSender<dxva::RenderFrame>,
+    state: &State,
+) -> Result<()> {
     let mut clock = Clock::default();
     let mut output = Audio::default();
     if is_hls {
@@ -317,8 +347,8 @@ fn play(window: usize, source: Input, state: &State) -> Result<()> {
                     play_packets(
                         demux,
                         !fragmented_mp4,
-                        &device,
-                        &mut renderer,
+                        device,
+                        frames,
                         &mut clock,
                         &mut output,
                         state,
@@ -338,8 +368,8 @@ fn play(window: usize, source: Input, state: &State) -> Result<()> {
         play_packets(
             demux,
             false,
-            &device,
-            &mut renderer,
+            device,
+            frames,
             &mut clock,
             &mut output,
             state,
@@ -347,8 +377,60 @@ fn play(window: usize, source: Input, state: &State) -> Result<()> {
     } else {
         return Err("当前播放器支持 HTTP/HTTPS FLV 和 HLS 直播线路".into());
     }
-    if state.frames.load(Relaxed) == 0 && !state.stopped.load(Relaxed) {
-        return Err("播放源没有可用的视频帧".into());
+    Ok(())
+}
+
+fn render_frames(
+    window: usize,
+    device: &ID3D11Device,
+    context: &ID3D11DeviceContext,
+    frames: Receiver<dxva::RenderFrame>,
+    state: &State,
+) -> Result<()> {
+    const TICK: Duration = Duration::from_nanos(1_000_000_000 / 60);
+
+    let _runtime = dxva::Runtime::new()?;
+    let mut renderer = dxva_render::Renderer::new(HWND(window as *mut c_void), device, context)?;
+    let mut current = None;
+    let mut last_draw = Instant::now();
+    let mut had_overlay = false;
+
+    while !state.stopped.load(Relaxed) {
+        let wait = TICK.saturating_sub(last_draw.elapsed());
+        let next = match frames.recv_timeout(wait) {
+            Ok(frame) => Some(frame),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        if state.stopped.load(Relaxed) {
+            break;
+        }
+        let new_video = next.is_some();
+        if let Some(frame) = next {
+            current = Some(frame);
+        }
+        last_draw = Instant::now();
+        let Some(frame) = &current else { continue };
+        let lanes = Arc::clone(&state.danmaku.lock().unwrap());
+        let overlay = lanes.iter().any(|lane| {
+            last_draw.saturating_duration_since(lane.started) < lane.duration
+        });
+        if !new_video && (state.paused.load(Relaxed) || (!overlay && !had_overlay)) {
+            continue;
+        }
+
+        // Reuse the last decoded surface to keep moving during gaps in video.
+        let drawn = renderer.frame(frame, &lanes)?;
+        had_overlay = overlay;
+        if drawn.text {
+            state.text_drawn.store(true, Relaxed);
+        }
+        if drawn.emote {
+            state.emote_drawn.store(true, Relaxed);
+        }
+        if new_video {
+            state.frames.fetch_add(1, Relaxed);
+        }
     }
     Ok(())
 }
@@ -357,7 +439,7 @@ fn play_packets(
     mut demux: Box<dyn Demuxer>,
     annex_b: bool,
     device: &dxva::Device,
-    renderer: &mut dxva_render::Renderer,
+    frames: &SyncSender<dxva::RenderFrame>,
     clock: &mut Clock,
     output: &mut Audio,
     state: &State,
@@ -406,7 +488,7 @@ fn play_packets(
             if let Some(decoder) = &mut decoder {
                 decoder.send(&packet)?;
                 while let Some(frame) = decoder.receive()? {
-                    clock.present(frame, renderer, state, output)?;
+                    clock.present(frame, frames, state, output)?;
                 }
             }
         } else if let Some(stream) = &audio
@@ -449,7 +531,7 @@ fn play_packets(
     {
         decoder.finish()?;
         while let Some(frame) = decoder.receive()? {
-            clock.present(frame, renderer, state, output)?;
+            clock.present(frame, frames, state, output)?;
         }
     }
     Ok(())
@@ -497,7 +579,7 @@ impl Clock {
     fn present(
         &mut self,
         frame: dxva::Frame,
-        renderer: &mut dxva_render::Renderer,
+        frames: &SyncSender<dxva::RenderFrame>,
         state: &State,
         audio: &mut Audio,
     ) -> Result<()> {
@@ -532,15 +614,8 @@ impl Clock {
             }
         }
         if !state.stopped.load(Relaxed) {
-            let lanes = Arc::clone(&state.danmaku.lock().unwrap());
-            let drawn = renderer.frame(&frame, &lanes)?;
-            if drawn.text {
-                state.text_drawn.store(true, Relaxed);
-            }
-            if drawn.emote {
-                state.emote_drawn.store(true, Relaxed);
-            }
-            state.frames.fetch_add(1, Relaxed);
+            frames.send(frame.into_render_frame()?)
+                .map_err(|_| "画面渲染线程已退出")?;
         }
         Ok(())
     }
