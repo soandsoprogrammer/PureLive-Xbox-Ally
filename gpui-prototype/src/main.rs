@@ -971,6 +971,11 @@ impl Home {
     }
 
     fn play_room(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+        self.room_selection = (0..self.room_count())
+            .find(|&index| self.room_at(index).is_some_and(|listed| listed.same_channel(&room)));
+        if let Some(selected) = self.room_selection {
+            self.rooms_scroll.scroll_to_item(selected / 3, ScrollStrategy::Nearest);
+        }
         self.covers.clear(window, cx);
         self.stop_chat();
         self.playback_epoch += 1;
@@ -1004,15 +1009,6 @@ impl Home {
             return;
         };
         let room = self.playback_rooms()[index].clone();
-        self.room_selection = if self.pane == Pane::Follows {
-            self.follow_rows.iter().position(|&follow| follow == index)
-        } else {
-            Some(index)
-        };
-        if let Some(selected) = self.room_selection {
-            self.rooms_scroll
-                .scroll_to_item(selected / 3, ScrollStrategy::Nearest);
-        }
         self.play_room(room, window, cx);
     }
 
@@ -1467,7 +1463,9 @@ impl Home {
 
     fn on_gamepad(&mut self, pressed: u16, window: &mut Window, cx: &mut Context<Self>) {
         if self.in_playback() {
-            if pressed & XINPUT_GAMEPAD_B != 0 {
+            if pressed & XINPUT_GAMEPAD_START != 0 {
+                self.toggle_room_menu(window, cx);
+            } else if pressed & XINPUT_GAMEPAD_B != 0 {
                 self.playback_back(window, cx);
             } else if pressed & XINPUT_GAMEPAD_A != 0 {
                 self.confirm_playback(window, cx);
@@ -1575,6 +1573,7 @@ impl Render for Home {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if this.in_playback() {
                     match event.keystroke.key.as_str() {
+                        "f10" | "menu" if !event.is_held => this.toggle_room_menu(window, cx),
                         "left" => this.move_playback(-1, window, cx),
                         "right" => this.move_playback(1, window, cx),
                         "up" if this.playback.menu.is_none() => this.adjust_volume(5, window, cx),
