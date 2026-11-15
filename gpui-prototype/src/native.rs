@@ -7,8 +7,8 @@ use windows_sys::Win32::{
     UI::{
         Input::XboxController::{XINPUT_STATE, XInputGetState},
         WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, GetClientRect, IsIconic, IsZoomed, ShowWindow, SW_MAXIMIZE,
-            SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER,
+            CreateWindowExW, DestroyWindow, GetClientRect, IsIconic, IsZoomed, PostMessageW, SC_MAXIMIZE,
+            SC_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, WM_SYSCOMMAND,
             SetWindowPos, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_DISABLED, WS_VISIBLE,
         },
     },
@@ -34,8 +34,9 @@ pub fn minimized(window: &Window) -> bool {
 pub fn toggle_maximized(window: &Window) {
     if let Ok(hwnd) = window_handle(window) {
         unsafe {
-            let command = if IsZoomed(hwnd) != 0 { SW_RESTORE } else { SW_MAXIMIZE };
-            ShowWindow(hwnd, command);
+            let command = if IsZoomed(hwnd) != 0 { SC_RESTORE } else { SC_MAXIMIZE };
+            // Let the click handler return before Windows delivers resize messages.
+            PostMessageW(hwnd, WM_SYSCOMMAND, command as usize, 0);
         }
     }
 }
