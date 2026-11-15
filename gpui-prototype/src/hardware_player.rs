@@ -392,31 +392,49 @@ fn render_frames(
     let _runtime = dxva::Runtime::new()?;
     let mut renderer = dxva_render::Renderer::new(HWND(window as *mut c_void), device, context)?;
     let mut current = None;
-    let mut last_draw = Instant::now();
+    let mut pending = None;
+    let mut deadline = Instant::now();
     let mut had_overlay = false;
+    let mut connected = true;
 
-    while !state.stopped.load(Relaxed) {
-        let wait = TICK.saturating_sub(last_draw.elapsed());
-        let next = match frames.recv_timeout(wait) {
-            Ok(frame) => Some(frame),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
+    while connected && !state.stopped.load(Relaxed) {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        match frames.recv_timeout(wait) {
+            Ok(frame) => {
+                if pending.replace(frame).is_some() {
+                    state.dropped.fetch_add(1, Relaxed);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => connected = false,
+        }
         if state.stopped.load(Relaxed) {
             break;
         }
-        let new_video = next.is_some();
-        if let Some(frame) = next {
-            current = Some(frame);
-        }
-        last_draw = Instant::now();
-        let Some(frame) = &current else { continue };
+        let now = Instant::now();
         let lanes = Arc::clone(&state.danmaku.lock().unwrap());
         let overlay = lanes.iter().any(|lane| {
-            last_draw.saturating_duration_since(lane.started) < lane.duration
+            now.saturating_duration_since(lane.started) < lane.duration
         });
         let animate = overlay && !state.paused.load(Relaxed);
         let clear_overlay = had_overlay && !overlay;
+
+        // Coalesce video arrivals with the next overlay tick. An early frame
+        // should not interrupt the cadence or postpone the next tick.
+        if connected && animate && had_overlay && now < deadline {
+            continue;
+        }
+
+        let new_video = pending.is_some();
+        if let Some(frame) = pending.take() {
+            current = Some(frame);
+        }
+        deadline = if animate && had_overlay && now < deadline + TICK {
+            deadline + TICK
+        } else {
+            now + TICK
+        };
+        let Some(frame) = &current else { continue };
         if !new_video && !animate && !clear_overlay {
             continue;
         }
