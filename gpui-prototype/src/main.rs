@@ -7,6 +7,7 @@ mod dxva;
 #[cfg(windows)]
 mod dxva_render;
 mod emotes;
+mod floating_panel;
 #[cfg(windows)]
 mod hardware_player;
 #[cfg(windows)]
@@ -131,10 +132,10 @@ enum Content {
 }
 
 impl Content {
-    fn resize(&self, window: &Window, controls_height: f32) {
+    fn resize(&self, window: &Window, controls_height: f32, panel: Option<floating_panel::Bounds>) {
         match self {
             Self::Video { surface, .. } => {
-                surface.resize_video(window, controls_height);
+                surface.resize_video(window, controls_height, panel);
             }
             Self::Login { web, surface, .. } => {
                 let (width, height) = surface.resize(window, TOOLBAR);
@@ -265,7 +266,7 @@ impl Home {
         cx.observe_window_bounds(window, |this, window, _| {
             if !native::minimized(window) {
                 if let Some(content) = &this.content {
-                    content.resize(window, this.playback.height());
+                    content.resize(window, this.playback.height(), this.playback.floating_panel(window));
                 }
             }
         })
@@ -362,7 +363,7 @@ impl Home {
         mut source: Source,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let surface = Surface::video(window, self.playback.height())?;
+        let surface = Surface::video(window, self.playback.height(), self.playback.floating_panel(window))?;
         let player = Player::start(
             surface.id(),
             hardware_player::Input::from_source(&source),
@@ -1566,7 +1567,7 @@ impl Home {
 }
 
 impl Render for Home {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .track_focus(&self.focus)
@@ -1633,7 +1634,7 @@ impl Render for Home {
                     _ => {}
                 }
             }))
-            .child(self.view(cx))
+            .child(self.view(window, cx))
     }
 }
 

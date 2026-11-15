@@ -955,7 +955,7 @@ impl Home {
             )
     }
 
-    fn playback_view(&self, cx: &mut Context<Self>) -> Div {
+    fn playback_view(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let video_open = matches!(self.content, Some(Content::Video { .. }));
         let line = self
             .playback
@@ -1004,6 +1004,7 @@ impl Home {
         ];
         let actions = self.playback.actions();
         div()
+            .relative()
             .size_full()
             .v_flex()
             .bg(rgb(0x000000))
@@ -1027,7 +1028,7 @@ impl Home {
             )
             .when_some(self.playback.menu, |view, menu| {
                 view.child(match menu {
-                    ChoiceMenu::Rooms => self.playback_room_menu(cx),
+                    ChoiceMenu::Rooms => self.playback_room_menu(window, cx),
                     ChoiceMenu::Volume => self.volume_panel(cx),
                     ChoiceMenu::SuperChat => self.super_chat_panel(cx),
                     _ => self.playback_choices(menu, cx),
@@ -1136,7 +1137,10 @@ impl Home {
             )
     }
 
-    fn playback_room_menu(&self, cx: &mut Context<Self>) -> Div {
+    fn playback_room_menu(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let (width, height) = native::client_size(window);
+        let bounds = floating_panel::room_list(width, height);
+        let compact = bounds.height < 360.0;
         let menu = &self.playback.room_menu;
         let total = menu.rooms.len();
         let page = menu.cursor / ROOMS_PER_PAGE;
@@ -1148,17 +1152,27 @@ impl Home {
             _ => "已开播关注",
         };
         div()
+            .absolute()
+            .left(px(bounds.x))
+            .top(px(bounds.y))
+            .w(px(bounds.width))
+            .h(px(bounds.height))
             .v_flex()
-            .h(px(self.playback.height()))
-            .flex_shrink_0()
             .p_3()
             .gap_2()
+            .rounded(px(bounds.radius))
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(0x3d5866))
             .bg(rgb(PANEL))
-            .child(self.playback_panel_header(
-                "直播间列表",
-                format!("{source} · {} 个房间 · {}/{} 页", total, page + 1, total.div_ceil(ROOMS_PER_PAGE).max(1)),
-                cx,
-            ))
+            .child(
+                div().h_flex().items_center().h(px(26.0)).flex_shrink_0()
+                    .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("直播间列表"))
+                    .child(control("close-room-menu", "Ⓑ 收起", false).h(px(26.0))
+                        .on_click(cx.listener(|this, _, window, cx| this.playback_back(window, cx)))),
+            )
+            .child(div().text_sm().text_color(rgb(MUTED)).flex_shrink_0()
+                .child(format!("{source} · {total} 间 · {}/{} 页", page + 1, total.div_ceil(ROOMS_PER_PAGE).max(1))))
             .child(
                 div()
                     .v_flex()
@@ -1166,7 +1180,7 @@ impl Home {
                     .min_h_0()
                     .gap_1()
                     .when(total == 0, |view| view.child(
-                        div().text_color(rgb(MUTED)).child("暂无其他直播间，按 B 继续观看"),
+                        div().text_sm().text_color(rgb(MUTED)).child("暂无其他直播间，按 B 继续观看"),
                     ))
                     .children((start..end).map(|index| {
                         let room = &menu.rooms[index];
@@ -1177,20 +1191,24 @@ impl Home {
                             .id(("playback-room", index))
                             .h_flex()
                             .items_center()
-                            .h(px(42.0))
-                            .flex_shrink_0()
-                            .px_3()
-                            .gap_3()
+                            .flex_1()
+                            .min_h_0()
+                            .max_h(px(82.0))
+                            .px_2()
+                            .gap_2()
                             .rounded_md()
                             .border_1()
                             .border_color(rgb(if focused { MINT } else { DIVIDER }))
                             .bg(rgb(if focused { SURFACE } else { BG }))
                             .cursor_pointer()
                             .hover(|style| style.bg(rgb(SURFACE)))
-                            .child(div().w(px(22.0)).text_color(rgb(MUTED)).child((index + 1).to_string()))
-                            .child(div().w(px(160.0)).flex_shrink_0().text_ellipsis().child(name.clone()))
-                            .child(div().flex_1().min_w_0().text_sm().text_color(rgb(MUTED)).text_ellipsis().child(room.title.clone()))
-                            .when(current, |row| row.child(div().text_sm().text_color(rgb(MINT)).child("正在观看")))
+                            .child(div().w(px(20.0)).flex_shrink_0().text_sm().text_color(rgb(MUTED)).child((index + 1).to_string()))
+                            .child(div().v_flex().flex_1().min_w_0().gap_1()
+                                .child(div().text_ellipsis().child(name.clone()))
+                                .when(!compact, |column| column.child(
+                                    div().text_sm().text_color(rgb(MUTED)).text_ellipsis().child(room.title.clone()),
+                                )))
+                            .when(current, |row| row.child(div().text_sm().text_color(rgb(MINT)).child("▶")))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.select_playback_room(index, window, cx)
                             }))
@@ -1198,20 +1216,23 @@ impl Home {
             )
             .child(
                 div()
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().flex_1().min_w_0().text_sm().text_color(rgb(MUTED)).text_ellipsis()
-                        .child("↑↓ 选择  Ⓐ 切换  → 退出按钮  ☰ / F10 收起"))
-                    .when(total > ROOMS_PER_PAGE, |row| row
-                        .child(control("room-menu-prev", "LB 上一页", false)
-                            .on_click(cx.listener(|this, _, window, cx| this.page_playback(false, window, cx))))
-                        .child(control("room-menu-next", "RB 下一页", false)
-                            .on_click(cx.listener(|this, _, window, cx| this.page_playback(true, window, cx))))
-                    )
+                    .v_flex()
+                    .flex_shrink_0()
+                    .gap_1()
+                    .when(total > ROOMS_PER_PAGE, |column| column.child(
+                        div().h_flex().gap_2()
+                            .child(control("room-menu-prev", "LB 上一页", false).flex_1().h(px(32.0))
+                                .on_click(cx.listener(|this, _, window, cx| this.page_playback(false, window, cx))))
+                            .child(control("room-menu-next", "RB 下一页", false).flex_1().h(px(32.0))
+                                .on_click(cx.listener(|this, _, window, cx| this.page_playback(true, window, cx)))),
+                    ))
                     .child(control("exit-player-app", "退出软件", menu.exit_selected)
+                        .h(px(34.0))
                         .text_color(rgb(0xffa3a3))
-                        .on_click(cx.listener(|this, _, window, cx| this.choose(Action::Exit, window, cx)))),
+                        .on_click(cx.listener(|this, _, window, cx| this.choose(Action::Exit, window, cx))))
+                    .when(!compact, |column| column.child(
+                        div().text_sm().text_color(rgb(MUTED)).child("↑↓ 选房 · Ⓐ 切换 · → 退出按钮"),
+                    )),
             )
     }
 
@@ -1469,9 +1490,9 @@ impl Home {
             )
     }
 
-    pub(super) fn view(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn view(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         if self.in_playback() {
-            return self.playback_view(cx);
+            return self.playback_view(window, cx);
         }
         let view = div().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT));
         if let Some(Content::Login { site_index, .. }) = &self.content {

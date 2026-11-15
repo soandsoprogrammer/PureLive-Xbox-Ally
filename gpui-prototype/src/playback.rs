@@ -15,7 +15,6 @@ pub(super) const VOLUME_HEIGHT: f32 = 112.0;
 pub(super) const SUPER_CHAT_HEIGHT: f32 = 206.0;
 pub(super) const CHOICES_PER_PAGE: usize = 3;
 pub(super) const ROOMS_PER_PAGE: usize = 3;
-const ROOMS_HEIGHT: f32 = 244.0;
 const ROOM_ACTIONS: [usize; 8] = [0, 1, 6, 2, 3, 4, 7, 5];
 const DIRECT_ACTIONS: [usize; 4] = [0, 1, 6, 2];
 const HIDE_DELAY: Duration = Duration::from_secs(5);
@@ -216,7 +215,7 @@ impl PlaybackUi {
 
     pub fn height(&self) -> f32 {
         match self.menu {
-            Some(ChoiceMenu::Rooms) => ROOMS_HEIGHT,
+            Some(ChoiceMenu::Rooms) => 0.0,
             Some(ChoiceMenu::Volume) => VOLUME_HEIGHT,
             Some(ChoiceMenu::SuperChat) => SUPER_CHAT_HEIGHT,
             Some(ChoiceMenu::Lines | ChoiceMenu::Qualities) => CHOICES_HEIGHT,
@@ -232,6 +231,13 @@ impl PlaybackUi {
             ChoiceMenu::Qualities => &self.options.qualities,
             _ => &[],
         }
+    }
+
+    pub fn floating_panel(&self, window: &Window) -> Option<floating_panel::Bounds> {
+        (self.menu == Some(ChoiceMenu::Rooms)).then(|| {
+            let (width, height) = native::client_size(window);
+            floating_panel::room_list(width, height)
+        })
     }
 
     pub fn current(&self, menu: ChoiceMenu) -> Option<&str> {
@@ -267,7 +273,7 @@ impl Home {
 
     pub(super) fn resize_video(&self, window: &Window) {
         if let Some(Content::Video { surface, .. }) = &self.content {
-            surface.resize_video(window, self.playback.height());
+            surface.resize_video(window, self.playback.height(), self.playback.floating_panel(window));
         }
     }
 
