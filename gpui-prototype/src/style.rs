@@ -1153,6 +1153,8 @@ impl Home {
         };
         div()
             .absolute()
+            // Keep clicks on this overlay from reaching the video underneath.
+            .occlude()
             .left(px(bounds.x))
             .top(px(bounds.y))
             .w(px(bounds.width))
