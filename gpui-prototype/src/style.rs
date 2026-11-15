@@ -1250,7 +1250,7 @@ impl Home {
                             .child(control("room-menu-next", "RB 下一页", false).flex_1().h(px(32.0))
                                 .on_click(cx.listener(|this, _, window, cx| this.page_playback(true, window, cx)))),
                     ))
-                    .child(control("exit-player-app", "退出软件", menu.exit_selected)
+                    .child(control("exit-player-app", "退出软件 · LB + RB", menu.exit_selected)
                         .h(px(34.0))
                         .text_color(rgb(0xffa3a3))
                         .on_click(cx.listener(|this, _, window, cx| this.choose(Action::Exit, window, cx))))

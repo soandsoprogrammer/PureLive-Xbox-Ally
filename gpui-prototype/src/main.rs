@@ -1430,7 +1430,7 @@ impl Home {
                                 repeat_at = None;
                             }
                             if pressed != 0 || repeated != 0 {
-                                let _ = input.try_send((pressed, repeated));
+                                let _ = input.try_send((pressed, repeated, current));
                             }
                         }
                         previous = buttons;
@@ -1439,7 +1439,7 @@ impl Home {
                     }
                 }
             });
-            while let Ok((pressed, repeated)) = presses.recv().await {
+            while let Ok((pressed, repeated, held)) = presses.recv().await {
                 if entity
                     .update_in(cx, |this, window, cx| {
                         if window.is_window_active() && !native::minimized(window) {
@@ -1451,7 +1451,7 @@ impl Home {
                             } else {
                                 repeated
                             };
-                            this.on_gamepad(pressed | repeated, window, cx);
+                            this.on_gamepad(pressed | repeated, held, window, cx);
                         }
                     })
                     .is_err()
@@ -1462,7 +1462,13 @@ impl Home {
         }));
     }
 
-    fn on_gamepad(&mut self, pressed: u16, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_gamepad(&mut self, pressed: u16, held: u16, window: &mut Window, cx: &mut Context<Self>) {
+        // Check the held state before either bumper's normal navigation action.
+        // Real presses usually arrive in separate polls, even when used as a chord.
+        if exit_chord_pressed(pressed, held) {
+            self.choose(Action::Exit, window, cx);
+            return;
+        }
         if self.in_playback() {
             if pressed & XINPUT_GAMEPAD_START != 0 {
                 self.toggle_room_menu(window, cx);
@@ -1670,6 +1676,11 @@ const DIRECTION_BUTTONS: u16 = XINPUT_GAMEPAD_DPAD_UP
 const REPEAT_DELAY_MS: u64 = 350;
 const REPEAT_INTERVAL_MS: u64 = 90;
 
+fn exit_chord_pressed(pressed: u16, held: u16) -> bool {
+    let shoulders = XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER;
+    held & shoulders == shoulders && pressed & shoulders != 0
+}
+
 fn stick_buttons(x: i16, y: i16) -> u16 {
     let x = f32::from(x) / 32767.0;
     let y = f32::from(y) / 32767.0;
@@ -1704,4 +1715,47 @@ fn trigger_buttons(left: u8, right: u8) -> u16 {
         buttons |= TRIGGER_RIGHT;
     }
     buttons
+}
+
+#[cfg(test)]
+mod gamepad_tests {
+    use super::*;
+
+    #[test]
+    fn exit_chord_accepts_simultaneous_and_staggered_presses() {
+        let left = XINPUT_GAMEPAD_LEFT_SHOULDER;
+        let right = XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        for sequence in [
+            [0, left | right, 0],
+            [0, left, left | right],
+            [0, right, left | right],
+        ] {
+            let exits: Vec<_> = sequence
+                .windows(2)
+                .map(|states| exit_chord_pressed(states[1] & !states[0], states[1]))
+                .collect();
+            assert_eq!(exits.iter().filter(|exit| **exit).count(), 1);
+        }
+    }
+
+    #[test]
+    fn individual_shoulders_and_triggers_do_not_exit() {
+        for button in [
+            XINPUT_GAMEPAD_LEFT_SHOULDER,
+            XINPUT_GAMEPAD_RIGHT_SHOULDER,
+            TRIGGER_LEFT,
+            TRIGGER_RIGHT,
+            TRIGGER_LEFT | TRIGGER_RIGHT,
+        ] {
+            assert!(!exit_chord_pressed(button, button));
+        }
+    }
+
+    #[test]
+    fn held_chord_does_not_retrigger_on_other_input() {
+        let shoulders = XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        for pressed in [0, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_DPAD_DOWN] {
+            assert!(!exit_chord_pressed(pressed, shoulders | pressed));
+        }
+    }
 }
