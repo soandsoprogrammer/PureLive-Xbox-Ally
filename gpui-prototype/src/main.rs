@@ -1722,7 +1722,10 @@ fn trigger_buttons(left: u8, right: u8) -> u16 {
 
 #[cfg(test)]
 mod gamepad_tests {
-    use super::*;
+    use super::{
+        TRIGGER_LEFT, TRIGGER_RIGHT, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_DPAD_DOWN,
+        XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, exit_chord_pressed,
+    };
 
     #[test]
     fn exit_chord_accepts_simultaneous_and_staggered_presses() {
