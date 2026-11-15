@@ -6,7 +6,7 @@ Windows x64 掌机版使用 GPUI Kit、XInput、Media Foundation、D3D11、WASAP
 
 解压便携包后运行 `purelive-gpui.exe`。平台横排在「热门」右边，按左右键移动，平台栏会跟随焦点滚动。选站后按下浏览该站直播。「搜索」默认查找全部直播平台，可输入关键词或粘贴直播间链接。按手柄 View 键或 F2 筛选平台。查数字房间号或 `@频道名` 可先选平台，选 IPTV 后可输入 M3U / TXT 播放列表文件路径或网址。
 
-LT / RT 切换栏目，LB / RB 切热门平台或关注筛选，方向键选房间，Enter 或 A 打开，Y 切换选中房间的关注状态，Esc 或 B 返回。关注保存在 `%LOCALAPPDATA%\PureLiveRust\follows.json`。各站的游客搜索与播放能力依平台而异。兼容组件可读取 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量。
+LT / RT 切换栏目，LB / RB 切热门平台或关注筛选，方向键选房间，Enter 或 A 打开，Y 切换选中房间的关注状态，Esc 或 B 返回。关注保存在 `%LOCALAPPDATA%\PureLiveRust\follows.json`。各站的游客搜索与播放能力依平台而异。B 站接口、弹幕和播放使用直连，避免继承失效代理导致热门列表或直播连接失败。其他平台兼容组件仍可读取 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量。
 
 播放时轻点画面或按 A 唤出控制栏，方向键选按钮，A 确认，LB / RB 翻线路或画质选项。X 刷新直播，Y 切换关注，B 依次关闭选项、收起控制栏、返回列表。键盘也可用空格暂停或播放、R 刷新、D 开关弹幕。线路和画质选项由当前平台提供。支持弹幕的直播间默认开启弹幕，开关选择会保存在本机。
 

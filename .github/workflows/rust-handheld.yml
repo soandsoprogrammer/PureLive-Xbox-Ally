@@ -36,6 +36,9 @@ jobs:
       - name: Build
         run: cargo build --manifest-path gpui-prototype/Cargo.toml --release --locked
 
+      - name: Test Bilibili network routing
+        run: cargo test --manifest-path gpui-prototype/Cargo.toml --release --locked bili_
+
       - name: Stage
         shell: pwsh
         run: |

@@ -147,7 +147,11 @@ pub fn platforms() -> Vec<Platform> {
 
 fn request(endpoint: &str, params: &[(&str, &str)], cookie: Option<&str>) -> Result<Value, String> {
     let url = Url::parse_with_params(endpoint, params).map_err(|_| "直播接口地址无效")?;
-    let config = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(12)));
+    // Bilibili APIs use the same direct route as the native media downloader.
+    // An inherited development-tool proxy may be unavailable or blocked by Bilibili.
+    let config = ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_global(Some(Duration::from_secs(12)));
     let config = if cookie.is_some() {
         config.max_redirects(0)
     } else {
