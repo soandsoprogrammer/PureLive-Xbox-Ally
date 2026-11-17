@@ -128,6 +128,15 @@ impl Room {
         })
     }
 
+    pub fn update_broadcast_status(&mut self, status: BroadcastStatus) -> bool {
+        if status == BroadcastStatus::Unknown {
+            return false;
+        }
+        let changed = self.broadcast_status() != status;
+        self.broadcast = Some(status);
+        changed
+    }
+
     pub fn is_playback_candidate(&self, include_unknown: bool) -> bool {
         match self.broadcast_status() {
             BroadcastStatus::Live => true,
@@ -425,18 +434,21 @@ fn bili_playback(
             ))
         })
         .collect();
+    let label_for = |id: &str| {
+        names.get(id).cloned().unwrap_or_else(|| match id {
+            "10000" => "原画".into(),
+            _ => format!("画质 {id}"),
+        })
+    };
     let mut qualities: Vec<compat::Choice> = Vec::new();
     let mut lines: Vec<compat::Choice> = Vec::new();
-    let mut urls: Vec<(String, String)> = Vec::new();
-    let mut current = quality;
+    let mut urls = Vec::new();
     for stream in streams {
         let protocol = stream["protocol_name"].as_str().unwrap_or("http_stream");
         for format in stream["format"].as_array().into_iter().flatten() {
             let name = format["format_name"].as_str().unwrap_or_default();
             for codec in format["codec"].as_array().into_iter().flatten() {
-                if let Some(qn) = codec["current_qn"].as_u64() {
-                    current = qn;
-                }
+                let current = codec["current_qn"].as_u64().unwrap_or(quality);
                 for qn in codec["accept_qn"].as_array().into_iter().flatten() {
                     let Some(qn) = qn.as_u64() else {
                         continue;
@@ -445,10 +457,7 @@ fn bili_playback(
                     if qualities.iter().any(|choice| choice.id == id) {
                         continue;
                     }
-                    let label = names
-                        .get(&id)
-                        .cloned()
-                        .unwrap_or_else(|| format!("画质 {qn}"));
+                    let label = label_for(&id);
                     qualities.push(compat::Choice { id, label });
                 }
                 for (index, info) in codec["url_info"].as_array().into_iter().flatten().enumerate()
@@ -472,7 +481,7 @@ fn bili_playback(
                         id: id.clone(),
                         label,
                     });
-                    urls.push((id, format!("{host}{base}{extra}")));
+                    urls.push((id, format!("{host}{base}{extra}"), current));
                 }
             }
         }
@@ -480,29 +489,26 @@ fn bili_playback(
     if urls.is_empty() {
         return Err("直播间当前没有可用的游客播放线路".into());
     }
-    if qualities.is_empty() {
-        qualities.push(compat::Choice {
-            id: current.to_string(),
-            label: names
-                .get(&current.to_string())
-                .cloned()
-                .unwrap_or_else(|| "原画".into()),
-        });
-    }
     let chosen = selection
         .line
         .as_deref()
-        .and_then(|id| urls.iter().find(|(line, _)| line == id))
-        .or_else(|| urls.iter().find(|(line, _)| line.starts_with("http_stream/")))
+        .and_then(|id| urls.iter().find(|(line, _, _)| line == id))
+        .or_else(|| urls.iter().find(|(line, _, _)| line.starts_with("http_stream/")))
         .unwrap_or(&urls[0]);
-    let quality_id = current.to_string();
-    let quality_label = names.get(&quality_id).cloned();
+    let quality_id = chosen.2.to_string();
+    let quality_label = label_for(&quality_id);
+    if !qualities.iter().any(|choice| choice.id == quality_id) {
+        qualities.push(compat::Choice {
+            id: quality_id.clone(),
+            label: quality_label.clone(),
+        });
+    }
     Ok((
         chosen.1.clone(),
         compat::Playback {
             qualities,
             quality: Some(quality_id),
-            quality_label,
+            quality_label: Some(quality_label),
             lines,
             // Keep automatic selection distinct from the resolved playback URL.
             line: selection.line.as_ref().filter(|id| **id == chosen.0).cloned(),
@@ -674,6 +680,19 @@ mod tests {
     }
 
     #[test]
+    fn unknown_status_keeps_last_confirmed_broadcast_status() {
+        let mut followed = room(42, BroadcastStatus::Unknown);
+        assert!(!followed.update_broadcast_status(BroadcastStatus::Unknown));
+        assert_eq!(followed.broadcast_status(), BroadcastStatus::Unknown);
+        assert!(followed.update_broadcast_status(BroadcastStatus::Live));
+        assert!(!followed.update_broadcast_status(BroadcastStatus::Unknown));
+        assert!(followed.is_playback_candidate(false));
+        assert!(followed.update_broadcast_status(BroadcastStatus::Offline));
+        assert!(!followed.update_broadcast_status(BroadcastStatus::Unknown));
+        assert_eq!(followed.broadcast_status(), BroadcastStatus::Offline);
+    }
+
+    #[test]
     fn recognizes_only_bilibili_room_links() {
         assert_eq!(
             room_id("https://live.bilibili.com/123?from=test"),
@@ -694,5 +713,37 @@ mod tests {
                 .0,
             "https://cdn.example.com/room.flv?token=abc&x=1"
         );
+    }
+
+    #[test]
+    fn bili_playback_quality_follows_selected_line() {
+        let result = serde_json::json!({"data":{"playurl_info":{"playurl":{
+            "g_qn_desc": [{"qn":10000,"desc":"原画"},{"qn":400,"desc":"蓝光"}],
+            "stream":[
+                {"protocol_name":"http_stream","format":[{"format_name":"flv","codec":[
+                    {"current_qn":10000,"accept_qn":[10000,400],"base_url":"/room.flv",
+                     "url_info":[{"host":"https://example.test","extra":""}]}
+                ]}]},
+                {"protocol_name":"http_hls","format":[{"format_name":"fmp4","codec":[
+                    {"current_qn":400,"accept_qn":[400],"base_url":"/room.m3u8",
+                     "url_info":[{"host":"https://example.test","extra":""}]}
+                ]}]}
+            ]
+        }}}});
+        let (url, playback) = bili_playback(&result, 10_000, &compat::Selection::default()).unwrap();
+        assert!(url.ends_with("room.flv"));
+        assert_eq!(playback.quality.as_deref(), Some("10000"));
+        assert_eq!(playback.quality_label.as_deref(), Some("原画"));
+        assert_eq!(playback.line, None);
+
+        let selected = compat::Selection {
+            line: Some("http_hls/fmp4/0".into()),
+            ..Default::default()
+        };
+        let (url, playback) = bili_playback(&result, 10_000, &selected).unwrap();
+        assert!(url.ends_with("room.m3u8"));
+        assert_eq!(playback.quality.as_deref(), Some("400"));
+        assert_eq!(playback.quality_label.as_deref(), Some("蓝光"));
+        assert_eq!(playback.line, selected.line);
     }
 }
