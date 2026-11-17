@@ -153,9 +153,13 @@ pub(super) struct SuperChatHistory {
 }
 
 impl SuperChatHistory {
-    fn merge(&mut self, incoming: impl IntoIterator<Item = SuperChat>) {
+    fn merge(&mut self, platform: &str, incoming: impl IntoIterator<Item = SuperChat>) {
         for item in incoming {
-            if !self.entries.iter().any(|saved| saved.same_event(&item)) {
+            if !self
+                .entries
+                .iter()
+                .any(|saved| saved.same_event(&item, platform))
+            {
                 self.entries.push(item);
             }
         }
@@ -674,17 +678,21 @@ impl Home {
     }
 
     fn merge_super_chats(&mut self, entries: impl IntoIterator<Item = SuperChat>) {
+        let platform = self
+            .active_room
+            .as_ref()
+            .map_or("", |room| room.platform.as_str());
         let history = &mut self.playback.super_chats;
         let previous = (self.playback.cursor > 0
             && self.playback.menu == Some(ChoiceMenu::SuperChat))
         .then(|| history.entries.get(self.playback.cursor).cloned())
         .flatten();
-        history.merge(entries);
+        history.merge(platform, entries);
         if let Some(card) = previous {
             self.playback.cursor = history
                 .entries
                 .iter()
-                .position(|entry| entry.same_event(&card))
+                .position(|entry| entry.same_event(&card, platform))
                 .unwrap_or_else(|| history.entries.len().saturating_sub(1));
         }
     }
@@ -1206,12 +1214,15 @@ mod tests {
     #[test]
     fn history_merges_live_and_board_events_without_losing_later_purchases() {
         let mut history = SuperChatHistory::default();
-        history.merge([card("sc-1", 20, false), card("", 100, true)]);
-        history.merge([
-            card("sc-1", 21, true),
-            card("", 110, true),
-            card("", 300, true),
-        ]);
+        history.merge("huya", [card("sc-1", 20, false), card("", 100, true)]);
+        history.merge(
+            "huya",
+            [
+                card("sc-1", 21, true),
+                card("", 110, true),
+                card("", 300, true),
+            ],
+        );
         assert_eq!(
             history
                 .entries
@@ -1220,6 +1231,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             [300, 100, 20]
         );
+    }
+
+    #[test]
+    fn douyu_history_collapses_small_timestamp_shifts_without_losing_later_purchases() {
+        let mut history = SuperChatHistory::default();
+        let mut first = card("", 100_000, false);
+        first.end = 160_000;
+        let mut duplicate = first.clone();
+        duplicate.start += 480;
+        duplicate.end += 480;
+        let mut later = first.clone();
+        later.start += 4_000;
+        later.end += 4_000;
+        let mut different_duration = first.clone();
+        different_duration.start += 500;
+        different_duration.end += 15_000;
+        history.merge("douyu", [first, duplicate, later, different_duration]);
+        assert_eq!(
+            history
+                .entries
+                .iter()
+                .map(|entry| entry.start)
+                .collect::<Vec<_>>(),
+            [104_000, 100_500, 100_000]
+        );
+    }
+
+    #[test]
+    fn douyu_timestamp_tolerance_does_not_merge_distinct_ids_or_other_platforms() {
+        let mut history = SuperChatHistory::default();
+        history.merge(
+            "douyu",
+            [card("sc-1", 100, false), card("sc-2", 101, false)],
+        );
+        assert_eq!(history.entries.len(), 2);
+        let mut history = SuperChatHistory::default();
+        history.merge("bilibili", [card("", 100, false), card("", 101, false)]);
+        assert_eq!(history.entries.len(), 2);
     }
 
     #[test]
