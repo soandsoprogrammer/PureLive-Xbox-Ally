@@ -781,6 +781,9 @@ final class DouyinSite extends LiveSite
 
   static String? _webRoomId(Uri uri) {
     final segments = RoomPaths.segments(uri);
+    if (segments.length == 3 && segments[0] == 'follow' && segments[1] == 'live') {
+      return RegExp(r'^\d{1,20}$').hasMatch(segments[2]) ? segments[2] : null;
+    }
     return segments.length == 1 && RegExp(r'^\d{1,20}$').hasMatch(segments.single) ? segments.single : null;
   }
 

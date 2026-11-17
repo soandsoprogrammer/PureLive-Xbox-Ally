@@ -1,4 +1,3 @@
-#[cfg(target_os = "macos")]
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -13,12 +12,14 @@ pub(super) const CHOICES_HEIGHT: f32 = 86.0;
 pub(super) const VOLUME_HEIGHT: f32 = 112.0;
 pub(super) const SUPER_CHAT_HEIGHT: f32 = 206.0;
 pub(super) const CHOICES_PER_PAGE: usize = 3;
+pub(super) const ROOMS_PER_PAGE: usize = 3;
 const ROOM_ACTIONS: [usize; 8] = [0, 1, 6, 2, 3, 4, 7, 5];
 const DIRECT_ACTIONS: [usize; 4] = [0, 1, 6, 2];
 const HIDE_DELAY: Duration = Duration::from_secs(5);
 const CHAT_TICK: Duration = Duration::from_millis(16);
 #[cfg(windows)]
-const CHAT_DURATION: Duration = Duration::from_secs(7);
+const DANMAKU_SPEED: f32 = 210.0;
+const DANMAKU_PENDING_MAX_WAIT: Duration = Duration::from_secs(5);
 const SUPER_CHAT_INTERVAL: Duration = Duration::from_secs(30);
 const SUPER_CHAT_LIMIT: usize = 100;
 
@@ -28,6 +29,70 @@ pub(super) enum ChoiceMenu {
     Qualities,
     Volume,
     SuperChat,
+    Rooms,
+}
+
+#[derive(Default)]
+pub(super) struct RoomMenu {
+    pub rooms: Vec<Room>,
+    pub cursor: usize,
+    pub exit_selected: bool,
+}
+
+impl RoomMenu {
+    fn new(rooms: &[Room], current: Option<&Room>, include_unknown: bool) -> Self {
+        // Keep a snapshot while the menu is open, so background updates cannot
+        // move the selected room just before the user presses A.
+        let mut rooms: Vec<Room> = rooms
+            .iter()
+            .filter(|room| {
+                room.is_playback_candidate(include_unknown)
+                    || current.is_some_and(|current| room.same_channel(current))
+            })
+            .cloned()
+            .collect();
+        if let Some(current) = current {
+            if !rooms.iter().any(|room| room.same_channel(current)) {
+                rooms.push(current.clone());
+            }
+        }
+        let cursor = current
+            .and_then(|current| rooms.iter().position(|room| room.same_channel(current)))
+            .unwrap_or(0);
+        Self {
+            rooms,
+            cursor,
+            exit_selected: false,
+        }
+    }
+
+    fn move_vertical(&mut self, down: bool) {
+        if self.exit_selected {
+            if !down {
+                self.exit_selected = false;
+            }
+        } else if down && self.cursor + 1 >= self.rooms.len() {
+            self.exit_selected = true;
+        } else {
+            self.cursor = self.cursor.saturating_add_signed(if down { 1 } else { -1 });
+        }
+    }
+
+    fn page(&mut self, forward: bool) {
+        self.exit_selected = false;
+        let pages = self.rooms.len().div_ceil(ROOMS_PER_PAGE);
+        if pages == 0 {
+            return;
+        }
+        let page = self.cursor / ROOMS_PER_PAGE;
+        let next = if forward {
+            (page + 1) % pages
+        } else {
+            (page + pages - 1) % pages
+        };
+        self.cursor =
+            (next * ROOMS_PER_PAGE + self.cursor % ROOMS_PER_PAGE).min(self.rooms.len() - 1);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -107,6 +172,7 @@ pub(super) struct PlaybackUi {
     pub paused: bool,
     pub focus: usize,
     pub menu: Option<ChoiceMenu>,
+    pub room_menu: RoomMenu,
     pub cursor: usize,
     pub options: Playback,
     pub selection: Selection,
@@ -117,7 +183,6 @@ pub(super) struct PlaybackUi {
     chat: Option<compat::Chat>,
     chat_updates: Option<Task<()>>,
     messages: Vec<FlyingMessage>,
-    #[cfg(target_os = "macos")]
     waiting_messages: VecDeque<FlyingMessage>,
 }
 
@@ -127,6 +192,13 @@ struct FlyingMessage {
     width: f32,
     time: Instant,
     row: usize,
+}
+
+#[cfg(windows)]
+impl FlyingMessage {
+    fn duration(&self) -> Duration {
+        Duration::from_secs_f32(((1280.0 + self.width) / DANMAKU_SPEED).clamp(4.0, 14.0))
+    }
 }
 
 impl PlaybackUi {
@@ -157,6 +229,7 @@ impl PlaybackUi {
 
     pub fn height(&self) -> f32 {
         match self.menu {
+            Some(ChoiceMenu::Rooms) => 0.0,
             Some(ChoiceMenu::Volume) => VOLUME_HEIGHT,
             Some(ChoiceMenu::SuperChat) => SUPER_CHAT_HEIGHT,
             Some(ChoiceMenu::Lines | ChoiceMenu::Qualities) => CHOICES_HEIGHT,
@@ -172,6 +245,13 @@ impl PlaybackUi {
             ChoiceMenu::Qualities => &self.options.qualities,
             _ => &[],
         }
+    }
+
+    pub fn floating_panel(&self, window: &Window) -> Option<floating_panel::Bounds> {
+        (self.menu == Some(ChoiceMenu::Rooms)).then(|| {
+            let (width, height) = native::client_size(window);
+            floating_panel::room_list(width, height)
+        })
     }
 
     pub fn current(&self, menu: ChoiceMenu) -> Option<&str> {
@@ -207,12 +287,18 @@ impl Home {
 
     pub(super) fn resize_video(&self, window: &Window) {
         if let Some(Content::Video { surface, .. }) = &self.content {
-            surface.resize_video(window, self.playback.height());
+            surface.resize_video(
+                window,
+                self.playback.height(),
+                self.playback.floating_panel(window),
+            );
         }
     }
 
     pub(super) fn playback_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.playback.menu.take().is_some() {
+        if self.playback.menu == Some(ChoiceMenu::Rooms) {
+            self.toggle_controls(window, cx);
+        } else if self.playback.menu.take().is_some() {
             self.show_controls(window, cx);
         } else if self.playback.visible() {
             self.toggle_controls(window, cx);
@@ -240,6 +326,9 @@ impl Home {
 
     pub(super) fn move_playback(&mut self, delta: isize, window: &Window, cx: &mut Context<Self>) {
         match self.playback.menu {
+            Some(ChoiceMenu::Rooms) => {
+                self.playback.room_menu.exit_selected = delta > 0;
+            }
             Some(ChoiceMenu::Volume) => {
                 return self.adjust_volume(delta.signum() as i16 * 5, window, cx);
             }
@@ -275,6 +364,11 @@ impl Home {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        if self.playback.menu == Some(ChoiceMenu::Rooms) {
+            self.playback.room_menu.move_vertical(down);
+            self.show_controls(window, cx);
+            return;
+        }
         if self.playback.menu == Some(ChoiceMenu::Volume) {
             self.adjust_volume(if down { -5 } else { 5 }, window, cx);
             return;
@@ -302,6 +396,13 @@ impl Home {
     pub(super) fn confirm_playback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.playback.visible() {
             match self.playback.menu {
+                Some(ChoiceMenu::Rooms) => {
+                    if self.playback.room_menu.exit_selected {
+                        self.choose(Action::Exit, window, cx);
+                    } else {
+                        self.select_playback_room(self.playback.room_menu.cursor, window, cx);
+                    }
+                }
                 Some(ChoiceMenu::Volume) => self.toggle_mute(window, cx),
                 Some(ChoiceMenu::SuperChat) => self.refresh_super_chats(window, cx),
                 Some(_) => self.apply_playback_choice(self.playback.cursor, window, cx),
@@ -316,6 +417,11 @@ impl Home {
         let Some(menu) = self.playback.menu else {
             return;
         };
+        if menu == ChoiceMenu::Rooms {
+            self.playback.room_menu.page(forward);
+            self.show_controls(window, cx);
+            return;
+        }
         if matches!(menu, ChoiceMenu::Volume | ChoiceMenu::SuperChat) {
             self.move_playback(if forward { 1 } else { -1 }, window, cx);
             return;
@@ -326,6 +432,45 @@ impl Home {
         let step = if forward { 1 } else { pages - 1 };
         self.playback.cursor = (page + step) % pages * CHOICES_PER_PAGE;
         self.show_controls(window, cx);
+    }
+
+    pub(super) fn toggle_room_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.playback.menu == Some(ChoiceMenu::Rooms) {
+            self.toggle_controls(window, cx);
+            return;
+        }
+        let rooms = match self.pane {
+            Pane::Popular | Pane::Search => &self.results,
+            _ => &self.follows,
+        };
+        self.playback.room_menu =
+            RoomMenu::new(rooms, self.active_room.as_ref(), self.pane != Pane::Follows);
+        self.playback.menu = Some(ChoiceMenu::Rooms);
+        self.focus.focus(window, cx);
+        self.show_controls(window, cx);
+    }
+
+    pub(super) fn select_playback_room(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.playback.menu != Some(ChoiceMenu::Rooms) {
+            return;
+        }
+        let Some(room) = self.playback.room_menu.rooms.get(index).cloned() else {
+            return;
+        };
+        if self
+            .active_room
+            .as_ref()
+            .is_some_and(|current| room.same_channel(current))
+        {
+            self.toggle_controls(window, cx);
+        } else {
+            self.play_room(room, window, cx);
+        }
     }
 
     pub(super) fn playback_action(
@@ -595,7 +740,6 @@ impl Home {
             player.set_danmaku(Vec::new());
         }
         self.playback.messages.clear();
-        #[cfg(target_os = "macos")]
         self.playback.waiting_messages.clear();
     }
 
@@ -673,7 +817,7 @@ impl Home {
         let count = self.playback.messages.len();
         self.playback.messages.retain(|message| {
             #[cfg(windows)]
-            let duration = CHAT_DURATION;
+            let duration = message.duration();
             #[cfg(target_os = "macos")]
             let duration = match &self.content {
                 Some(Content::Video { player, .. }) => player.danmaku_duration(message.width),
@@ -784,20 +928,30 @@ impl Home {
         #[cfg(target_os = "macos")]
         let incoming = self.admit_danmaku(incoming, now);
         #[cfg(windows)]
-        let incoming = incoming
-            .into_iter()
-            .zip((0..5).filter(|row| {
-                !self
-                    .playback
-                    .messages
-                    .iter()
-                    .any(|message| message.row == *row)
-            }))
-            .map(|(mut message, row)| {
-                message.row = row;
-                message
-            })
-            .collect::<Vec<_>>();
+        let incoming = {
+            let pending = &mut self.playback.waiting_messages;
+            pending.extend(incoming);
+            while pending.front().is_some_and(|message| {
+                pending.len() > 48 || now.duration_since(message.time) > DANMAKU_PENDING_MAX_WAIT
+            }) {
+                pending.pop_front();
+            }
+            (0..5)
+                .filter(|row| {
+                    !self
+                        .playback
+                        .messages
+                        .iter()
+                        .any(|message| message.row == *row)
+                })
+                .zip(std::iter::from_fn(|| pending.pop_front()))
+                .map(|(row, mut message)| {
+                    message.row = row;
+                    message.time = now;
+                    message
+                })
+                .collect::<Vec<_>>()
+        };
         changed |= !incoming.is_empty();
         let pictures: Vec<_> = incoming
             .iter()
@@ -830,7 +984,6 @@ impl Home {
         if changed && animating {
             self.schedule_danmaku_frame(_window, cx);
         }
-        #[cfg(target_os = "macos")]
         let animating = animating || !self.playback.waiting_messages.is_empty();
         Some(animating)
     }
@@ -839,7 +992,6 @@ impl Home {
     fn admit_danmaku(&mut self, incoming: Vec<FlyingMessage>, now: Instant) -> Vec<FlyingMessage> {
         const MAX_VISIBLE: usize = 48;
         const MAX_PENDING: usize = 120;
-        const MAX_WAIT: Duration = Duration::from_secs(5);
         const MAX_PER_TICK: usize = 4;
 
         let pending = &mut self.playback.waiting_messages;
@@ -853,7 +1005,8 @@ impl Home {
         };
         pending.extend(incoming);
         while pending.front().is_some_and(|message| {
-            pending.len() > MAX_PENDING || now.duration_since(message.time) >= MAX_WAIT
+            pending.len() > MAX_PENDING
+                || now.duration_since(message.time) >= DANMAKU_PENDING_MAX_WAIT
         }) {
             pending.pop_front();
         }
@@ -942,7 +1095,7 @@ impl Home {
                 crate::native_danmaku::Lane {
                     started: message.time,
                     #[cfg(windows)]
-                    duration: CHAT_DURATION,
+                    duration: message.duration(),
                     width: message.width,
                     #[cfg(windows)]
                     y: 30.0 + 39.0 * message.row as f32,
@@ -959,10 +1112,82 @@ impl Home {
 #[cfg(test)]
 mod tests {
     use super::{
-        AudioSettings, PlaybackUi, SuperChatHistory, load_danmaku_preference, save_preference,
+        AudioSettings, PlaybackUi, RoomMenu, SuperChatHistory, load_danmaku_preference,
+        save_preference,
     };
     use crate::compat::SuperChat;
+    use crate::live::{BroadcastStatus, Room};
     use std::fs;
+
+    fn room(id: u64, status: BroadcastStatus) -> Room {
+        Room {
+            broadcast: Some(status),
+            ..Room::bili(id, format!("Room {id}"))
+        }
+    }
+
+    #[test]
+    fn room_menu_keeps_current_room_and_stable_selection_during_list_updates() {
+        let mut rooms = vec![
+            room(1, BroadcastStatus::Live),
+            room(2, BroadcastStatus::Offline),
+            room(3, BroadcastStatus::Unknown),
+            room(4, BroadcastStatus::Replay),
+        ];
+        let menu = RoomMenu::new(&rooms, Some(&rooms[2]), true);
+        assert_eq!(menu.rooms.len(), 2);
+        assert_eq!(menu.cursor, 1);
+        rooms.remove(0);
+        assert_eq!(menu.rooms[menu.cursor].id, "3");
+        assert!(!menu.exit_selected);
+        let current = room(99, BroadcastStatus::Offline);
+        let menu = RoomMenu::new(&rooms, Some(&current), false);
+        assert_eq!(menu.rooms.len(), 1);
+        assert!(menu.rooms[menu.cursor].same_channel(&current));
+    }
+
+    #[test]
+    fn room_menu_paging_wraps_and_handles_a_partial_last_page() {
+        let rooms: Vec<_> = (1..=7).map(|id| room(id, BroadcastStatus::Live)).collect();
+        let mut menu = RoomMenu::new(&rooms, Some(&rooms[5]), true);
+        menu.page(true);
+        assert_eq!(menu.cursor, 6);
+        menu.page(true);
+        assert_eq!(menu.cursor, 0);
+        menu.page(false);
+        assert_eq!(menu.cursor, 6);
+        assert!(!menu.exit_selected);
+    }
+
+    #[test]
+    fn room_menu_exit_focus_preserves_the_selected_room() {
+        let rooms = vec![
+            room(1, BroadcastStatus::Live),
+            room(2, BroadcastStatus::Live),
+        ];
+        let mut menu = RoomMenu::new(&rooms, Some(&rooms[1]), false);
+        menu.move_vertical(true);
+        assert!(menu.exit_selected);
+        menu.move_vertical(false);
+        assert!(!menu.exit_selected);
+        assert_eq!(menu.cursor, 1);
+        menu.move_vertical(false);
+        assert_eq!(menu.cursor, 0);
+        menu.move_vertical(false);
+        assert_eq!(menu.cursor, 0);
+    }
+
+    #[test]
+    fn empty_room_menu_does_not_default_to_exit_and_can_still_reach_it() {
+        let mut menu = RoomMenu::new(&[], None, true);
+        assert!(!menu.exit_selected);
+        menu.page(false);
+        assert_eq!(menu.cursor, 0);
+        menu.move_vertical(true);
+        assert!(menu.exit_selected);
+        menu.move_vertical(false);
+        assert!(!menu.exit_selected);
+    }
 
     fn card(id: &str, start: i64, estimated: bool) -> SuperChat {
         SuperChat {

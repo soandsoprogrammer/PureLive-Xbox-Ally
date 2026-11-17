@@ -1,7 +1,10 @@
+use crate::floating_panel::Bounds;
 use gpui_kit::Window;
 use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained};
 use objc2_app_kit::NSView;
+use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_quartz_core::{CAShapeLayer, CATransaction, kCAFillRuleEvenOdd};
 use std::{cell::Cell, path::PathBuf, ptr::NonNull};
 use wry::raw_window_handle::{
     AppKitWindowHandle, HandleError, HasWindowHandle, RawWindowHandle, WindowHandle,
@@ -33,14 +36,33 @@ pub fn minimized(window: &Window) -> bool {
         .is_some_and(|window| window.isMiniaturized())
 }
 
-pub struct Surface(Retained<NSView>, Cell<Option<(f64, f64, f64, f64)>>);
+pub fn client_size(window: &Window) -> (f32, f32) {
+    parent_view(window).map_or((1.0, 1.0), |view| {
+        let size = view.bounds().size;
+        (size.width as f32, size.height as f32)
+    })
+}
+
+pub fn toggle_maximized(window: &Window) {
+    if let Some(window) = parent_view(window).ok().and_then(NSView::window) {
+        window.performZoom(None);
+    }
+}
+
+pub struct Surface {
+    view: Retained<NSView>,
+    frame: Cell<Option<NSRect>>,
+    panel: Cell<Option<Bounds>>,
+}
 
 impl Surface {
     pub fn new(window: &Window, top: f32) -> Result<Self, String> {
         Self::create(window, top, 0.0)
     }
-    pub fn video(window: &Window, bottom: f32) -> Result<Self, String> {
-        Self::create(window, 0.0, bottom)
+    pub fn video(window: &Window, bottom: f32, panel: Option<Bounds>) -> Result<Self, String> {
+        let surface = Self::create(window, 0.0, bottom)?;
+        surface.resize_video(window, bottom, panel);
+        Ok(surface)
     }
 
     fn create(window: &Window, top: f32, bottom: f32) -> Result<Self, String> {
@@ -49,19 +71,62 @@ impl Surface {
         let view = NSView::initWithFrame(NSView::alloc(marker), parent.bounds());
         view.setWantsLayer(true);
         parent.addSubview(&view);
-        let surface = Self(view, Cell::new(None));
+        let surface = Self {
+            view,
+            frame: Cell::new(None),
+            panel: Cell::new(None),
+        };
         surface.resize_insets(window, top, bottom);
         Ok(surface)
     }
 
     pub fn id(&self) -> usize {
-        Retained::as_ptr(&self.0) as usize
+        Retained::as_ptr(&self.view) as usize
     }
     pub fn resize(&self, window: &Window, top: f32) -> (i32, i32) {
         self.resize_insets(window, top, 0.0)
     }
-    pub fn resize_video(&self, window: &Window, bottom: f32) {
+    pub fn resize_video(&self, window: &Window, bottom: f32, panel: Option<Bounds>) {
+        let previous_frame = self.frame.get();
         self.resize_insets(window, 0.0, bottom);
+        let previous_panel = self.panel.replace(panel);
+        if previous_panel == panel && previous_frame == self.frame.get() {
+            return;
+        }
+        let Some(layer) = self.view.layer() else {
+            return;
+        };
+        let mask = panel.map(|panel| {
+            let bounds = self.view.bounds();
+            let cutout = NSRect::new(
+                NSPoint::new(
+                    f64::from(panel.x),
+                    bounds.size.height - f64::from(panel.y + panel.height),
+                ),
+                NSSize::new(f64::from(panel.width), f64::from(panel.height)),
+            );
+            let path = CGMutablePath::new();
+            let radius = f64::from(panel.radius);
+            let mask = CAShapeLayer::layer();
+            unsafe {
+                CGMutablePath::add_rect(Some(&path), std::ptr::null(), bounds);
+                CGMutablePath::add_rounded_rect(
+                    Some(&path),
+                    std::ptr::null(),
+                    cutout,
+                    radius,
+                    radius,
+                );
+                mask.setFillRule(kCAFillRuleEvenOdd);
+            }
+            mask.setFrame(bounds);
+            mask.setPath(Some(&path));
+            Retained::into_super(mask)
+        });
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        unsafe { layer.setMask(mask.as_deref()) };
+        CATransaction::commit();
     }
 
     fn resize_insets(&self, window: &Window, top: f32, bottom: f32) -> (i32, i32) {
@@ -76,13 +141,12 @@ impl Surface {
         };
         let width = bounds.size.width.max(1.0);
         let height = (bounds.size.height - f64::from(top + bottom)).max(1.0);
-        let frame = (bounds.origin.x, bounds.origin.y + y, width, height);
-        if self.1.get() != Some(frame) {
-            self.0.setFrame(NSRect::new(
-                NSPoint::new(frame.0, frame.1),
-                NSSize::new(width, height),
-            ));
-            self.1.set(Some(frame));
+        let frame = NSRect::new(
+            NSPoint::new(bounds.origin.x, bounds.origin.y + y),
+            NSSize::new(width, height),
+        );
+        if self.frame.replace(Some(frame)) != Some(frame) {
+            self.view.setFrame(frame);
         }
         (
             (width * f64::from(window.scale_factor())).round() as i32,
@@ -93,14 +157,14 @@ impl Surface {
 
 impl HasWindowHandle for Surface {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        let view = NonNull::from(&*self.0).cast();
+        let view = NonNull::from(&*self.view).cast();
         Ok(unsafe { WindowHandle::borrow_raw(AppKitWindowHandle::new(view).into()) })
     }
 }
 
 impl Drop for Surface {
     fn drop(&mut self) {
-        self.0.removeFromSuperview();
+        self.view.removeFromSuperview();
     }
 }
 

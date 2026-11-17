@@ -33,7 +33,6 @@ const DANMAKU_GAP: f64 = 40.0;
 pub struct Input {
     pub url: String,
     headers: std::collections::BTreeMap<String, String>,
-    proxy: String,
 }
 
 impl Input {
@@ -41,17 +40,13 @@ impl Input {
         Self {
             url: source.url.clone(),
             headers: source.headers.clone(),
-            proxy: source.proxy.clone(),
         }
     }
 
     pub fn agent(&self) -> Result<ureq::Agent> {
-        let proxy = (!self.proxy.is_empty())
-            .then(|| ureq::Proxy::new(&self.proxy))
-            .transpose()?;
         let timeout = Some(std::time::Duration::from_secs(7));
         Ok(ureq::Agent::config_builder()
-            .proxy(proxy)
+            .proxy(None)
             .timeout_connect(timeout)
             .timeout_recv_response(timeout)
             .timeout_per_read(timeout)

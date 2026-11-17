@@ -17,8 +17,8 @@ pub enum BroadcastStatus {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FollowFilter {
-    Live,
     #[default]
+    Live,
     All,
     Offline,
 }
@@ -127,6 +127,42 @@ impl Room {
             BroadcastStatus::Unknown
         })
     }
+
+    pub fn is_playback_candidate(&self, include_unknown: bool) -> bool {
+        match self.broadcast_status() {
+            BroadcastStatus::Live => true,
+            BroadcastStatus::Unknown => include_unknown,
+            BroadcastStatus::Offline | BroadcastStatus::Replay => false,
+        }
+    }
+}
+
+/// Follow the displayed order, wrapping at either end and skipping known
+/// unavailable rooms. Popular lists may omit live status, unlike checked follows.
+pub fn next_room_index(
+    rooms: &[Room],
+    current: &RoomKey,
+    forward: bool,
+    include_unknown: bool,
+) -> Option<usize> {
+    if rooms.is_empty() {
+        return None;
+    }
+    let matches_current = |room: &Room| room.platform == current.platform && room.id == current.id;
+    let position = rooms.iter().position(matches_current);
+    let start = position.unwrap_or(if forward { rooms.len() - 1 } else { 0 });
+    (1..=rooms.len())
+        .map(|step| {
+            if forward {
+                (start + step) % rooms.len()
+            } else {
+                (start + rooms.len() - step) % rooms.len()
+            }
+        })
+        .find(|&index| {
+            !matches_current(&rooms[index])
+                && rooms[index].is_playback_candidate(include_unknown)
+        })
 }
 
 #[derive(Deserialize)]
@@ -147,7 +183,11 @@ pub fn platforms() -> Vec<Platform> {
 
 fn request(endpoint: &str, params: &[(&str, &str)], cookie: Option<&str>) -> Result<Value, String> {
     let url = Url::parse_with_params(endpoint, params).map_err(|_| "直播接口地址无效")?;
-    let config = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(12)));
+    // Bilibili APIs use the same direct route as the native media downloader.
+    // An inherited development-tool proxy may be unavailable or blocked by Bilibili.
+    let config = ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_global(Some(Duration::from_secs(12)));
     let config = if cookie.is_some() {
         config.max_redirects(0)
     } else {
@@ -323,30 +363,32 @@ pub fn resolve(
             ..Source::default()
         });
     }
-    let result = compat::resolve(directory, room, cookie, selection);
-    if result.is_err()
-        && room.platform == "bilibili"
-        && selection.quality.is_none()
-        && selection.line.is_none()
-    {
-        if let Ok(url) = resolve_bili(room, cookie) {
+    if room.platform == "bilibili" {
+        if let Ok((url, playback)) = resolve_bili(room, cookie, selection) {
             return Ok(Source {
                 url,
                 headers: BTreeMap::from([("referer".into(), "https://live.bilibili.com/".into())]),
-                playback: compat::Playback {
-                    chat: true,
-                    super_chat: true,
-                    super_chat_board: true,
-                    ..compat::Playback::default()
-                },
+                playback,
                 ..Source::default()
             });
         }
     }
-    result
+    compat::resolve(directory, room, cookie, selection)
 }
 
-fn resolve_bili(room: &Room, cookie: Option<&str>) -> Result<String, String> {
+/// Resolve a Bilibili room ourselves so the player can offer every quality and
+/// CDN line the room exposes, instead of a single hard-coded URL.
+fn resolve_bili(
+    room: &Room,
+    cookie: Option<&str>,
+    selection: &compat::Selection,
+) -> Result<(String, compat::Playback), String> {
+    let quality = selection
+        .quality
+        .as_deref()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(10_000);
+    let qn = quality.to_string();
     let result = request(
         "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo",
         &[
@@ -354,39 +396,121 @@ fn resolve_bili(room: &Room, cookie: Option<&str>) -> Result<String, String> {
             ("protocol", "0,1"),
             ("format", "0,1,2"),
             ("codec", "0"),
-            ("qn", "150"),
+            ("qn", qn.as_str()),
             ("platform", "web"),
             ("ptype", "8"),
         ],
         cookie,
     )?;
-    stream_url(&result).ok_or_else(|| "直播间当前没有可用的游客播放线路".into())
+    bili_playback(&result, quality, selection)
 }
 
-fn stream_url(result: &Value) -> Option<String> {
-    let streams = result["data"]["playurl_info"]["playurl"]["stream"].as_array()?;
+fn bili_playback(
+    result: &Value,
+    quality: u64,
+    selection: &compat::Selection,
+) -> Result<(String, compat::Playback), String> {
+    let play = &result["data"]["playurl_info"]["playurl"];
+    let streams = play["stream"]
+        .as_array()
+        .ok_or_else(|| "直播间当前没有可用的播放线路".to_owned())?;
+    let names: BTreeMap<String, String> = play["g_qn_desc"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            Some((
+                entry["qn"].as_u64()?.to_string(),
+                entry["desc"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    let mut qualities: Vec<compat::Choice> = Vec::new();
+    let mut lines: Vec<compat::Choice> = Vec::new();
+    let mut urls: Vec<(String, String)> = Vec::new();
+    let mut current = quality;
     for stream in streams {
+        let protocol = stream["protocol_name"].as_str().unwrap_or("http_stream");
         for format in stream["format"].as_array().into_iter().flatten() {
+            let name = format["format_name"].as_str().unwrap_or_default();
             for codec in format["codec"].as_array().into_iter().flatten() {
-                let Some(base) = codec["base_url"].as_str() else {
-                    continue;
-                };
-                for line in codec["url_info"].as_array().into_iter().flatten() {
-                    let (Some(host), Some(extra)) = (line["host"].as_str(), line["extra"].as_str())
-                    else {
+                if let Some(qn) = codec["current_qn"].as_u64() {
+                    current = qn;
+                }
+                for qn in codec["accept_qn"].as_array().into_iter().flatten() {
+                    let Some(qn) = qn.as_u64() else {
                         continue;
                     };
-                    let url = format!("{host}{base}{extra}");
-                    if Url::parse(&url)
-                        .is_ok_and(|parsed| matches!(parsed.scheme(), "http" | "https"))
-                    {
-                        return Some(url);
+                    let id = qn.to_string();
+                    if qualities.iter().any(|choice| choice.id == id) {
+                        continue;
                     }
+                    let label = names
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("画质 {qn}"));
+                    qualities.push(compat::Choice { id, label });
+                }
+                for (index, info) in codec["url_info"].as_array().into_iter().flatten().enumerate()
+                {
+                    let (Some(host), Some(base), Some(extra)) = (
+                        info["host"].as_str(),
+                        codec["base_url"].as_str(),
+                        info["extra"].as_str(),
+                    ) else {
+                        continue;
+                    };
+                    let video = match (protocol, name) {
+                        ("http_stream", _) => "FLV".to_owned(),
+                        ("http_hls", "fmp4") => "HLS fMP4".to_owned(),
+                        ("http_hls", _) => "HLS TS".to_owned(),
+                        _ => protocol.to_owned(),
+                    };
+                    let id = format!("{protocol}/{name}/{index}");
+                    let label = format!("{video} 线路{}", index + 1);
+                    lines.push(compat::Choice {
+                        id: id.clone(),
+                        label,
+                    });
+                    urls.push((id, format!("{host}{base}{extra}")));
                 }
             }
         }
     }
-    None
+    if urls.is_empty() {
+        return Err("直播间当前没有可用的游客播放线路".into());
+    }
+    if qualities.is_empty() {
+        qualities.push(compat::Choice {
+            id: current.to_string(),
+            label: names
+                .get(&current.to_string())
+                .cloned()
+                .unwrap_or_else(|| "原画".into()),
+        });
+    }
+    let chosen = selection
+        .line
+        .as_deref()
+        .and_then(|id| urls.iter().find(|(line, _)| line == id))
+        .or_else(|| urls.iter().find(|(line, _)| line.starts_with("http_stream/")))
+        .unwrap_or(&urls[0]);
+    let quality_id = current.to_string();
+    let quality_label = names.get(&quality_id).cloned();
+    Ok((
+        chosen.1.clone(),
+        compat::Playback {
+            qualities,
+            quality: Some(quality_id),
+            quality_label,
+            lines,
+            // Keep automatic selection distinct from the resolved playback URL.
+            line: selection.line.as_ref().filter(|id| **id == chosen.0).cloned(),
+            chat: true,
+            super_chat: true,
+            super_chat_board: true,
+        },
+    ))
 }
 
 pub fn load(path: &Path) -> Vec<Room> {
@@ -417,6 +541,55 @@ pub fn save(path: &Path, rooms: &[Room]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn room(id: u64, status: BroadcastStatus) -> Room {
+        Room {
+            broadcast: Some(status),
+            ..Room::bili(id, String::new())
+        }
+    }
+
+    #[test]
+    fn popular_room_switching_preserves_order_wraps_and_skips_unavailable_rooms() {
+        let rooms = vec![
+            room(1, BroadcastStatus::Live),
+            room(2, BroadcastStatus::Offline),
+            room(3, BroadcastStatus::Unknown),
+            room(4, BroadcastStatus::Replay),
+            room(5, BroadcastStatus::Live),
+        ];
+        assert_eq!(next_room_index(&rooms, &rooms[0].key(), true, true), Some(2));
+        assert_eq!(next_room_index(&rooms, &rooms[4].key(), false, true), Some(2));
+        assert_eq!(next_room_index(&rooms, &rooms[4].key(), true, true), Some(0));
+        assert_eq!(next_room_index(&rooms, &rooms[0].key(), false, true), Some(4));
+        // A room going offline during playback must not reset our position.
+        assert_eq!(next_room_index(&rooms, &rooms[1].key(), true, true), Some(2));
+        // Follow switching still requires a confirmed live status.
+        assert_eq!(next_room_index(&rooms, &rooms[0].key(), true, false), Some(4));
+    }
+
+    #[test]
+    fn room_switching_handles_empty_single_and_missing_current_rooms() {
+        let current = room(1, BroadcastStatus::Live);
+        assert_eq!(next_room_index(&[], &current.key(), true, true), None);
+        assert_eq!(next_room_index(std::slice::from_ref(&current), &current.key(), true, true), None);
+        let rooms = vec![current.clone(), room(2, BroadcastStatus::Replay)];
+        assert_eq!(next_room_index(&rooms, &current.key(), false, true), None);
+        let rooms = vec![room(2, BroadcastStatus::Live), room(3, BroadcastStatus::Live)];
+        assert_eq!(next_room_index(&rooms, &current.key(), true, true), Some(0));
+        assert_eq!(next_room_index(&rooms, &current.key(), false, true), Some(1));
+    }
+
+    #[test]
+    fn room_switching_uses_platform_and_id_for_identity() {
+        let current = room(1, BroadcastStatus::Live);
+        let other = Room {
+            platform: "douyu".into(),
+            ..current.clone()
+        };
+        let rooms = vec![current.clone(), other];
+        assert_eq!(next_room_index(&rooms, &current.key(), true, true), Some(1));
+    }
 
     #[test]
     fn follow_filters_keep_unknown_rooms_in_all_and_replays_out_of_live() {
@@ -511,13 +684,15 @@ mod tests {
     }
 
     #[test]
-    fn joins_playback_line_without_losing_query() {
+    fn bili_playback_line_keeps_signed_query() {
         let result = serde_json::json!({"data":{"playurl_info":{"playurl":{"stream":[{"format":[{"codec":[
             {"base_url":"/room.flv","url_info":[{"host":"https://cdn.example.com","extra":"?token=abc&x=1"}]}
         ]}]}]}}}});
         assert_eq!(
-            stream_url(&result).as_deref(),
-            Some("https://cdn.example.com/room.flv?token=abc&x=1")
+            bili_playback(&result, 10_000, &compat::Selection::default())
+                .expect("playback line")
+                .0,
+            "https://cdn.example.com/room.flv?token=abc&x=1"
         );
     }
 }

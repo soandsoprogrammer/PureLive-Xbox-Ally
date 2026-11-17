@@ -5,6 +5,10 @@ on:
     branches: [rust-handheld]
     paths:
       - "gpui-prototype/**"
+      - "tools/live_cli/**"
+      - "packages/**"
+      - "pubspec.yaml"
+      - "pubspec.lock"
       - ".github/workflows/rust-handheld.yml"
   workflow_dispatch:
 
@@ -36,6 +40,25 @@ jobs:
       - name: Build
         run: cargo build --manifest-path gpui-prototype/Cargo.toml --release --locked
 
+      - name: Run all Rust unit tests
+        run: cargo test --manifest-path gpui-prototype/Cargo.toml --release --locked
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.13.7'
+
+      - name: Build and test platform helper
+        run: |
+          dart pub get --enforce-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Push-Location tools/live_cli
+          dart test test/handheld_pagination_test.dart
+          $testExit = $LASTEXITCODE
+          Pop-Location
+          if ($testExit -ne 0) { exit $testExit }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          dart compile exe tools/live_cli/bin/handheld_platforms.dart -o dist/purelive-platforms.exe
+
       - name: Stage
         shell: pwsh
         run: |
@@ -46,5 +69,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: purelive-gpui-windows-x64
-          path: dist/purelive-gpui.exe
+          path: dist/*.exe
           if-no-files-found: error

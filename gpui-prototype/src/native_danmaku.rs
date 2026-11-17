@@ -2,9 +2,7 @@
 use crate::Result;
 use crate::emotes::Bitmap;
 #[cfg(windows)]
-use std::collections::VecDeque;
-#[cfg(windows)]
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 use std::{sync::Arc, time::Instant};
 #[cfg(windows)]
 use windows::{
@@ -61,7 +59,7 @@ impl Overlay {
             target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             let write: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let text = write.CreateTextFormat(
-                w!("Microsoft YaHei UI"),
+                w!("Sarasa UI SC"),
                 None,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL,
@@ -138,7 +136,7 @@ impl Overlay {
                 }
                 match part {
                     Part::Text(text) => {
-                        self.draw_text(text, x, y, scale);
+                        self.draw_text(text, x, y.round(), scale);
                         drawn.text = true;
                     }
                     Part::Image(source) => {
@@ -192,7 +190,7 @@ impl Overlay {
                     &self.text,
                     &bounds,
                     brush,
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    D2D1_DRAW_TEXT_OPTIONS_NO_SNAP,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
             }

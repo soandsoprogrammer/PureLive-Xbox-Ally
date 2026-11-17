@@ -6,6 +6,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
@@ -19,7 +20,6 @@ use crate::live::{Room, RoomKey, RoomStatus};
 pub struct Source {
     pub url: String,
     pub headers: BTreeMap<String, String>,
-    pub proxy: String,
     pub lease: Option<Bridge>,
     pub playback: Playback,
 }
@@ -133,10 +133,24 @@ struct Reply {
     room_statuses: Vec<RoomStatus>,
     url: String,
     headers: BTreeMap<String, String>,
-    proxy: String,
     lease: bool,
     playback: Playback,
     super_chats: Vec<SuperChat>,
+}
+
+fn configure_network(command: &mut Command) {
+    // Keep all helper connections direct without changing the parent's environment.
+    for key in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        command.env_remove(key);
+    }
+    command.env("NO_PROXY", "*").env("no_proxy", "*");
 }
 
 fn launch(directory: &Path, message: serde_json::Value) -> Result<(ChildStdout, Bridge), String> {
@@ -149,6 +163,7 @@ fn launch(directory: &Path, message: serde_json::Value) -> Result<(ChildStdout, 
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
+    configure_network(&mut command);
     let child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -164,16 +179,54 @@ fn launch(directory: &Path, message: serde_json::Value) -> Result<(ChildStdout, 
 }
 
 fn request(directory: &Path, message: serde_json::Value) -> Result<(Reply, Bridge), String> {
+    let timeout = reply_timeout(&message);
     let (stdout, guard) = launch(directory, message)?;
-    let mut output = String::new();
-    BufReader::new(stdout.take(2 * 1024 * 1024))
-        .read_line(&mut output)
-        .map_err(|_| "平台组件响应中断")?;
+    // On timeout, dropping the bridge closes stdin and reaps the helper. That
+    // also releases the pipe reader even if the child never wrote a response.
+    let output = read_reply(stdout, timeout)?;
     let reply: Reply = serde_json::from_str(&output).map_err(|_| "平台组件响应无效")?;
     if let Some(error) = reply.error {
         return Err(error);
     }
     Ok((reply, guard))
+}
+
+fn reply_timeout(message: &serde_json::Value) -> Duration {
+    let seconds = if message["action"] == "status" {
+        // The helper checks four rooms concurrently, with a five-second limit
+        // per room. Allow large follow lists longer than a single-room request.
+        message["rooms"]
+            .as_array()
+            .map_or(0, Vec::len)
+            .div_ceil(4)
+            .saturating_mul(5)
+            .saturating_add(15)
+            .clamp(40, 300)
+    } else {
+        40
+    };
+    Duration::from_secs(seconds as u64)
+}
+
+fn read_reply(reader: impl Read + Send + 'static, timeout: Duration) -> Result<String, String> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("platform-reply".into())
+        .spawn(move || {
+            let mut output = String::new();
+            let result = BufReader::new(reader.take(2 * 1024 * 1024))
+                .read_line(&mut output)
+                .map(|_| output)
+                .map_err(|_| "平台组件响应中断".to_owned());
+            let _ = sender.send(result);
+        })
+        .map_err(|_| "无法启动平台响应读取".to_owned())?;
+    receiver
+        .recv_timeout(timeout)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => "平台响应超时，请重试".to_owned(),
+            mpsc::RecvTimeoutError::Disconnected => "平台组件响应中断".to_owned(),
+        })?
 }
 
 pub fn find(
@@ -205,6 +258,22 @@ pub fn room_statuses(
     Ok(reply.room_statuses)
 }
 
+pub fn popular_page(
+    directory: &Path,
+    platform: &str,
+    page: u32,
+    cookie: Option<&str>,
+) -> Result<Vec<Room>, String> {
+    let (reply, _) = request(
+        directory,
+        serde_json::json!({
+            "action": "find", "platform": platform, "query": "", "page": page,
+            "account_cookie": cookie,
+        }),
+    )?;
+    Ok(reply.rooms)
+}
+
 pub fn resolve(
     directory: &Path,
     room: &Room,
@@ -224,7 +293,6 @@ pub fn resolve(
     Ok(Source {
         url: reply.url,
         headers: reply.headers,
-        proxy: reply.proxy,
         lease: reply.lease.then_some(guard),
         playback: reply.playback,
     })
@@ -281,4 +349,69 @@ pub fn super_chats(
         }),
     )?;
     Ok(reply.super_chats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stalled_helper_reply_times_out_instead_of_hanging() {
+        struct Stalled(mpsc::Receiver<()>);
+        impl Read for Stalled {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                let _ = self.0.recv();
+                Ok(0)
+            }
+        }
+        let (release, wait) = mpsc::channel();
+        let result = read_reply(Stalled(wait), Duration::from_millis(20));
+        let _ = release.send(());
+        assert_eq!(result.unwrap_err(), "平台响应超时，请重试");
+    }
+
+    #[test]
+    fn helper_reply_keeps_the_first_complete_line() {
+        let reply = read_reply(
+            std::io::Cursor::new(b"{\"rooms\":[]}\nignored"),
+            Duration::from_secs(2),
+        );
+        assert_eq!(reply.unwrap(), "{\"rooms\":[]}\n");
+    }
+
+    #[test]
+    fn status_reply_budget_scales_with_follow_count_but_is_bounded() {
+        let rooms = vec![serde_json::json!({}); 80];
+        assert_eq!(
+            reply_timeout(&serde_json::json!({"action":"status", "rooms":rooms})),
+            Duration::from_secs(115)
+        );
+        assert_eq!(
+            reply_timeout(&serde_json::json!({"action":"play"})),
+            Duration::from_secs(40)
+        );
+        let rooms = vec![serde_json::json!({}); 1000];
+        assert_eq!(
+            reply_timeout(&serde_json::json!({"action":"status", "rooms":rooms})),
+            Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn network_helper_removes_proxies_and_disables_proxy_discovery() {
+        let mut command = Command::new("helper.exe");
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+            command.env(key, "http://127.0.0.1:9");
+        }
+        configure_network(&mut command);
+        for expected in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+            assert!(command.get_envs().any(|(key, value)| {
+                key.to_string_lossy().eq_ignore_ascii_case(expected) && value.is_none()
+            }));
+        }
+        assert!(command.get_envs().any(|(key, value)| {
+            key.to_string_lossy().eq_ignore_ascii_case("NO_PROXY")
+                && value == Some(std::ffi::OsStr::new("*"))
+        }));
+    }
 }

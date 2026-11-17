@@ -7,6 +7,7 @@ mod dxva;
 #[cfg(windows)]
 mod dxva_render;
 mod emotes;
+mod floating_panel;
 #[cfg(windows)]
 mod hardware_player;
 #[cfg(target_os = "macos")]
@@ -26,6 +27,7 @@ mod native;
 #[cfg(windows)]
 mod native_audio;
 mod native_danmaku;
+mod pagination;
 mod platform_icons;
 mod platform_picker;
 mod playback;
@@ -49,7 +51,7 @@ use live::{BroadcastStatus, FollowFilter, Room, RoomKey};
 use native::Surface;
 #[cfg(target_os = "macos")]
 use native::buttons::*;
-use playback::{AudioSettings, PlaybackUi};
+use playback::{AudioSettings, ChoiceMenu, PlaybackUi};
 use style::Pane;
 #[cfg(windows)]
 use windows_sys::Win32::UI::Input::XboxController::{
@@ -58,6 +60,8 @@ use windows_sys::Win32::UI::Input::XboxController::{
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_START,
     XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
 };
+#[cfg(windows)]
+use wry::WebViewBuilderExtWindows;
 use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, dpi::PhysicalSize};
 
 const TOOLBAR: f32 = 88.0;
@@ -140,10 +144,10 @@ enum Content {
 }
 
 impl Content {
-    fn resize(&self, window: &Window, controls_height: f32) {
+    fn resize(&self, window: &Window, controls_height: f32, panel: Option<floating_panel::Bounds>) {
         match self {
             Self::Video { surface, .. } => {
-                surface.resize_video(window, controls_height);
+                surface.resize_video(window, controls_height, panel);
             }
             Self::Login { web, surface, .. } => {
                 let (width, height) = surface.resize(window, TOOLBAR);
@@ -188,6 +192,7 @@ struct Home {
     room_status_task: Option<Task<()>>,
     next_follow_check: Option<Instant>,
     results: Vec<Room>,
+    popular_pages: pagination::Pages,
     show_follows: bool,
     room_selection: Option<usize>,
     request_id: u64,
@@ -237,7 +242,17 @@ impl Home {
             .unwrap_or_else(|| options.directory.clone())
             .join("PureLiveRust/follows.json");
         let follows = live::load(&follows_path);
-        let follow_rows = (0..follows.len()).collect();
+        let follow_filter = FollowFilter::default();
+        let follow_rows: Vec<usize> = follows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, room)| {
+                follow_filter
+                    .includes(room.broadcast_status())
+                    .then_some(index)
+            })
+            .collect();
+        let room_selection = (!follow_rows.is_empty()).then_some(0);
         let audio = AudioSettings::load(&follows_path.with_file_name("audio.json"));
         let danmaku_enabled =
             playback::load_danmaku_preference(&follows_path.with_file_name("danmaku.json"));
@@ -272,7 +287,11 @@ impl Home {
         cx.observe_window_bounds(window, |this, window, _| {
             if !native::minimized(window) {
                 if let Some(content) = &this.content {
-                    content.resize(window, this.playback.height());
+                    content.resize(
+                        window,
+                        this.playback.height(),
+                        this.playback.floating_panel(window),
+                    );
                 }
             }
         })
@@ -313,13 +332,14 @@ impl Home {
             query,
             follows_path,
             follows,
-            follow_filter: FollowFilter::All,
+            follow_filter,
             follow_rows,
             room_status_task: None,
             next_follow_check: None,
             results: Vec::new(),
+            popular_pages: pagination::Pages::default(),
             show_follows: true,
-            room_selection: None,
+            room_selection,
             request_id: 0,
             active_room: None,
             platforms: live::platforms(),
@@ -370,7 +390,11 @@ impl Home {
         mut source: Source,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let surface = Surface::video(window, self.playback.height())?;
+        let surface = Surface::video(
+            window,
+            self.playback.height(),
+            self.playback.floating_panel(window),
+        )?;
         let player = Player::start(
             surface.id(),
             hardware_player::Input::from_source(&source),
@@ -406,7 +430,10 @@ impl Home {
         let log = self.log.clone();
         let site_index = self.account_site;
         let site = &account::PLATFORMS[site_index];
-        let web = WebViewBuilder::new()
+        let builder = WebViewBuilder::new();
+        #[cfg(windows)]
+        let builder = builder.with_additional_browser_args("--no-proxy-server");
+        let web = builder
             .with_bounds(web_bounds(width, height))
             .with_navigation_handler(move |url| url == "about:blank" || site.allows(&url))
             .with_on_page_load_handler(move |event, url| {
@@ -631,12 +658,14 @@ impl Home {
                     .then_some(index)
             }));
         if self.show_follows {
-            self.room_selection = selected.and_then(|key| {
-                self.follow_rows.iter().position(|&index| {
-                    let room = &self.follows[index];
-                    room.platform == key.platform && room.id == key.id
+            self.room_selection = selected
+                .and_then(|key| {
+                    self.follow_rows.iter().position(|&index| {
+                        let room = &self.follows[index];
+                        room.platform == key.platform && room.id == key.id
+                    })
                 })
-            });
+                .or_else(|| (!self.follow_rows.is_empty()).then_some(0));
             if let Some(index) = self.room_selection {
                 self.rooms_scroll
                     .scroll_to_item(index / 3, ScrollStrategy::Nearest);
@@ -645,7 +674,7 @@ impl Home {
     }
 
     fn select_follow_filter(&mut self, filter: FollowFilter, cx: &mut Context<Self>) {
-        if self.follow_filter == filter && self.room_selection.is_none() {
+        if self.follow_filter == filter {
             return;
         }
         self.follow_filter = filter;
@@ -673,6 +702,7 @@ impl Home {
                 };
                 let next = (current + step) % FollowFilter::TABS.len();
                 self.select_follow_filter(FollowFilter::TABS[next], cx);
+                self.focus.focus(window, cx);
             }
             Pane::Popular => {
                 let count = self.platforms.len();
@@ -744,7 +774,11 @@ impl Home {
             return;
         }
         let index = self.room_selection.map_or(0, |index| {
-            (index as isize + delta).rem_euclid(count as isize) as usize
+            if self.pane == Pane::Popular {
+                index.saturating_add_signed(delta).min(count - 1)
+            } else {
+                (index as isize + delta).rem_euclid(count as isize) as usize
+            }
         });
         self.select_room_card(index, cx);
     }
@@ -805,6 +839,7 @@ impl Home {
     }
 
     fn select_platform(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.popular_pages.invalidate();
         self.platform = index;
         self.platform_cursor = None;
         self.show_follows = false;
@@ -833,6 +868,7 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.popular_pages.invalidate();
         self.search_platform = index.checked_sub(1);
         self.platform_cursor = None;
         self.request_id += 1;
@@ -854,6 +890,7 @@ impl Home {
     }
 
     fn search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.popular_pages.invalidate();
         let input = self.query.read(cx).value().to_string();
         self.pane = Pane::Search;
         if self.search_platform.is_none() && input.trim().is_empty() {
@@ -866,6 +903,7 @@ impl Home {
 
     fn request_rooms(&mut self, input: String, window: &mut Window, cx: &mut Context<Self>) {
         self.request_id += 1;
+        let epoch = self.popular_pages.reset();
         let request = self.request_id;
         let site = if self.pane == Pane::Search {
             self.search_platform.map(|index| &self.platforms[index])
@@ -903,10 +941,11 @@ impl Home {
                 this.status = match result {
                     Ok(rooms) => {
                         mark(&this.log, format!("rooms_loaded={}", rooms.len()));
-                        this.results = rooms;
-                        // Do not pre-select a card: the mint ring means the user moved
-                        // to it, not that the list has just loaded.
-                        this.room_selection = None;
+                        let received = rooms.len();
+                        let added = pagination::append_unique(&mut this.results, rooms);
+                        this.popular_pages.complete(epoch, 1, received, added);
+                        this.room_selection =
+                            (this.pane == Pane::Popular && !this.results.is_empty()).then_some(0);
                         if this.results.is_empty() {
                             if this.pane == Pane::Search && this.search_platform.is_none() {
                                 "暂无结果，可换个关键词或粘贴直播间链接".into()
@@ -917,7 +956,10 @@ impl Home {
                             format!("找到 {} 个房间", this.results.len())
                         }
                     }
-                    Err(error) => error,
+                    Err(error) => {
+                        this.popular_pages.fail(epoch, error.clone());
+                        error
+                    }
                 };
                 cx.notify();
             });
@@ -926,7 +968,59 @@ impl Home {
         cx.notify();
     }
 
+    fn load_more_rooms(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pane != Pane::Popular || self.content.is_some() || self.show_follows {
+            return;
+        }
+        let Some((epoch, page)) = self.popular_pages.begin_next() else {
+            return;
+        };
+        let platform = self.platforms[self.platform].id.clone();
+        let directory = self.options.directory.clone();
+        let cookie = self
+            .accounts
+            .get(&platform)
+            .map(|account| account.cookie.clone());
+        let pending = cx.background_spawn(async move {
+            compat::popular_page(&directory, &platform, page, cookie.as_deref())
+        });
+        cx.spawn_in(window, async move |entity, cx| {
+            let result = pending.await;
+            let _ = entity.update_in(cx, |this, _, cx| {
+                if this.popular_pages.epoch != epoch {
+                    return;
+                }
+                match result {
+                    Ok(rooms) => {
+                        let received = rooms.len();
+                        let added = pagination::append_unique(&mut this.results, rooms);
+                        this.popular_pages.complete(epoch, page, received, added);
+                        mark(
+                            &this.log,
+                            format!(
+                                "rooms_page={page} added={added} total={}",
+                                this.results.len()
+                            ),
+                        );
+                    }
+                    Err(error) => this.popular_pages.fail(epoch, error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn play_room(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+        self.room_selection = (0..self.room_count()).find(|&index| {
+            self.room_at(index)
+                .is_some_and(|listed| listed.same_channel(&room))
+        });
+        if let Some(selected) = self.room_selection {
+            self.rooms_scroll
+                .scroll_to_item(selected / 3, ScrollStrategy::Nearest);
+        }
         self.covers.clear(window, cx);
         self.stop_chat();
         self.playback_epoch += 1;
@@ -938,37 +1032,32 @@ impl Home {
         self.reload_room(compat::Selection::default(), window, cx);
     }
 
-    /// Cycle through live followed rooms and show their position while connecting.
-    fn switch_follow(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pane != Pane::Follows {
-            return;
+    fn playback_rooms(&self) -> &[Room] {
+        match self.pane {
+            Pane::Follows => &self.follows,
+            Pane::Popular => &self.results,
+            _ => &[],
         }
+    }
+
+    /// Cycle through the current follow or popular list without moving tab focus.
+    fn switch_room(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(current) = self.active_room.as_ref().map(Room::key) else {
             return;
         };
-        let candidates: Vec<usize> = self
-            .follows
-            .iter()
-            .enumerate()
-            .filter(|(_, room)| room.broadcast_status() == BroadcastStatus::Live)
-            .map(|(index, _)| index)
-            .collect();
-        let position = candidates
-            .iter()
-            .position(|&index| self.follows[index].key() == current);
-        let next = match (candidates.len(), position, forward) {
-            (0, _, _) | (1, Some(_), _) => return,
-            (_, Some(position), true) => (position + 1) % candidates.len(),
-            (_, Some(position), false) => (position + candidates.len() - 1) % candidates.len(),
-            (_, None, true) => 0,
-            (_, None, false) => candidates.len() - 1,
+        let Some(index) = live::next_room_index(
+            self.playback_rooms(),
+            &current,
+            forward,
+            self.pane == Pane::Popular,
+        ) else {
+            return;
         };
-        let room = self.follows[candidates[next]].clone();
+        let room = self.playback_rooms()[index].clone();
         self.play_room(room, window, cx);
     }
 
-    /// The room's place in the follow list ("3/6 神棍老师"), or just its name when
-    /// it is not a follow; used in the status line while the source connects.
+    /// Show the room's position in the current playback list while connecting.
     fn room_label(&self, room: &Room) -> String {
         let name = if room.nick.trim().is_empty() {
             room.title.trim()
@@ -976,9 +1065,9 @@ impl Home {
             room.nick.trim()
         };
         let live: Vec<&Room> = self
-            .follows
+            .playback_rooms()
             .iter()
-            .filter(|followed| followed.broadcast_status() == BroadcastStatus::Live)
+            .filter(|room| room.is_playback_candidate(self.pane == Pane::Popular))
             .collect();
         match live
             .iter()
@@ -1212,6 +1301,13 @@ impl Home {
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_gamepad(window, cx);
+        if self.pane == Pane::Popular
+            && self.content.is_none()
+            && window.is_window_active()
+            && self.popular_pages.near_end(self.results.len())
+        {
+            self.load_more_rooms(window, cx);
+        }
         if self.first_poll {
             self.first_poll = false;
             if let Some(id) = self.options.launch_room.take() {
@@ -1378,7 +1474,7 @@ impl Home {
                                 repeat_at = None;
                             }
                             if pressed != 0 || repeated != 0 {
-                                let _ = input.try_send((pressed, repeated));
+                                let _ = input.try_send((pressed, repeated, current));
                             }
                         }
                         previous = buttons;
@@ -1387,7 +1483,7 @@ impl Home {
                     }
                 }
             });
-            while let Ok((pressed, repeated)) = presses.recv().await {
+            while let Ok((pressed, repeated, held)) = presses.recv().await {
                 if entity
                     .update_in(cx, |this, window, cx| {
                         if window.is_window_active() && !native::minimized(window) {
@@ -1399,7 +1495,7 @@ impl Home {
                             } else {
                                 repeated
                             };
-                            this.on_gamepad(pressed | repeated, window, cx);
+                            this.on_gamepad(pressed | repeated, held, window, cx);
                         }
                     })
                     .is_err()
@@ -1410,9 +1506,20 @@ impl Home {
         }));
     }
 
-    fn on_gamepad(&mut self, pressed: u16, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_gamepad(&mut self, pressed: u16, held: u16, window: &mut Window, cx: &mut Context<Self>) {
+        // Check the held state before either bumper's normal navigation action.
+        // Real presses usually arrive in separate polls, even when used as a chord.
+        if self.in_playback()
+            && self.playback.menu == Some(ChoiceMenu::Rooms)
+            && exit_chord_pressed(pressed, held)
+        {
+            self.choose(Action::Exit, window, cx);
+            return;
+        }
         if self.in_playback() {
-            if pressed & XINPUT_GAMEPAD_B != 0 {
+            if pressed & XINPUT_GAMEPAD_START != 0 {
+                self.toggle_room_menu(window, cx);
+            } else if pressed & XINPUT_GAMEPAD_B != 0 {
                 self.playback_back(window, cx);
             } else if pressed & XINPUT_GAMEPAD_A != 0 {
                 self.confirm_playback(window, cx);
@@ -1427,12 +1534,12 @@ impl Home {
             } else if self.playback.menu.is_none()
                 && pressed & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0
             {
-                self.switch_follow(pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0, window, cx);
+                self.switch_room(pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0, window, cx);
             } else if self.playback.menu.is_none()
                 && !self.playback.visible()
                 && pressed & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT) != 0
             {
-                self.switch_follow(pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0, window, cx);
+                self.switch_room(pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0, window, cx);
             } else if self.playback.menu.is_none() && pressed & XINPUT_GAMEPAD_DPAD_UP != 0 {
                 self.adjust_volume(5, window, cx);
             } else if self.playback.menu.is_none() && pressed & XINPUT_GAMEPAD_DPAD_DOWN != 0 {
@@ -1513,13 +1620,14 @@ impl Home {
 }
 
 impl Render for Home {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if this.in_playback() {
                     match event.keystroke.key.as_str() {
+                        "f10" | "menu" if !event.is_held => this.toggle_room_menu(window, cx),
                         "left" => this.move_playback(-1, window, cx),
                         "right" => this.move_playback(1, window, cx),
                         "up" if this.playback.menu.is_none() => this.adjust_volume(5, window, cx),
@@ -1579,7 +1687,7 @@ impl Render for Home {
                     _ => {}
                 }
             }))
-            .child(self.view(cx))
+            .child(self.view(window, cx))
     }
 }
 
@@ -1617,6 +1725,11 @@ const DIRECTION_BUTTONS: u16 = XINPUT_GAMEPAD_DPAD_UP
 const REPEAT_DELAY_MS: u64 = 350;
 const REPEAT_INTERVAL_MS: u64 = 90;
 
+fn exit_chord_pressed(pressed: u16, held: u16) -> bool {
+    let shoulders = XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER;
+    held & shoulders == shoulders && pressed & shoulders != 0
+}
+
 fn stick_buttons(x: i16, y: i16) -> u16 {
     let x = f32::from(x) / 32767.0;
     let y = f32::from(y) / 32767.0;
@@ -1651,4 +1764,50 @@ fn trigger_buttons(left: u8, right: u8) -> u16 {
         buttons |= TRIGGER_RIGHT;
     }
     buttons
+}
+
+#[cfg(test)]
+mod gamepad_tests {
+    use super::{
+        TRIGGER_LEFT, TRIGGER_RIGHT, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_DPAD_DOWN,
+        XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, exit_chord_pressed,
+    };
+
+    #[test]
+    fn exit_chord_accepts_simultaneous_and_staggered_presses() {
+        let left = XINPUT_GAMEPAD_LEFT_SHOULDER;
+        let right = XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        for sequence in [
+            [0, left | right, 0],
+            [0, left, left | right],
+            [0, right, left | right],
+        ] {
+            let exits: Vec<_> = sequence
+                .windows(2)
+                .map(|states| exit_chord_pressed(states[1] & !states[0], states[1]))
+                .collect();
+            assert_eq!(exits.iter().filter(|exit| **exit).count(), 1);
+        }
+    }
+
+    #[test]
+    fn individual_shoulders_and_triggers_do_not_exit() {
+        for button in [
+            XINPUT_GAMEPAD_LEFT_SHOULDER,
+            XINPUT_GAMEPAD_RIGHT_SHOULDER,
+            TRIGGER_LEFT,
+            TRIGGER_RIGHT,
+            TRIGGER_LEFT | TRIGGER_RIGHT,
+        ] {
+            assert!(!exit_chord_pressed(button, button));
+        }
+    }
+
+    #[test]
+    fn held_chord_does_not_retrigger_on_other_input() {
+        let shoulders = XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        for pressed in [0, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_DPAD_DOWN] {
+            assert!(!exit_chord_pressed(pressed, shoulders | pressed));
+        }
+    }
 }

@@ -241,6 +241,7 @@ pub fn load(source: &Source) -> Option<Bitmap> {
             static CLIENT: OnceLock<ureq::Agent> = OnceLock::new();
             let client = CLIENT.get_or_init(|| {
                 ureq::Agent::config_builder()
+                    .proxy(None)
                     .timeout_global(Some(Duration::from_secs(4)))
                     .max_redirects(0)
                     .build()

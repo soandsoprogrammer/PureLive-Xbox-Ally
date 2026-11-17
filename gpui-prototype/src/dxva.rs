@@ -83,6 +83,36 @@ pub struct Frame {
     _sample: IMFSample,
 }
 
+pub struct RenderFrame {
+    pub texture: ID3D11Texture2D,
+    pub subresource: u32,
+    pub width: u32,
+    pub height: u32,
+    // Pin the decoder's surface until the renderer replaces this frame.
+    _sample: RenderSample,
+}
+
+struct RenderSample {
+    _sample: IMFSample,
+}
+
+// SAFETY: The decoder obtains this sample in the process MTA and the render
+// worker joins that same MTA before receiving frames. It retains the sample
+// only to pin the surface and releases it before leaving the apartment.
+unsafe impl Send for RenderSample {}
+
+impl Frame {
+    pub fn into_render_frame(self) -> RenderFrame {
+        RenderFrame {
+            texture: self.texture,
+            subresource: self.subresource,
+            width: self.width,
+            height: self.height,
+            _sample: RenderSample { _sample: self._sample },
+        }
+    }
+}
+
 pub struct Decoder {
     mft: IMFTransform,
     sequence_header: Vec<u8>,

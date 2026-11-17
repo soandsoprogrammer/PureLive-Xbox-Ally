@@ -24,10 +24,8 @@ def package(root, rust_exe, native_dir, output):
         "LICENSE": root / "LICENSE",
         "THIRD_PARTY.md": root / "THIRD_PARTY.md",
     }
-    for name in ("libmpv-2.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
+    for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
         payload[name] = native_dir / name
-    for path in sorted((root / "licenses/mpv").iterdir()):
-        payload[f"licenses/mpv/{path.name}"] = path
 
     cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
     registry = cargo_home / "registry/src"
