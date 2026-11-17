@@ -74,7 +74,9 @@ pub struct SuperChat {
 }
 
 impl SuperChat {
-    pub fn same_event(&self, other: &Self) -> bool {
+    pub fn same_event(&self, other: &Self, platform: &str) -> bool {
+        const DOUYU_TIMESTAMP_TOLERANCE_MS: u64 = 1_000;
+
         if !self.id.is_empty() || !other.id.is_empty() {
             return self.id == other.id;
         }
@@ -83,6 +85,9 @@ impl SuperChat {
             && self.price == other.price
             && self.picture == other.picture
             && (self.start == other.start
+                || (platform == "douyu"
+                    && self.start.abs_diff(other.start) <= DOUYU_TIMESTAMP_TOLERANCE_MS
+                    && self.end.abs_diff(other.end) <= DOUYU_TIMESTAMP_TOLERANCE_MS)
                 || ((self.estimated || other.estimated)
                     && self.start < other.end
                     && other.start < self.end))

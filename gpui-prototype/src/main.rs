@@ -861,6 +861,11 @@ impl Home {
         let input = self.query.read(cx).value().to_string();
         self.pane = Pane::Search;
         if self.search_platform.is_none() && input.trim().is_empty() {
+            self.request_id += 1;
+            self.show_follows = false;
+            self.results.clear();
+            self.room_selection = None;
+            self.rooms_scroll = UniformListScrollHandle::new();
             self.status = "输入关键词或粘贴直播间链接".into();
             cx.notify();
             return;
@@ -902,7 +907,7 @@ impl Home {
         cx.spawn_in(window, async move |entity, cx| {
             let result = pending.await;
             let _ = entity.update_in(cx, |this, _, cx| {
-                if this.request_id != request {
+                if this.request_id != request || this.popular_pages.epoch != epoch {
                     return;
                 }
                 this.status = match result {
@@ -1184,8 +1189,7 @@ impl Home {
                 let mut changed = false;
                 for room in &mut this.follows {
                     if let Some(&status) = statuses.get(&room.key()) {
-                        follows_changed |= room.broadcast_status() != status;
-                        room.broadcast = Some(status);
+                        follows_changed |= room.update_broadcast_status(status);
                     }
                 }
                 if follows_changed {
@@ -1194,8 +1198,7 @@ impl Home {
                 }
                 for room in &mut this.results {
                     if let Some(&status) = statuses.get(&room.key()) {
-                        changed |= room.broadcast_status() != status;
-                        room.broadcast = Some(status);
+                        changed |= room.update_broadcast_status(status);
                     }
                 }
                 if ended_request == Some(this.request_id)
