@@ -144,6 +144,24 @@ pub const PLATFORMS: &[Platform] = &[
 ];
 
 impl Platform {
+    pub fn allows_cookie_domain(&self, domain: &str) -> bool {
+        let domain = domain
+            .strip_prefix('.')
+            .unwrap_or(domain)
+            .to_ascii_lowercase();
+        self.allows(&format!("https://{domain}/"))
+            && self.origins.iter().any(|origin| {
+                url::Url::parse(origin).is_ok_and(|url| {
+                    url.host_str().is_some_and(|host| {
+                        host == domain
+                            || host
+                                .strip_suffix(&domain)
+                                .is_some_and(|prefix| prefix.ends_with('.'))
+                    })
+                })
+            })
+    }
+
     pub fn allows(&self, value: &str) -> bool {
         url::Url::parse(value).is_ok_and(|url| {
             url.scheme() == "https"
@@ -347,5 +365,35 @@ mod tests {
         }
         let twitch = PLATFORMS.iter().find(|site| site.id == "twitch").unwrap();
         assert!(cookie_header(twitch, [("SESSDATA", "fixture")]).is_none());
+    }
+
+    #[test]
+    fn parent_domain_login_cookies_are_included_without_mixing_other_sites() {
+        for site in PLATFORMS {
+            assert!(site.allows_cookie_domain(site.domain));
+            assert!(site.allows_cookie_domain(&format!(".{}", site.domain)));
+            assert!(!site.allows_cookie_domain(&format!(".{}.example.com", site.domain)));
+            assert!(!site.allows_cookie_domain(".com"));
+            assert!(!site.allows_cookie_domain(".qq.com"));
+        }
+        let soop = PLATFORMS.iter().find(|site| site.id == "soop").unwrap();
+        assert!(soop.allows_cookie_domain(".sooplive.com"));
+        assert!(!soop.allows_cookie_domain("sooplive.com/other"));
+        let cookies = [
+            (".example.com", "AuthTicket", "other-site"),
+            (".sooplive.com", "AuthTicket", "soop-session"),
+            (".sooplive.com", "UserTicket", "soop-user"),
+        ];
+        let header = cookie_header(
+            soop,
+            cookies
+                .into_iter()
+                .filter(|(domain, _, _)| soop.allows_cookie_domain(domain))
+                .map(|(_, name, value)| (name, value)),
+        );
+        assert_eq!(
+            header.as_deref(),
+            Some("AuthTicket=soop-session; UserTicket=soop-user")
+        );
     }
 }
