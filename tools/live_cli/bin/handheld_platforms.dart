@@ -136,6 +136,7 @@ Future<List<Map<String, Object?>>> _roomStatuses(
   final factories = siteFactories(cookies: cookies);
   final sites = <String, LiveSite?>{};
   final statuses = List.filled(rooms.length, 'unknown');
+  final covers = List<String?>.filled(rooms.length, null);
   var next = 0;
   Future<void> worker() async {
     while (next < rooms.length) {
@@ -159,13 +160,17 @@ Future<List<Map<String, Object?>>> _roomStatuses(
             ? (site as LiveSiteRoomRefresher).getRoomDetailForRefresh(roomId: id)
             : site.getRoomDetail(roomId: id)).timeout(const Duration(seconds: 5));
         statuses[index] = broadcastStatus(detail);
+        if (platform == 'soop' && detail.cover.isNotEmpty) covers[index] = detail.cover;
       } on Object {
         // A failed lookup says nothing about whether the streamer is online.
       }
     }
   }
   await Future.wait([for (var i = 0; i < 4 && i < rooms.length; i++) worker()]);
-  return [for (var i = 0; i < rooms.length; i++) {...rooms[i], 'status': statuses[i]}];
+  return [
+    for (var i = 0; i < rooms.length; i++)
+      {...rooms[i], 'status': statuses[i], if (covers[i] != null) 'cover': covers[i]},
+  ];
 }
 
 Future<void> _reply(Map<String, Object?> result) async {

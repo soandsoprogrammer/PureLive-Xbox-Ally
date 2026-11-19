@@ -54,6 +54,8 @@ pub struct RoomStatus {
     #[serde(flatten)]
     pub key: RoomKey,
     pub status: BroadcastStatus,
+    #[serde(default)]
+    pub cover: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +136,18 @@ impl Room {
         }
         let changed = self.broadcast_status() != status;
         self.broadcast = Some(status);
+        changed
+    }
+
+    pub fn update_room_status(&mut self, status: &RoomStatus) -> bool {
+        let mut changed = self.update_broadcast_status(status.status);
+        if status.status != BroadcastStatus::Unknown
+            && let Some(cover) = status.cover.as_ref().filter(|cover| !cover.is_empty())
+            && self.cover != *cover
+        {
+            self.cover = cover.clone();
+            changed = true;
+        }
         changed
     }
 
@@ -690,6 +704,27 @@ mod tests {
         assert!(followed.update_broadcast_status(BroadcastStatus::Offline));
         assert!(!followed.update_broadcast_status(BroadcastStatus::Unknown));
         assert_eq!(followed.broadcast_status(), BroadcastStatus::Offline);
+    }
+
+    #[test]
+    fn room_refresh_updates_saved_covers_and_accepts_old_status_replies() {
+        let mut followed = room(42, BroadcastStatus::Live);
+        followed.cover = "https://liveimg.sooplive.com/m/123".into();
+        let updated: RoomStatus = serde_json::from_value(serde_json::json!({
+            "platform": "bilibili", "id": "42", "status": "live",
+            "cover": "https://res.sooplive.com/images/thumb/live/0004_480x270_dark.png"
+        })).unwrap();
+        assert!(followed.update_room_status(&updated));
+        assert_eq!(followed.cover, updated.cover.as_deref().unwrap());
+        let old_reply: RoomStatus = serde_json::from_value(serde_json::json!({
+            "platform": "bilibili", "id": "42", "status": "live"
+        })).unwrap();
+        assert!(!followed.update_room_status(&old_reply));
+        let failed: RoomStatus = serde_json::from_value(serde_json::json!({
+            "platform": "bilibili", "id": "42", "status": "unknown", "cover": "unconfirmed"
+        })).unwrap();
+        assert!(!followed.update_room_status(&failed));
+        assert_eq!(followed.cover, updated.cover.as_deref().unwrap());
     }
 
     #[test]

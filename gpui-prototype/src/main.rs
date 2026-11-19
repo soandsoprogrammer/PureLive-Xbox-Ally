@@ -50,7 +50,7 @@ use windows_sys::Win32::UI::Input::XboxController::{
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_START,
     XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
 };
-use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows, dpi::PhysicalSize};
+use wry::{NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows, dpi::PhysicalSize};
 
 const TOOLBAR: f32 = 88.0;
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -403,6 +403,13 @@ impl Home {
             .with_additional_browser_args("--no-proxy-server")
             .with_bounds(web_bounds(width, height))
             .with_navigation_handler(move |url| url == "about:blank" || site.allows(&url))
+            .with_new_window_req_handler(move |url, _| {
+                if site.allows(&url) {
+                    NewWindowResponse::Allow
+                } else {
+                    NewWindowResponse::Deny
+                }
+            })
             .with_on_page_load_handler(move |event, url| {
                 if matches!(event, PageLoadEvent::Finished) && site.allows(&url) {
                     mark(&log, format!("{}_login_page_opened", site.id));
@@ -496,15 +503,17 @@ impl Home {
         };
         let site = &account::PLATFORMS[*site_index];
         self.checking_login = true;
-        let cookies: Vec<_> = site
-            .origins
-            .iter()
-            .filter_map(|origin| web.cookies_for_url(origin).ok())
-            .flatten()
-            .collect();
+        let cookies = web.cookies().unwrap_or_default();
         let cookie = account::cookie_header(
             site,
-            cookies.iter().map(|cookie| (cookie.name(), cookie.value())),
+            cookies
+                .iter()
+                .filter(|cookie| {
+                    cookie
+                        .domain()
+                        .is_some_and(|domain| site.allows_cookie_domain(domain))
+                })
+                .map(|cookie| (cookie.name(), cookie.value())),
         );
         let Some(cookie) = cookie else {
             self.checking_login = false;
@@ -1171,11 +1180,20 @@ impl Home {
             let results = compat::room_statuses(&directory, &rooms, &cookies).unwrap_or_default();
             let mut statuses: BTreeMap<_, _> = rooms
                 .into_iter()
-                .map(|key| (key, BroadcastStatus::Unknown))
+                .map(|key| {
+                    (
+                        key.clone(),
+                        live::RoomStatus {
+                            key,
+                            status: BroadcastStatus::Unknown,
+                            cover: None,
+                        },
+                    )
+                })
                 .collect();
             for result in results {
                 if let Some(status) = statuses.get_mut(&result.key) {
-                    *status = result.status;
+                    *status = result;
                 }
             }
             statuses
@@ -1188,8 +1206,8 @@ impl Home {
                 let mut follows_changed = false;
                 let mut changed = false;
                 for room in &mut this.follows {
-                    if let Some(&status) = statuses.get(&room.key()) {
-                        follows_changed |= room.update_broadcast_status(status);
+                    if let Some(status) = statuses.get(&room.key()) {
+                        follows_changed |= room.update_room_status(status);
                     }
                 }
                 if follows_changed {
@@ -1197,14 +1215,16 @@ impl Home {
                     changed = true;
                 }
                 for room in &mut this.results {
-                    if let Some(&status) = statuses.get(&room.key()) {
-                        changed |= room.update_broadcast_status(status);
+                    if let Some(status) = statuses.get(&room.key()) {
+                        changed |= room.update_room_status(status);
                     }
                 }
                 if ended_request == Some(this.request_id)
                     && this.content.is_none()
                     && this.active_room.as_ref().is_some_and(|room| {
-                        statuses.get(&room.key()) == Some(&BroadcastStatus::Offline)
+                        statuses
+                            .get(&room.key())
+                            .is_some_and(|status| status.status == BroadcastStatus::Offline)
                     })
                 {
                     this.status = "直播已结束".into();
@@ -1215,7 +1235,10 @@ impl Home {
                     for (key, status) in &statuses {
                         mark(
                             &this.log,
-                            format!("room_status={}/{}:{status:?}", key.platform, key.id),
+                            format!(
+                                "room_status={}/{}:{:?}",
+                                key.platform, key.id, status.status
+                            ),
                         );
                     }
                 }

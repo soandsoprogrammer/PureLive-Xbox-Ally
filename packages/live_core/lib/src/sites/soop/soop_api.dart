@@ -127,6 +127,7 @@ final class SoopStationBroadcast {
     required this.bno,
     this.title = '',
     this.viewers = '',
+    this.cover = '',
     this.startedAt,
     this.restriction = LiveRestriction.none,
   });
@@ -139,6 +140,9 @@ final class SoopStationBroadcast {
 
   /// `current_sum_viewer`: viewers now, PC and mobile.
   final String viewers;
+
+  /// The official category cover for an age-restricted or password broadcast.
+  final String cover;
 
   /// `station.broad_start` (Korean time) in UTC.
   final DateTime? startedAt;
@@ -371,7 +375,8 @@ abstract final class SoopApi {
   /// - anything else `ApiChanged`.
   ///
   /// Titles and names have their HTML entities decoded (7-2). The cover is
-  /// the live thumbnail with 3.x's cache buster [now]; `BTIME` (seconds on
+  /// the live thumbnail with cache buster [now], or the official category
+  /// cover for age-restricted and password broadcasts; `BTIME` (seconds on
   /// air) before [now] is the start time. The answer has no audience
   /// figure, so the audience is empty (the station adds it at room entry).
   static LiveRoom roomDetail(
@@ -397,6 +402,11 @@ abstract final class SoopApi {
           roomId: id,
           platform: _site,
           title: _display(fields['TITLE']),
+          cover: _restrictedCover(
+            category: fields['CATE'],
+            password: answer.result == -8 || _truthy(fields['BPWD']),
+            grade: answer.result == -6 ? 19 : fields['GRADE'],
+          ) ?? '',
           liveStatus: LiveStatus.live,
           startedAt: startedBefore(fields['BTIME'], now),
           restriction: switch (answer.result) {
@@ -420,7 +430,8 @@ abstract final class SoopApi {
       title: _display(fields['TITLE']),
       nick: _display(fields['BJNICK']),
       avatar: bj.length < 2 ? '' : 'https://stimg.sooplive.co.kr/LOGO/${bj.substring(0, 2)}/$bj/$bj.jpg',
-      cover: _cover(bno, now),
+      cover: _restrictedCover(category: fields['CATE'], password: fields['BPWD'], grade: fields['GRADE']) ??
+          _cover(bno, now),
       area: tags is List && tags.isNotEmpty ? _text(tags.first) : '',
       watching: viewers,
       onlineViewers: viewers,
@@ -466,6 +477,11 @@ abstract final class SoopApi {
           : SoopStationBroadcast(
               bno: jsonString(broad['broad_no']) ?? '',
               title: _display(broad['broad_title']),
+              cover: _restrictedCover(
+                category: broad['broad_cate_no'],
+                password: broad['is_password'],
+                grade: broad['broad_grade'],
+              ) ?? '',
               viewers: switch (jsonCount(broad['current_sum_viewer'])) {
                 final int count => '$count',
                 null => '',
@@ -509,7 +525,9 @@ abstract final class SoopApi {
     return profile.copyWith(
       liveStatus: LiveStatus.live,
       title: profile.title.trim().isEmpty ? broadcast.title : null,
-      cover: profile.cover.isEmpty ? _cover(broadcast.bno, now) : null,
+      cover: broadcast.cover.isNotEmpty
+          ? broadcast.cover
+          : profile.cover.isEmpty ? _cover(broadcast.bno, now) : null,
       watching: broadcast.viewers.isEmpty ? null : broadcast.viewers,
       onlineViewers: broadcast.viewers.isEmpty ? null : broadcast.viewers,
       audienceMetricType: AudienceMetricType.onlineViewers,
@@ -589,6 +607,14 @@ abstract final class SoopApi {
   /// The live thumbnail of broadcast [bno] with 3.x's cache buster.
   static String _cover(String bno, DateTime now) =>
       bno.isEmpty ? '' : 'https://liveimg.sooplive.co.kr/m/$bno?_t=${now.millisecondsSinceEpoch}';
+
+  static String? _restrictedCover({Object? category, Object? password, Object? grade}) {
+    if (!_truthy(password) && jsonInt(grade) != 19) return null;
+    final number = jsonString(category)?.trim();
+    if (number == null || !RegExp(r'^\d{1,8}$').hasMatch(number)) return null;
+    final group = number.padLeft(8, '0').substring(0, 4);
+    return 'https://res.sooplive.com/images/thumb/live/${group}_480x270_dark.png';
+  }
 
   /// `VIEWPRESET` entries with a name, in platform order.
   static List<SoopPreset> presets(Object? value) => [
@@ -808,7 +834,11 @@ abstract final class SoopApi {
       title: _display(item['broad_title']),
       nick: _display(item['user_nick']),
       avatar: avatar.isEmpty ? SoopApi.avatar(id) : avatar,
-      cover: normalizeImageUrl(cover),
+      cover: _restrictedCover(
+        category: item['broad_cate_no'] ?? item['category_no'],
+        password: item['is_password'],
+        grade: item['broad_grade'] ?? item['grade'],
+      ) ?? normalizeImageUrl(cover),
       area: area,
       watching: viewers,
       onlineViewers: viewers,

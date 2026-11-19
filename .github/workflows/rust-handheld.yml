@@ -52,7 +52,7 @@ jobs:
           dart pub get --enforce-lockfile
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Push-Location tools/live_cli
-          dart test test/handheld_pagination_test.dart
+          dart test test/handheld_pagination_test.dart test/soop_covers_test.dart
           $testExit = $LASTEXITCODE
           Pop-Location
           if ($testExit -ne 0) { exit $testExit }
