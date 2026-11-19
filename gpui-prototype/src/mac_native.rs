@@ -43,10 +43,48 @@ pub fn client_size(window: &Window) -> (f32, f32) {
     })
 }
 
-pub fn toggle_maximized(window: &Window) {
-    if let Some(window) = parent_view(window).ok().and_then(NSView::window) {
-        window.performZoom(None);
-    }
+thread_local! {
+    // The app has one main window; remember its frame without retaining it.
+    static RESTORE_FRAME: Cell<Option<(usize, NSRect)>> = const { Cell::new(None) };
+}
+
+pub fn toggle_maximized(window: &Window, cx: &gpui_kit::App) {
+    let Some(window) = parent_view(window).ok().and_then(NSView::window) else {
+        return;
+    };
+    // Let the event handler release GPUI's window before AppKit sends resize
+    // and screen-scale notifications back to it.
+    cx.foreground_executor()
+        .spawn(async move { toggle_window_frame(&window) })
+        .detach();
+}
+
+fn toggle_window_frame(window: &objc2_app_kit::NSWindow) {
+    let Some(screen) = window.screen() else {
+        return;
+    };
+    // AppKit's zoom actions do not resize this borderless window. Fill the
+    // usable screen area directly, keeping the menu bar and Dock available.
+    let frame = window.frame();
+    let visible = screen.visibleFrame();
+    let id = std::ptr::from_ref(window) as usize;
+    let filled = (frame.origin.x - visible.origin.x).abs() < 1.0
+        && (frame.origin.y - visible.origin.y).abs() < 1.0
+        && (frame.size.width - visible.size.width).abs() < 1.0
+        && (frame.size.height - visible.size.height).abs() < 1.0;
+    RESTORE_FRAME.with(|saved| {
+        let target = match saved.get().filter(|(previous, _)| filled && *previous == id) {
+            Some((_, original)) => {
+                saved.set(None);
+                original
+            }
+            None => {
+                saved.set(Some((id, frame)));
+                visible
+            }
+        };
+        window.setFrame_display(target, true);
+    });
 }
 
 pub struct Surface {

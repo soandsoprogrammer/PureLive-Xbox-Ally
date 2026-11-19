@@ -45,7 +45,7 @@ pub fn client_size(window: &Window) -> (f32, f32) {
     (client.right.max(1) as f32 / scale, client.bottom.max(1) as f32 / scale)
 }
 
-pub fn toggle_maximized(window: &Window) {
+pub fn toggle_maximized(window: &Window, _: &gpui_kit::App) {
     if let Ok(hwnd) = window_handle(window) {
         unsafe {
             let command = if IsZoomed(hwnd) != 0 { SW_NORMAL } else { SW_MAXIMIZE };

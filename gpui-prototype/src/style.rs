@@ -276,9 +276,9 @@ impl Home {
 
     fn header(&self, cx: &mut Context<Self>) -> Div {
         div()
-            .on_mouse_down(MouseButton::Left, |event, window, _| {
+            .on_mouse_down(MouseButton::Left, |event, window, cx| {
                 if event.click_count == 2 {
-                    native::toggle_maximized(window);
+                    native::toggle_maximized(window, cx);
                 }
             })
             .h_flex()
@@ -1020,7 +1020,7 @@ impl Home {
                     .when(!video_open, |view| view.child(self.status.clone()))
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                         if event.click_count() == 2 {
-                            native::toggle_maximized(window);
+                            native::toggle_maximized(window, cx);
                         } else if event.click_count() == 1 {
                             this.toggle_controls(window, cx);
                         }
