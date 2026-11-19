@@ -1286,7 +1286,10 @@ impl Home {
         if self.pane == Pane::Popular
             && self.content.is_none()
             && window.is_window_active()
-            && self.popular_pages.near_end(self.results.len())
+            // Rendering a uniform list also measures row zero, so its render
+            // callback is not a reliable record of the current scroll position.
+            && (self.rooms_scroll.is_scrolled_to_end() == Some(true)
+                || self.popular_pages.near_end(self.results.len()))
         {
             self.load_more_rooms(window, cx);
         }
