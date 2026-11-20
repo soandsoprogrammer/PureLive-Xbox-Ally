@@ -3,6 +3,19 @@ name = "purelive-gpui"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+plugin-tools = []
+
+[[bin]]
+name = "purelive-recording"
+path = "plugin-tools/recording.rs"
+required-features = ["plugin-tools"]
+
+[[bin]]
+name = "purelive-translation"
+path = "plugin-tools/translation.rs"
+required-features = ["plugin-tools"]
+
 [dependencies]
 async-channel = "2.5"
 async-lock = "3.5"

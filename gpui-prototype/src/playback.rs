@@ -120,7 +120,7 @@ impl AudioSettings {
     }
 }
 
-pub(super) fn save_preference(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
+fn save_preference(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -199,16 +199,16 @@ impl PlaybackUi {
         }
     }
 
-    pub fn actions(&self) -> Vec<usize> {
-        if self.direct {
-            return DIRECT_ACTIONS.to_vec();
-        }
-        ROOM_ACTIONS
-            .into_iter()
+    pub fn actions(&self, recording_installed: bool) -> Vec<usize> {
+        let actions = if self.direct { DIRECT_ACTIONS.as_slice() } else { ROOM_ACTIONS.as_slice() };
+        actions
+            .iter()
+            .copied()
             .filter(|action| match action {
                 3 => !self.options.lines.is_empty(),
                 4 => !self.options.qualities.is_empty(),
                 7 => self.options.super_chat,
+                8 => recording_installed,
                 _ => true,
             })
             .collect()
@@ -218,14 +218,14 @@ impl PlaybackUi {
         self.hide_at.is_some()
     }
 
-    pub fn height(&self) -> f32 {
+    pub fn height(&self, recording_installed: bool) -> f32 {
         match self.menu {
             Some(ChoiceMenu::Rooms) => 0.0,
             Some(ChoiceMenu::Volume) => VOLUME_HEIGHT,
             Some(ChoiceMenu::SuperChat) => SUPER_CHAT_HEIGHT,
             Some(ChoiceMenu::Lines | ChoiceMenu::Qualities) => CHOICES_HEIGHT,
-            None if self.visible() && self.direct => DIRECT_HEIGHT,
-            None if self.visible() => CONTROL_HEIGHT,
+            None if self.visible() && self.direct => if recording_installed { DIRECT_HEIGHT } else { 96.0 },
+            None if self.visible() => if recording_installed { CONTROL_HEIGHT } else { 144.0 },
             None => 0.0,
         }
     }
@@ -278,7 +278,7 @@ impl Home {
 
     pub(super) fn resize_video(&self, window: &Window) {
         if let Some(Content::Video { surface, .. }) = &self.content {
-            surface.resize_video(window, self.playback.height(), self.playback.floating_panel(window));
+            surface.resize_video(window, self.playback.height(self.plugins.recording_executable().is_some()), self.playback.floating_panel(window));
         }
     }
 
@@ -332,7 +332,7 @@ impl Home {
                     (self.playback.cursor as isize + delta).rem_euclid(count as isize) as usize;
             }
             None if self.playback.visible() => {
-                let actions = self.playback.actions();
+                let actions = self.playback.actions(self.plugins.recording_executable().is_some());
                 let current = actions
                     .iter()
                     .position(|&id| id == self.playback.focus)
@@ -365,7 +365,7 @@ impl Home {
             return;
         }
         if self.playback.visible() && !self.playback.direct {
-            let actions = self.playback.actions();
+            let actions = self.playback.actions(self.plugins.recording_executable().is_some());
             let current = actions
                 .iter()
                 .position(|&id| id == self.playback.focus)
@@ -458,7 +458,7 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.playback.actions().contains(&index) {
+        if !self.playback.actions(self.plugins.recording_executable().is_some()).contains(&index) {
             return;
         }
         if index == 1 && self.playback.menu == Some(ChoiceMenu::SuperChat) {
@@ -496,7 +496,7 @@ impl Home {
             8 => {
                 self.status = if let Some(Content::Video { recorder, .. }) = &mut self.content {
                     let data_dir = self.follows_path.parent().unwrap_or(&self.options.directory);
-                    recorder.toggle(&self.options.directory, data_dir).unwrap_or_else(|error| error)
+                    recorder.toggle(data_dir).unwrap_or_else(|error| error)
                 } else {
                     "等直播开始后再录制".into()
                 };
@@ -1184,13 +1184,14 @@ mod tests {
     #[test]
     fn super_chat_control_is_only_available_for_supported_rooms() {
         let mut ui = PlaybackUi::default();
-        assert_eq!(ui.actions(), [0, 1, 6, 2, 5, 8]);
-        assert!(!ui.actions().contains(&7));
+        assert_eq!(ui.actions(false), [0, 1, 6, 2, 5]);
+        assert!(!ui.actions(true).contains(&7));
         ui.options.super_chat = true;
-        assert!(ui.actions().contains(&7));
+        assert!(ui.actions(true).contains(&7));
         ui.direct = true;
-        assert!(ui.actions().contains(&8));
-        assert!(!ui.actions().contains(&7));
+        assert!(ui.actions(true).contains(&8));
+        assert!(!ui.actions(false).contains(&8));
+        assert!(!ui.actions(true).contains(&7));
     }
 
     #[test]

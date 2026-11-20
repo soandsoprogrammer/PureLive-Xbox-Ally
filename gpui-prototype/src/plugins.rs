@@ -1,15 +1,15 @@
 pub mod recording;
 mod text_rules;
-mod translation;
+mod process;
 
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Surface {
     RoomTitle,
@@ -43,7 +43,7 @@ impl Registry {
 
     fn start(mut self) -> Plugins {
         if self.hooks.is_empty() {
-            return Plugins(None, false);
+            return Plugins(None, InstalledPlugins::default());
         }
         let (requests, jobs) = async_channel::bounded::<Text>(16);
         let (results, replies) = async_channel::bounded(16);
@@ -65,7 +65,7 @@ impl Registry {
             })
             .is_err()
         {
-            return Plugins(None, false);
+            return Plugins(None, InstalledPlugins::default());
         }
         Plugins(
             Some(RefCell::new(Pipeline {
@@ -74,12 +74,51 @@ impl Registry {
                 cache: HashMap::new(),
                 completed: VecDeque::new(),
             })),
-            false,
+            InstalledPlugins::default(),
         )
     }
 }
 
-pub struct Plugins(Option<RefCell<Pipeline>>, bool);
+pub struct Plugins(Option<RefCell<Pipeline>>, InstalledPlugins);
+
+#[derive(Default)]
+struct InstalledPlugins {
+    translation: bool,
+    recording: Option<PathBuf>,
+}
+
+struct TranslationPlugin {
+    executable: PathBuf,
+    retry_at: Instant,
+}
+
+impl TextHook for TranslationPlugin {
+    fn transform(&mut self, input: &Text, current: &str) -> Option<String> {
+        if Instant::now() < self.retry_at {
+            return None;
+        }
+        let request = serde_json::json!({"surface": input.surface, "current": current});
+        let result = process::PluginProcess::start(&self.executable, &request)
+            .and_then(|mut child| {
+                child.close_input();
+                child.wait::<Option<String>>(Duration::from_secs(15))
+            });
+        match result {
+            Ok(output) => output.filter(|text| {
+                !text.trim().is_empty() && text.len() <= 768 && !text.contains(char::is_control)
+            }),
+            Err(_) => {
+                self.retry_at = Instant::now() + Duration::from_secs(15);
+                None
+            }
+        }
+    }
+}
+
+fn installed_executable(directory: &Path, name: &str) -> Option<PathBuf> {
+    let path = directory.join(name);
+    path.is_file().then_some(path)
+}
 
 enum Entry {
     Pending,
@@ -95,29 +134,27 @@ struct Pipeline {
 }
 
 impl Plugins {
-    pub fn load(path: &Path) -> Self {
+    pub fn load(directory: &Path) -> Self {
         let mut registry = Registry::default();
-        text_rules::register_directory(&path.with_file_name("plugins"), &mut registry);
-        let translation = translation::Translation::load(path);
-        let enabled = translation.is_some();
-        if let Some(plugin) = translation {
-            plugin.register(&mut registry);
+        text_rules::register_directory(directory, &mut registry);
+        let translation = installed_executable(directory, "purelive-translation.exe");
+        let recording = installed_executable(directory, "purelive-recording.exe");
+        let translation_installed = translation.is_some();
+        if let Some(executable) = translation {
+            registry.text(TranslationPlugin { executable, retry_at: Instant::now() });
         }
         let mut plugins = registry.start();
-        plugins.1 = enabled && plugins.0.is_some();
+        plugins.1 = InstalledPlugins { translation: translation_installed, recording };
         plugins
     }
 
-    pub fn translation_enabled(&self) -> bool {
-        self.1
+    pub fn translation_installed(&self) -> bool {
+        self.1.translation
     }
 
-    pub fn toggle_translation(&mut self, path: &Path) -> std::io::Result<()> {
-        translation::Translation::set_enabled(path, !self.translation_enabled())?;
-        *self = Self::load(path);
-        Ok(())
+    pub fn recording_executable(&self) -> Option<&Path> {
+        self.1.recording.as_deref()
     }
-
     pub fn request(&self, surface: Surface, platform: &str, original: &str) -> Option<Text> {
         let mut pipeline = self.0.as_ref()?.borrow_mut();
         let original = original.trim();

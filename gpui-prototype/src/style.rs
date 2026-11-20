@@ -834,8 +834,8 @@ impl Home {
                     .children(
                         [
                             ("账号", &SETTINGS_ACTIONS[..2]),
-                            ("插件", &SETTINGS_ACTIONS[2..4]),
-                            ("窗口", &SETTINGS_ACTIONS[4..]),
+                            ("插件", &SETTINGS_ACTIONS[2..3]),
+                            ("窗口", &SETTINGS_ACTIONS[3..]),
                         ]
                         .into_iter()
                         .map(|(label, actions)| {
@@ -863,6 +863,13 @@ impl Home {
                                         ),
                                     ))
                                 })
+                                .when(label == "插件", |group| {
+                                    group.child(div().text_sm().text_color(rgb(MUTED)).child(format!(
+                                        "录制：{}  |  本地翻译：{}",
+                                        if self.plugins.recording_executable().is_some() { "已安装" } else { "未安装" },
+                                        if self.plugins.translation_installed() { "已安装" } else { "未安装" },
+                                    )))
+                                })
                                 .children(actions.iter().copied().map(|action| {
                                     let active =
                                         !self.account_tabs_focused && self.selected == action;
@@ -871,8 +878,6 @@ impl Home {
                                         Action::Logout => ("◉", "退出本地登录"),
                                         Action::Minimize => ("−", "最小化"),
                                         Action::Exit => ("×", "退出"),
-                                        Action::ToggleTranslation if self.plugins.translation_enabled() => ("译", "本地翻译 · 开"),
-                                        Action::ToggleTranslation => ("译", "本地翻译 · 关"),
                                         Action::ReloadPlugins => ("↻", "重新加载插件"),
                                         _ => unreachable!(),
                                     };
@@ -1011,7 +1016,7 @@ impl Home {
                 "● 录制"
             }.into(),
         ];
-        let actions = self.playback.actions();
+        let actions = self.playback.actions(self.plugins.recording_executable().is_some());
         div()
             .relative()
             .size_full()
@@ -1049,7 +1054,7 @@ impl Home {
                     view.child(
                         div()
                             .v_flex()
-                            .h(px(self.playback.height()))
+                            .h(px(self.playback.height(self.plugins.recording_executable().is_some())))
                             .flex_shrink_0()
                             .px_4()
                             .pt_2()
@@ -1278,7 +1283,7 @@ impl Home {
         };
         div()
             .v_flex()
-            .h(px(self.playback.height()))
+            .h(px(self.playback.height(self.plugins.recording_executable().is_some())))
             .flex_shrink_0()
             .px_4()
             .pt_2()
@@ -1407,7 +1412,7 @@ impl Home {
         };
         div()
             .v_flex()
-            .h(px(self.playback.height()))
+            .h(px(self.playback.height(self.plugins.recording_executable().is_some())))
             .flex_shrink_0()
             .px_4()
             .pt_2()

@@ -30,7 +30,7 @@ use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -65,14 +65,12 @@ enum Action {
     Login,
     Logout,
     FinishLogin,
-    ToggleTranslation,
     ReloadPlugins,
 }
 
-const SETTINGS_ACTIONS: [Action; 6] = [
+const SETTINGS_ACTIONS: [Action; 5] = [
     Action::Login,
     Action::Logout,
-    Action::ToggleTranslation,
     Action::ReloadPlugins,
     Action::Minimize,
     Action::Exit,
@@ -230,7 +228,7 @@ impl Home {
             .unwrap_or_else(|| options.directory.clone())
             .join("PureLiveRust/follows.json");
         let follows = live::load(&follows_path);
-        let plugins = plugins::Plugins::load(&follows_path.with_file_name("translation.json"));
+        let plugins = plugins::Plugins::load(&follows_path.with_file_name("plugins"));
         let follow_filter = FollowFilter::default();
         let follow_rows: Vec<usize> = follows
             .iter()
@@ -274,7 +272,7 @@ impl Home {
         cx.observe_window_bounds(window, |this, window, _| {
             if !native::minimized(window) {
                 if let Some(content) = &this.content {
-                    content.resize(window, this.playback.height(), this.playback.floating_panel(window));
+                    content.resize(window, this.playback.height(this.plugins.recording_executable().is_some()), this.playback.floating_panel(window));
                 }
             }
         })
@@ -372,7 +370,7 @@ impl Home {
         mut source: Source,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let surface = Surface::video(window, self.playback.height(), self.playback.floating_panel(window))?;
+        let surface = Surface::video(window, self.playback.height(self.plugins.recording_executable().is_some()), self.playback.floating_panel(window))?;
         let player = Player::start(
             surface.id(),
             hardware_player::Input::from_source(&source),
@@ -383,7 +381,7 @@ impl Home {
         self.content = Some(Content::Video {
             player,
             surface,
-            recorder: plugins::recording::Recorder::new(&source),
+            recorder: plugins::recording::Recorder::new(&source, self.plugins.recording_executable().map(Path::to_path_buf)),
             _lease: source.lease.take(),
         });
         self.playback.selection = compat::Selection {
@@ -440,20 +438,11 @@ impl Home {
         match action {
             Action::FinishLogin => return self.finish_login(window, cx),
             Action::Minimize => return window.minimize_window(),
-            Action::ToggleTranslation | Action::ReloadPlugins => {
+            Action::ReloadPlugins => {
                 self.selected = action;
                 self.account_tabs_focused = false;
-                let path = self.follows_path.with_file_name("translation.json");
-                self.status = if action == Action::ReloadPlugins {
-                    self.plugins = plugins::Plugins::load(&path);
-                    "已重新加载插件".into()
-                } else {
-                    match self.plugins.toggle_translation(&path) {
-                        Ok(()) if self.plugins.translation_enabled() => "本地翻译已开启（需要 Ollama）".into(),
-                        Ok(()) => "本地翻译已关闭".into(),
-                        Err(error) => format!("无法保存翻译设置：{error}"),
-                    }
-                };
+                self.plugins = plugins::Plugins::load(&self.follows_path.with_file_name("plugins"));
+                self.status = "已重新加载插件".into();
                 cx.notify();
                 return;
             }
@@ -513,7 +502,7 @@ impl Home {
                     Err(error) => error,
                 };
             }
-            Action::FinishLogin | Action::Minimize | Action::ToggleTranslation | Action::ReloadPlugins => unreachable!(),
+            Action::FinishLogin | Action::Minimize | Action::ReloadPlugins => unreachable!(),
         }
         cx.notify();
     }

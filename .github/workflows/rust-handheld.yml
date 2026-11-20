@@ -71,3 +71,25 @@ jobs:
           name: purelive-gpui-windows-x64
           path: dist/*.exe
           if-no-files-found: error
+
+      - name: Build and test optional plugins
+        shell: pwsh
+        run: |
+          $manifest = 'gpui-prototype/Cargo.toml'
+          cargo test --manifest-path $manifest --release --locked --features plugin-tools --bin purelive-recording --bin purelive-translation
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --manifest-path $manifest --release --locked --features plugin-tools --bin purelive-recording --bin purelive-translation
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($plugin in @('recording', 'translation')) {
+            $stage = New-Item -ItemType Directory -Force "plugin-dist/$plugin"
+            $exe = "purelive-$plugin.exe"
+            Copy-Item "gpui-prototype/target/release/$exe" $stage.FullName
+            Copy-Item gpui-prototype/Plugins.md $stage.FullName
+            Compress-Archive -Path "$($stage.FullName)/*" -DestinationPath "plugin-dist/purelive-$plugin-windows-x64.zip"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: purelive-optional-plugins-windows-x64
+          path: plugin-dist/*.zip
+          if-no-files-found: error

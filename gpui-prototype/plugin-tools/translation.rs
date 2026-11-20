@@ -1,15 +1,23 @@
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use super::{Plugin, Registry, Surface, Text, TextHook};
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Surface {
+    RoomTitle,
+    Danmaku,
+}
+
+#[derive(Deserialize)]
+struct Request {
+    surface: Surface,
+    current: String,
+}
 
 const OLLAMA_ENDPOINT: &str = "http://127.0.0.1:11434/api/generate";
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(default)]
 struct Config {
     enabled: bool,
@@ -22,7 +30,7 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             model: "qwen2.5:1.5b".into(),
             target_language: "Simplified Chinese".into(),
             room_titles: true,
@@ -31,10 +39,9 @@ impl Default for Config {
     }
 }
 
-pub(super) struct Translation {
+struct Translation {
     config: Config,
     agent: ureq::Agent,
-    retry_at: Instant,
 }
 
 #[derive(Deserialize)]
@@ -43,21 +50,6 @@ struct Response {
 }
 
 impl Translation {
-    pub(super) fn set_enabled(path: &Path, enabled: bool) -> std::io::Result<()> {
-        let mut config = match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice::<Config>(&bytes)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Config::default(),
-            Err(error) => return Err(error),
-        };
-        config.enabled = enabled;
-        crate::playback::save_preference(path, &config)
-    }
-
-    pub(super) fn load(path: &Path) -> Option<Self> {
-        let config: Config = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-        config.enabled.then(|| Self::new(config))
-    }
-
     fn new(config: Config) -> Self {
         Self {
             config,
@@ -67,16 +59,15 @@ impl Translation {
                 .timeout_global(Some(Duration::from_secs(12)))
                 .build()
                 .into(),
-            retry_at: Instant::now(),
         }
     }
 
-    fn translate(&mut self, input: &Text, current: &str, endpoint: &str) -> Option<String> {
-        let enabled = match input.surface {
+    fn translate(&mut self, surface: Surface, current: &str, endpoint: &str) -> Option<String> {
+        let enabled = match surface {
             Surface::RoomTitle => self.config.room_titles,
             Surface::Danmaku => self.config.danmaku,
         };
-        if !enabled || Instant::now() < self.retry_at || !current.chars().any(char::is_alphabetic) {
+        if !enabled || !current.chars().any(char::is_alphabetic) {
             return None;
         }
         let prompt = format!(
@@ -102,26 +93,29 @@ impl Translation {
                     && !translated.contains(char::is_control))
                 .then(|| translated.into())
             }
-            Err(_) => {
-                self.retry_at = Instant::now() + Duration::from_secs(15);
-                None
-            }
+            Err(_) => None,
         }
     }
 }
 
-impl Plugin for Translation {
-    fn register(self, registry: &mut Registry) {
-        registry.text(self);
-    }
-}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::BufRead;
 
-impl TextHook for Translation {
-    fn transform(&mut self, input: &Text, current: &str) -> Option<String> {
-        self.translate(input, current, OLLAMA_ENDPOINT)
-    }
+    let mut input = String::new();
+    std::io::stdin().lock().read_line(&mut input)?;
+    let request: Request = serde_json::from_str(&input)?;
+    let path = std::env::current_exe()?.with_file_name("translation.json");
+    let config = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Config>(&bytes)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(error) => return Err(error.into()),
+    };
+    let result = config.enabled.then(|| {
+        Translation::new(config).translate(request.surface, &request.current, OLLAMA_ENDPOINT)
+    }).flatten();
+    println!("{}", serde_json::to_string(&result)?);
+    Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -171,13 +165,7 @@ mod tests {
             )
             .unwrap();
         });
-        let input = Text {
-            surface: Surface::Danmaku,
-            platform: "twitch".into(),
-            original: "Good game".into(),
-        };
-        let translated =
-            Translation::new(Config::default()).translate(&input, &input.original, &endpoint);
+        let translated = Translation::new(Config::default()).translate(Surface::Danmaku, "Good game", &endpoint);
         handler.join().unwrap();
         assert_eq!(translated.as_deref(), Some("打得好"));
     }
