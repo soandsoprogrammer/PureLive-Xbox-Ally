@@ -9,7 +9,14 @@ const CATALOG_DIRECTORY: &str = "plugin-catalog";
 const MAX_PACKAGE_SIZE: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
+pub(crate) enum PluginKind {
+    Recording,
+    Translation,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct Plugin {
+    pub(crate) kind: PluginKind,
     pub(crate) name: &'static str,
     pub(crate) description: &'static str,
     pub(crate) executable: &'static str,
@@ -17,11 +24,13 @@ pub(crate) struct Plugin {
 
 pub(crate) const PLUGINS: [Plugin; 2] = [
     Plugin {
+        kind: PluginKind::Recording,
         name: "直播录制",
         description: "直接保存 FLV 或 HLS 直播音视频。",
         executable: "purelive-recording.exe",
     },
     Plugin {
+        kind: PluginKind::Translation,
         name: "本地翻译",
         description: "用 Ollama 翻译直播间标题和弹幕。",
         executable: "purelive-translation.exe",

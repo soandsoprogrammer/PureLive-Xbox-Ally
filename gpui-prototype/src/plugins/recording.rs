@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::compat::Source;
+use crate::{compat::Source, plugin_config::{self, RecordingConfig}};
 
 use super::process::PluginProcess;
 
@@ -54,7 +54,14 @@ impl Recorder {
         let request = serde_json::json!({
             "url": self.url, "headers": self.headers, "data_dir": data_dir,
         });
-        let mut child = PluginProcess::start(executable, &request)
+        let path = data_dir.join("plugins").join("recording.json");
+        let config: RecordingConfig = plugin_config::load(&path)
+            .map_err(|error| format!("无法读取录制设置：{error}"))?;
+        let mut child = PluginProcess::start_with(executable, &request, |command| {
+            if let Some(directory) = &config.directory {
+                command.env("PURELIVE_RECORDINGS_DIR", directory);
+            }
+        })
             .map_err(|error| format!("无法启动录制插件：{error}"))?;
         let (stop, stop_rx) = mpsc::channel::<()>();
         let (done, result) = mpsc::channel();

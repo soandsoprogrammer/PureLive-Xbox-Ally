@@ -912,8 +912,64 @@ impl Home {
             )
     }
 
+    fn plugin_settings_fields(
+        &self,
+        editor: &plugin_settings::Editor,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        use plugin_settings::Fields;
+
+        let mut fields = div().v_flex().gap_3();
+        match &editor.fields {
+            Fields::Recording { directory } => {
+                fields = fields
+                    .child(plugin_option_field("保存文件夹", directory, editor.cursor == 0))
+                    .child(
+                        div().h_flex().flex_wrap().gap_2().children(
+                            [(1, "选择文件夹"), (2, "使用默认位置")].map(|(index, label)| {
+                                control(("plugin-option", index), label, editor.cursor == index)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.activate_plugin_option(index, window, cx)
+                                    }))
+                            }),
+                        ),
+                    )
+                    .child(div().text_sm().text_color(rgb(MUTED)).child("录制跟随当前播放的直播间。"));
+            }
+            Fields::Translation { model, language, enabled, room_titles, danmaku } => {
+                fields = fields
+                    .child(plugin_option_field("Ollama 模型", model, editor.cursor == 0))
+                    .child(plugin_option_field("目标语言", language, editor.cursor == 1))
+                    .child(
+                        div().h_flex().flex_wrap().gap_2().children(
+                            [(2, "启用翻译", *enabled), (3, "房间标题", *room_titles), (4, "弹幕", *danmaku)]
+                                .map(|(index, label, value)| {
+                                    let label = format!("{label} · {}", if value { "开" } else { "关" });
+                                    control(("plugin-option", index), label, editor.cursor == index)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.activate_plugin_option(index, window, cx)
+                                        }))
+                                }),
+                        ),
+                    );
+            }
+        }
+        let save_index = match &editor.fields {
+            Fields::Recording { .. } => 3,
+            Fields::Translation { .. } => 5,
+        };
+        fields.child(
+            div().h_flex().justify_end().child(
+                control("save-plugin-settings", "保存", editor.cursor == save_index)
+                    .on_click(cx.listener(|this, _, window, cx| this.save_plugin_settings(window, cx))),
+            ),
+        )
+    }
+
+
     fn plugin_manager(&self, dialog: &PluginDialog, cx: &mut Context<Self>) -> impl IntoElement {
         let directory = self.follows_path.with_file_name("plugins");
+        let editor = dialog.editor.as_ref();
         div()
             .id("plugin-manager-overlay")
             .absolute()
@@ -943,14 +999,20 @@ impl Home {
                             .h_flex()
                             .items_center()
                             .justify_between()
-                            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("插件管理"))
+                            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(editor.map_or("插件管理", |editor| editor.fields.title())))
                             .child(
-                                control("close-plugin-manager", "关闭", false).on_click(
-                                    cx.listener(|this, _, window, cx| this.close_plugin_dialog(window, cx)),
-                                ),
+                                control("close-plugin-manager", if editor.is_some() { "返回" } else { "关闭" }, false)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if this.plugin_dialog.as_ref().is_some_and(|dialog| dialog.editor.is_some()) {
+                                            this.close_plugin_settings(window, cx);
+                                        } else {
+                                            this.close_plugin_dialog(window, cx);
+                                        }
+                                    })),
                             ),
                     )
-                    .children(plugins::catalog::PLUGINS.iter().enumerate().map(|(index, plugin)| {
+                    .when_some(editor, |panel, editor| panel.child(self.plugin_settings_fields(editor, cx)))
+                    .when(editor.is_none(), |panel| panel.children(plugins::catalog::PLUGINS.iter().enumerate().map(|(index, plugin)| {
                         let installed = plugin.installed(&directory);
                         let selected = dialog.selected == index;
                         let label = if dialog.pending && selected {
@@ -978,14 +1040,23 @@ impl Home {
                                     .child(div().font_weight(FontWeight::SEMIBOLD).child(plugin.name))
                                     .child(div().text_sm().text_color(rgb(MUTED)).child(plugin.description)),
                             )
+                            .when(installed, |row| {
+                                row.child(
+                                    control(("plugin-settings", index), "设置", selected)
+                                        .flex_shrink_0()
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_plugin_settings(index, window, cx)
+                                        })),
+                                )
+                            })
                             .child(
-                                control(("manage-plugin", index), label, selected)
+                                control(("manage-plugin", index), label, selected && !installed)
                                     .flex_shrink_0()
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.toggle_plugin(index, window, cx)
                                     })),
                             )
-                    }))
+                    })))
                     .when(!dialog.notice.is_empty(), |panel| {
                         panel.child(div().text_sm().text_color(rgb(MUTED)).child(dialog.notice.clone()))
                     }),
@@ -1636,6 +1707,21 @@ impl Home {
             })
     }
 }
+
+fn plugin_option_field(label: &'static str, input: &Entity<InputState>, focused: bool) -> Div {
+    div()
+        .v_flex()
+        .gap_1()
+        .child(div().text_sm().text_color(rgb(MUTED)).child(label))
+        .child(
+            div()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(if focused { MINT } else { DIVIDER }))
+                .child(Input::new(input).bg(rgb(PANEL)).text_color(rgb(TEXT))),
+        )
+}
+
 
 fn playback_button(
     id: impl Into<ElementId>,

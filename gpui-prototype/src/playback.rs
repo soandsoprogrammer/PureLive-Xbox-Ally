@@ -120,7 +120,7 @@ impl AudioSettings {
     }
 }
 
-fn save_preference(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
+pub(crate) fn save_preference(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

@@ -23,6 +23,8 @@ mod pagination;
 mod platform_icons;
 mod platform_picker;
 mod playback;
+mod plugin_config;
+mod plugin_settings;
 mod plugins;
 mod stream_input;
 mod style;
@@ -80,6 +82,7 @@ const LOGIN_ACTIONS: [Action; 2] = [Action::FinishLogin, Action::Back];
 
 #[derive(Default)]
 struct PluginDialog {
+    editor: Option<plugin_settings::Editor>,
     selected: usize,
     pending: bool,
     notice: String,
@@ -534,9 +537,25 @@ impl Home {
         }
     }
 
+    fn confirm_plugin(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self.follows_path.with_file_name("plugins");
+        if plugins::catalog::PLUGINS.get(index).is_some_and(|plugin| plugin.installed(&directory)) {
+            self.open_plugin_settings(index, window, cx);
+        } else {
+            self.toggle_plugin(index, window, cx);
+        }
+    }
+
+    fn uninstall_plugin_shortcut(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self.follows_path.with_file_name("plugins");
+        if plugins::catalog::PLUGINS.get(index).is_some_and(|plugin| plugin.installed(&directory)) {
+            self.toggle_plugin(index, window, cx);
+        }
+    }
+
     fn toggle_plugin(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dialog) = &mut self.plugin_dialog else { return };
-        if dialog.pending { return; }
+        if dialog.pending || dialog.editor.is_some() { return; }
         let Some(&plugin) = plugins::catalog::PLUGINS.get(index) else { return };
         dialog.selected = index;
         let directory = self.follows_path.with_file_name("plugins");
@@ -1591,11 +1610,24 @@ impl Home {
 
     fn on_gamepad(&mut self, pressed: u16, held: u16, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(dialog) = &self.plugin_dialog {
+            if let Some(editor) = &dialog.editor {
+                let cursor = editor.cursor;
+                if pressed & XINPUT_GAMEPAD_B != 0 {
+                    self.close_plugin_settings(window, cx);
+                } else if pressed & XINPUT_GAMEPAD_A != 0 {
+                    self.activate_plugin_option(cursor, window, cx);
+                } else if pressed & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN) != 0 {
+                    self.step_plugin_option(pressed & XINPUT_GAMEPAD_DPAD_DOWN != 0, window, cx);
+                }
+                return;
+            }
             let selected = dialog.selected;
             if pressed & XINPUT_GAMEPAD_B != 0 {
                 self.close_plugin_dialog(window, cx);
             } else if pressed & XINPUT_GAMEPAD_A != 0 {
-                self.toggle_plugin(selected, window, cx);
+                self.confirm_plugin(selected, window, cx);
+            } else if pressed & XINPUT_GAMEPAD_X != 0 {
+                self.uninstall_plugin_shortcut(selected, window, cx);
             } else if pressed & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN) != 0 {
                 self.step_plugin_dialog(pressed & XINPUT_GAMEPAD_DPAD_DOWN != 0, cx);
             }
@@ -1720,12 +1752,28 @@ impl Render for Home {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if let Some(dialog) = &this.plugin_dialog {
+                    if let Some(editor) = &dialog.editor {
+                        let cursor = editor.cursor;
+                        let key = event.keystroke.key.as_str();
+                        match key {
+                            "escape" => this.close_plugin_settings(window, cx),
+                            "tab" => this.step_plugin_option(!event.keystroke.modifiers.shift, window, cx),
+                            "s" if event.keystroke.modifiers.control => this.save_plugin_settings(window, cx),
+                            "enter" if !event.is_held => this.activate_plugin_option(cursor, window, cx),
+                            "up" if this.focus.is_focused(window) => this.step_plugin_option(false, window, cx),
+                            "down" if this.focus.is_focused(window) => this.step_plugin_option(true, window, cx),
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                        return;
+                    }
                     let selected = dialog.selected;
                     match event.keystroke.key.as_str() {
                         "escape" => this.close_plugin_dialog(window, cx),
                         "up" => this.step_plugin_dialog(false, cx),
                         "down" => this.step_plugin_dialog(true, cx),
-                        "enter" if !event.is_held => this.toggle_plugin(selected, window, cx),
+                        "enter" if !event.is_held => this.confirm_plugin(selected, window, cx),
+                        "delete" if !event.is_held => this.uninstall_plugin_shortcut(selected, window, cx),
                         _ => {}
                     }
                     cx.stop_propagation();

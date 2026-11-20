@@ -2,6 +2,11 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+#[path = "../src/plugin_config.rs"]
+#[allow(dead_code)]
+mod plugin_config;
+use plugin_config::TranslationConfig as Config;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Surface {
@@ -16,28 +21,6 @@ struct Request {
 }
 
 const OLLAMA_ENDPOINT: &str = "http://127.0.0.1:11434/api/generate";
-
-#[derive(Deserialize)]
-#[serde(default)]
-struct Config {
-    enabled: bool,
-    model: String,
-    target_language: String,
-    room_titles: bool,
-    danmaku: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            model: "qwen2.5:1.5b".into(),
-            target_language: "Simplified Chinese".into(),
-            room_titles: true,
-            danmaku: true,
-        }
-    }
-}
 
 struct Translation {
     config: Config,
@@ -105,11 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::io::stdin().lock().read_line(&mut input)?;
     let request: Request = serde_json::from_str(&input)?;
     let path = std::env::current_exe()?.with_file_name("translation.json");
-    let config = match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice::<Config>(&bytes)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Config::default(),
-        Err(error) => return Err(error.into()),
-    };
+    let config: Config = plugin_config::load(&path)?;
     let result = config.enabled.then(|| {
         Translation::new(config).translate(request.surface, &request.current, OLLAMA_ENDPOINT)
     }).flatten();

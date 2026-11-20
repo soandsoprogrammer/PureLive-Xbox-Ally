@@ -12,8 +12,17 @@ pub(super) struct PluginProcess(Child);
 
 impl PluginProcess {
     pub(super) fn start(executable: &Path, request: &impl Serialize) -> io::Result<Self> {
+        Self::start_with(executable, request, |_| {})
+    }
+
+    pub(super) fn start_with(
+        executable: &Path,
+        request: &impl Serialize,
+        configure: impl FnOnce(&mut Command),
+    ) -> io::Result<Self> {
         let mut command = Command::new(executable);
         crate::compat::configure_network(&mut command);
+        configure(&mut command);
         let mut child = Self(
             command
                 .creation_flags(0x08000000)
