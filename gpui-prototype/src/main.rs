@@ -65,17 +65,24 @@ enum Action {
     Login,
     Logout,
     FinishLogin,
-    ReloadPlugins,
+    ManagePlugins,
 }
 
 const SETTINGS_ACTIONS: [Action; 5] = [
     Action::Login,
     Action::Logout,
-    Action::ReloadPlugins,
+    Action::ManagePlugins,
     Action::Minimize,
     Action::Exit,
 ];
 const LOGIN_ACTIONS: [Action; 2] = [Action::FinishLogin, Action::Back];
+
+#[derive(Default)]
+struct PluginDialog {
+    selected: usize,
+    pending: bool,
+    notice: String,
+}
 
 struct Options {
     directory: PathBuf,
@@ -177,6 +184,7 @@ struct Home {
     query: Entity<InputState>,
     follows_path: PathBuf,
     plugins: plugins::Plugins,
+    plugin_dialog: Option<PluginDialog>,
     follows: Vec<Room>,
     follow_filter: FollowFilter,
     follow_rows: Vec<usize>,
@@ -311,6 +319,7 @@ impl Home {
             query,
             follows_path,
             plugins,
+            plugin_dialog: None,
             follows,
             follow_filter,
             follow_rows,
@@ -438,11 +447,11 @@ impl Home {
         match action {
             Action::FinishLogin => return self.finish_login(window, cx),
             Action::Minimize => return window.minimize_window(),
-            Action::ReloadPlugins => {
+            Action::ManagePlugins => {
                 self.selected = action;
                 self.account_tabs_focused = false;
-                self.plugins = plugins::Plugins::load(&self.follows_path.with_file_name("plugins"));
-                self.status = "已重新加载插件".into();
+                self.plugin_dialog = Some(PluginDialog::default());
+                self.focus.focus(window, cx);
                 cx.notify();
                 return;
             }
@@ -502,10 +511,73 @@ impl Home {
                     Err(error) => error,
                 };
             }
-            Action::FinishLogin | Action::Minimize | Action::ReloadPlugins => unreachable!(),
+            Action::FinishLogin | Action::Minimize | Action::ManagePlugins => unreachable!(),
         }
         cx.notify();
     }
+
+    fn step_plugin_dialog(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if let Some(dialog) = &mut self.plugin_dialog {
+            let count = plugins::catalog::PLUGINS.len();
+            let step = if forward { 1 } else { count - 1 };
+            dialog.selected = (dialog.selected + step) % count;
+            cx.notify();
+        }
+    }
+
+    fn close_plugin_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plugin_dialog.as_ref().is_some_and(|dialog| !dialog.pending) {
+            self.plugin_dialog = None;
+            self.focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn toggle_plugin(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = &mut self.plugin_dialog else { return };
+        if dialog.pending { return; }
+        let Some(&plugin) = plugins::catalog::PLUGINS.get(index) else { return };
+        dialog.selected = index;
+        let directory = self.follows_path.with_file_name("plugins");
+        let uninstalling = plugin.installed(&directory);
+        let package = if uninstalling {
+            None
+        } else {
+            let Some(path) = plugin.package(&self.options.directory) else {
+                dialog.notice = "请把插件包解压到程序同级的 plugin-catalog 文件夹。".into();
+                cx.notify();
+                return;
+            };
+            Some(path)
+        };
+        dialog.pending = true;
+        dialog.notice = if uninstalling { "正在卸载…" } else { "正在安装…" }.into();
+        cx.notify();
+
+        let task = cx.background_spawn(async move {
+            match package {
+                Some(package) => plugin.install(&package, &directory),
+                None => plugin.uninstall(&directory),
+            }
+        });
+        cx.spawn_in(window, async move |entity, cx| {
+            let result = task.await;
+            let _ = entity.update_in(cx, |this, _, cx| {
+                if result.is_ok() {
+                    this.plugins = plugins::Plugins::load(&this.follows_path.with_file_name("plugins"));
+                }
+                if let Some(dialog) = &mut this.plugin_dialog {
+                    dialog.pending = false;
+                    dialog.notice = match result {
+                        Ok(()) => format!("{}已{}", plugin.name, if uninstalling { "卸载" } else { "安装" }),
+                        Err(error) => format!("{}失败：{error}", if uninstalling { "卸载" } else { "安装" }),
+                    };
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
 
     fn finish_login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.checking_login {
@@ -1517,6 +1589,17 @@ impl Home {
     }
 
     fn on_gamepad(&mut self, pressed: u16, held: u16, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(dialog) = &self.plugin_dialog {
+            let selected = dialog.selected;
+            if pressed & XINPUT_GAMEPAD_B != 0 {
+                self.close_plugin_dialog(window, cx);
+            } else if pressed & XINPUT_GAMEPAD_A != 0 {
+                self.toggle_plugin(selected, window, cx);
+            } else if pressed & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN) != 0 {
+                self.step_plugin_dialog(pressed & XINPUT_GAMEPAD_DPAD_DOWN != 0, cx);
+            }
+            return;
+        }
         // Check the held state before either bumper's normal navigation action.
         // Real presses usually arrive in separate polls, even when used as a chord.
         if self.in_playback()
@@ -1635,6 +1718,18 @@ impl Render for Home {
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if let Some(dialog) = &this.plugin_dialog {
+                    let selected = dialog.selected;
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.close_plugin_dialog(window, cx),
+                        "up" => this.step_plugin_dialog(false, cx),
+                        "down" => this.step_plugin_dialog(true, cx),
+                        "enter" if !event.is_held => this.toggle_plugin(selected, window, cx),
+                        _ => {}
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.in_playback() {
                     match event.keystroke.key.as_str() {
                         "f10" | "menu" if !event.is_held => this.toggle_room_menu(window, cx),

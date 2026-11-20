@@ -863,13 +863,6 @@ impl Home {
                                         ),
                                     ))
                                 })
-                                .when(label == "插件", |group| {
-                                    group.child(div().text_sm().text_color(rgb(MUTED)).child(format!(
-                                        "录制：{}  |  本地翻译：{}",
-                                        if self.plugins.recording_executable().is_some() { "已安装" } else { "未安装" },
-                                        if self.plugins.translation_installed() { "已安装" } else { "未安装" },
-                                    )))
-                                })
                                 .children(actions.iter().copied().map(|action| {
                                     let active =
                                         !self.account_tabs_focused && self.selected == action;
@@ -878,7 +871,7 @@ impl Home {
                                         Action::Logout => ("◉", "退出本地登录"),
                                         Action::Minimize => ("−", "最小化"),
                                         Action::Exit => ("×", "退出"),
-                                        Action::ReloadPlugins => ("↻", "重新加载插件"),
+                                        Action::ManagePlugins => ("↻", "插件管理"),
                                         _ => unreachable!(),
                                     };
                                     div()
@@ -918,6 +911,87 @@ impl Home {
                     ),
             )
     }
+
+    fn plugin_manager(&self, dialog: &PluginDialog, cx: &mut Context<Self>) -> impl IntoElement {
+        let directory = self.follows_path.with_file_name("plugins");
+        div()
+            .id("plugin-manager-overlay")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .h_flex()
+            .items_center()
+            .justify_center()
+            .px_4()
+            .bg(rgba(0x080d12bb))
+            .child(
+                div()
+                    .id("plugin-manager")
+                    .v_flex()
+                    .w_full()
+                    .max_w(px(540.0))
+                    .max_h_full()
+                    .overflow_y_scroll()
+                    .gap_3()
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(DIVIDER))
+                    .bg(rgb(BG))
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("插件管理"))
+                            .child(
+                                control("close-plugin-manager", "关闭", false).on_click(
+                                    cx.listener(|this, _, window, cx| this.close_plugin_dialog(window, cx)),
+                                ),
+                            ),
+                    )
+                    .children(plugins::catalog::PLUGINS.iter().enumerate().map(|(index, plugin)| {
+                        let installed = plugin.installed(&directory);
+                        let selected = dialog.selected == index;
+                        let label = if dialog.pending && selected {
+                            "处理中…"
+                        } else if installed {
+                            "卸载"
+                        } else {
+                            "安装"
+                        };
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_3()
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(if selected { MINT } else { DIVIDER }))
+                            .bg(rgb(PANEL))
+                            .child(
+                                div()
+                                    .v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_1()
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).child(plugin.name))
+                                    .child(div().text_sm().text_color(rgb(MUTED)).child(plugin.description)),
+                            )
+                            .child(
+                                control(("manage-plugin", index), label, selected)
+                                    .flex_shrink_0()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.toggle_plugin(index, window, cx)
+                                    })),
+                            )
+                    }))
+                    .when(!dialog.notice.is_empty(), |panel| {
+                        panel.child(div().text_sm().text_color(rgb(MUTED)).child(dialog.notice.clone()))
+                    }),
+            )
+    }
+
 
     fn login_header(&self, site_index: usize, cx: &mut Context<Self>) -> Div {
         div()
@@ -1532,7 +1606,7 @@ impl Home {
         if self.in_playback() {
             return self.playback_view(window, cx);
         }
-        let view = div().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT));
+        let view = div().relative().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT));
         if let Some(Content::Login { site_index, .. }) = &self.content {
             return view.child(self.login_header(*site_index, cx));
         }
@@ -1557,6 +1631,9 @@ impl Home {
             view.child(self.directory_view(cx))
         };
         view.child(self.footer())
+            .when_some(self.plugin_dialog.as_ref(), |view, dialog| {
+                view.child(self.plugin_manager(dialog, cx))
+            })
     }
 }
 

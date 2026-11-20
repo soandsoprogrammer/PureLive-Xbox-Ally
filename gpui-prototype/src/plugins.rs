@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod recording;
 mod text_rules;
 mod process;
@@ -43,7 +44,7 @@ impl Registry {
 
     fn start(mut self) -> Plugins {
         if self.hooks.is_empty() {
-            return Plugins(None, InstalledPlugins::default());
+            return Plugins(None, None);
         }
         let (requests, jobs) = async_channel::bounded::<Text>(16);
         let (results, replies) = async_channel::bounded(16);
@@ -65,7 +66,7 @@ impl Registry {
             })
             .is_err()
         {
-            return Plugins(None, InstalledPlugins::default());
+            return Plugins(None, None);
         }
         Plugins(
             Some(RefCell::new(Pipeline {
@@ -74,18 +75,12 @@ impl Registry {
                 cache: HashMap::new(),
                 completed: VecDeque::new(),
             })),
-            InstalledPlugins::default(),
+            None,
         )
     }
 }
 
-pub struct Plugins(Option<RefCell<Pipeline>>, InstalledPlugins);
-
-#[derive(Default)]
-struct InstalledPlugins {
-    translation: bool,
-    recording: Option<PathBuf>,
-}
+pub struct Plugins(Option<RefCell<Pipeline>>, Option<PathBuf>);
 
 struct TranslationPlugin {
     executable: PathBuf,
@@ -139,21 +134,16 @@ impl Plugins {
         text_rules::register_directory(directory, &mut registry);
         let translation = installed_executable(directory, "purelive-translation.exe");
         let recording = installed_executable(directory, "purelive-recording.exe");
-        let translation_installed = translation.is_some();
         if let Some(executable) = translation {
             registry.text(TranslationPlugin { executable, retry_at: Instant::now() });
         }
         let mut plugins = registry.start();
-        plugins.1 = InstalledPlugins { translation: translation_installed, recording };
+        plugins.1 = recording;
         plugins
     }
 
-    pub fn translation_installed(&self) -> bool {
-        self.1.translation
-    }
-
     pub fn recording_executable(&self) -> Option<&Path> {
-        self.1.recording.as_deref()
+        self.1.as_deref()
     }
     pub fn request(&self, surface: Surface, platform: &str, original: &str) -> Option<Text> {
         let mut pipeline = self.0.as_ref()?.borrow_mut();
