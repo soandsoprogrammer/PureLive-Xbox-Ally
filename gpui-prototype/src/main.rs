@@ -23,6 +23,7 @@ mod pagination;
 mod platform_icons;
 mod platform_picker;
 mod playback;
+mod plugins;
 mod style;
 
 use std::{
@@ -64,11 +65,15 @@ enum Action {
     Login,
     Logout,
     FinishLogin,
+    ToggleTranslation,
+    ReloadPlugins,
 }
 
-const SETTINGS_ACTIONS: [Action; 4] = [
+const SETTINGS_ACTIONS: [Action; 6] = [
     Action::Login,
     Action::Logout,
+    Action::ToggleTranslation,
+    Action::ReloadPlugins,
     Action::Minimize,
     Action::Exit,
 ];
@@ -122,6 +127,7 @@ enum Content {
     Video {
         player: Player,
         surface: Surface,
+        recorder: plugins::recording::Recorder,
         _lease: Option<compat::Bridge>,
     },
     Login {
@@ -172,6 +178,7 @@ struct Home {
     first_poll: bool,
     query: Entity<InputState>,
     follows_path: PathBuf,
+    plugins: plugins::Plugins,
     follows: Vec<Room>,
     follow_filter: FollowFilter,
     follow_rows: Vec<usize>,
@@ -223,6 +230,7 @@ impl Home {
             .unwrap_or_else(|| options.directory.clone())
             .join("PureLiveRust/follows.json");
         let follows = live::load(&follows_path);
+        let plugins = plugins::Plugins::load(&follows_path.with_file_name("translation.json"));
         let follow_filter = FollowFilter::default();
         let follow_rows: Vec<usize> = follows
             .iter()
@@ -304,6 +312,7 @@ impl Home {
             first_poll: true,
             query,
             follows_path,
+            plugins,
             follows,
             follow_filter,
             follow_rows,
@@ -374,6 +383,7 @@ impl Home {
         self.content = Some(Content::Video {
             player,
             surface,
+            recorder: plugins::recording::Recorder::new(&source),
             _lease: source.lease.take(),
         });
         self.playback.selection = compat::Selection {
@@ -430,6 +440,23 @@ impl Home {
         match action {
             Action::FinishLogin => return self.finish_login(window, cx),
             Action::Minimize => return window.minimize_window(),
+            Action::ToggleTranslation | Action::ReloadPlugins => {
+                self.selected = action;
+                self.account_tabs_focused = false;
+                let path = self.follows_path.with_file_name("translation.json");
+                self.status = if action == Action::ReloadPlugins {
+                    self.plugins = plugins::Plugins::load(&path);
+                    "已重新加载插件".into()
+                } else {
+                    match self.plugins.toggle_translation(&path) {
+                        Ok(()) if self.plugins.translation_enabled() => "本地翻译已开启（需要 Ollama）".into(),
+                        Ok(()) => "本地翻译已关闭".into(),
+                        Err(error) => format!("无法保存翻译设置：{error}"),
+                    }
+                };
+                cx.notify();
+                return;
+            }
             _ => {}
         }
         self.checking_login = false;
@@ -486,7 +513,7 @@ impl Home {
                     Err(error) => error,
                 };
             }
-            Action::FinishLogin | Action::Minimize => unreachable!(),
+            Action::FinishLogin | Action::Minimize | Action::ToggleTranslation | Action::ReloadPlugins => unreachable!(),
         }
         cx.notify();
     }
@@ -1282,6 +1309,15 @@ impl Home {
     }
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Content::Video { recorder, .. }) = &mut self.content
+            && let Some(message) = recorder.poll()
+        {
+            self.status = message;
+            self.show_controls(window, cx);
+        }
+        if self.plugins.poll() {
+            cx.notify();
+        }
         self.sync_gamepad(window, cx);
         if self.pane == Pane::Popular
             && self.content.is_none()

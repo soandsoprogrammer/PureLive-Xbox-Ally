@@ -4,6 +4,8 @@ Windows x64 掌机版使用 GPUI Kit、XInput、Media Foundation、D3D11、WASAP
 
 ## 试用
 
+可选的[本地翻译插件](Plugins.md)支持直播间标题和实时弹幕，默认关闭。
+
 解压便携包后运行 `purelive-gpui.exe`。平台横排在「热门」右边，按左右键移动，平台栏会跟随焦点滚动。选站后按下浏览该站直播。「搜索」默认查找全部直播平台，可输入关键词或粘贴直播间链接。按手柄 View 键或 F2 筛选平台。查数字房间号或 `@频道名` 可先选平台，选 IPTV 后可输入 M3U / TXT 播放列表文件路径或网址。
 
 LT / RT 切换栏目，LB / RB 切热门平台或关注筛选，方向键选房间，Enter 或 A 打开，Y 切换选中房间的关注状态，Esc 或 B 返回。关注保存在 `%LOCALAPPDATA%\PureLiveRust\follows.json`。各站的游客搜索与播放能力依平台而异。本版本统一直连：平台接口、播放、弹幕、封面、表情图片和登录页均不使用应用层代理，不读取 `HTTPS_PROXY` / `HTTP_PROXY` 等代理环境变量。电脑上其他软件的代理设置不受影响。系统级 VPN / TUN 接管的流量仍由系统路由决定。

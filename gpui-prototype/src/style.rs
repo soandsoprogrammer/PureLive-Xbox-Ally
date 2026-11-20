@@ -528,7 +528,7 @@ impl Home {
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_ellipsis()
-                                    .child(room.title.clone()),
+                                    .child(self.plugins.room_title(&room.platform, &room.title)),
                             )
                             .child(
                                 div()
@@ -834,7 +834,8 @@ impl Home {
                     .children(
                         [
                             ("账号", &SETTINGS_ACTIONS[..2]),
-                            ("窗口", &SETTINGS_ACTIONS[2..]),
+                            ("插件", &SETTINGS_ACTIONS[2..4]),
+                            ("窗口", &SETTINGS_ACTIONS[4..]),
                         ]
                         .into_iter()
                         .map(|(label, actions)| {
@@ -870,6 +871,9 @@ impl Home {
                                         Action::Logout => ("◉", "退出本地登录"),
                                         Action::Minimize => ("−", "最小化"),
                                         Action::Exit => ("×", "退出"),
+                                        Action::ToggleTranslation if self.plugins.translation_enabled() => ("译", "本地翻译 · 开"),
+                                        Action::ToggleTranslation => ("译", "本地翻译 · 关"),
+                                        Action::ReloadPlugins => ("↻", "重新加载插件"),
                                         _ => unreachable!(),
                                     };
                                     div()
@@ -1001,6 +1005,11 @@ impl Home {
             } else {
                 format!("SC 历史 · {}", self.playback.super_chats.entries.len())
             },
+            if matches!(&self.content, Some(Content::Video { recorder, .. }) if recorder.active()) {
+                "■ 停止录制"
+            } else {
+                "● 录制"
+            }.into(),
         ];
         let actions = self.playback.actions();
         div()
