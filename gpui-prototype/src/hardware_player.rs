@@ -2,10 +2,10 @@ use crate::{
     Result, compat::Source, dxva, dxva_render, hls::Hls, live_flv::LiveFlv, native_audio::Audio,
     native_danmaku::Lane, playback::AudioSettings,
 };
+pub use crate::stream_input::StreamInput as Input;
 use oxideav_core::{Error, MediaType, Packet, RuntimeContext, registry::container::Demuxer};
 use oxideav_h264::avcc::AvcDecoderConfigurationRecord;
 use std::{
-    collections::BTreeMap,
     ffi::c_void,
     io::Cursor,
     sync::{
@@ -61,50 +61,12 @@ impl Drop for Awake {
     }
 }
 
-pub struct Input {
-    pub url: String,
-    pub headers: BTreeMap<String, String>,
-}
-
 impl Input {
     pub fn from_source(source: &Source) -> Self {
         Self {
             url: source.url.clone(),
             headers: source.headers.clone(),
         }
-    }
-
-    pub fn agent(&self) -> Result<ureq::Agent> {
-        let timeout = Some(Duration::from_secs(7));
-        Ok(ureq::Agent::config_builder()
-            .proxy(None)
-            .timeout_connect(timeout)
-            .timeout_recv_response(timeout)
-            .timeout_per_read(timeout)
-            .build()
-            .into())
-    }
-
-    pub fn request(
-        &self,
-        agent: &ureq::Agent,
-        target: &str,
-    ) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-        let mut request = agent.get(target);
-        let same_origin = url::Url::parse(target)
-            .ok()
-            .zip(url::Url::parse(&self.url).ok())
-            .is_some_and(|(target, source)| target.origin() == source.origin());
-        for (name, value) in &self.headers {
-            let sensitive = matches!(
-                name.to_ascii_lowercase().as_str(),
-                "cookie" | "authorization" | "proxy-authorization"
-            );
-            if same_origin || !sensitive {
-                request = request.header(name.as_str(), value.as_str());
-            }
-        }
-        request
     }
 }
 

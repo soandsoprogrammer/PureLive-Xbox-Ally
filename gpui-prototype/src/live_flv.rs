@@ -20,8 +20,8 @@ pub struct LiveFlv {
 }
 
 impl LiveFlv {
-    pub fn open(source: &crate::hardware_player::Input) -> crate::Result<Self> {
-        let response = source.request(&source.agent()?, &source.url).call()?;
+    pub fn open(source: &crate::stream_input::StreamInput) -> crate::Result<Self> {
+        let response = source.request(&source.agent(), &source.url).call()?;
         let mut body = response.into_body().into_reader();
         let (sender, chunks) = mpsc::sync_channel(CHUNKS);
         // Keeping the HTTP body read ahead of the decoder means a slow packet

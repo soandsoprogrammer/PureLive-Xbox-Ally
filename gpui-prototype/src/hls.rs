@@ -1,11 +1,11 @@
-use crate::{Result, hardware_player::Input};
+use crate::{Result, stream_input::StreamInput};
 use m3u8_rs::{ByteRange, KeyMethod, Playlist};
 use std::{collections::VecDeque, io::Read, thread, time::Duration};
 use ureq::ResponseExt;
 use url::Url;
 
 pub struct Hls<'a> {
-    input: &'a Input,
+    input: &'a StreamInput,
     agent: ureq::Agent,
     url: Url,
     pending: VecDeque<Segment>,
@@ -21,11 +21,16 @@ struct Segment {
     init: Option<(Url, Option<ByteRange>)>,
 }
 
+pub struct MediaSegment<'a> {
+    pub init: Option<&'a [u8]>,
+    pub data: Vec<u8>,
+}
+
 impl<'a> Hls<'a> {
-    pub fn open(input: &'a Input) -> Result<Self> {
+    pub fn open(input: &'a StreamInput) -> Result<Self> {
         Ok(Self {
             input,
-            agent: input.agent()?,
+            agent: input.agent(),
             url: Url::parse(&input.url)?,
             pending: VecDeque::new(),
             next: None,
@@ -36,6 +41,15 @@ impl<'a> Hls<'a> {
     }
 
     pub fn next(&mut self, stopped: impl Fn() -> bool) -> Result<Option<(bool, Vec<u8>)>> {
+        let Some(segment) = self.next_segment(stopped)? else { return Ok(None) };
+        let Some(init) = segment.init else { return Ok(Some((false, segment.data))) };
+        let mut data = Vec::with_capacity(init.len() + segment.data.len());
+        data.extend_from_slice(init);
+        data.extend(segment.data);
+        Ok(Some((true, data)))
+    }
+
+    pub fn next_segment(&mut self, stopped: impl Fn() -> bool) -> Result<Option<MediaSegment<'_>>> {
         while self.pending.is_empty() && !self.ended && !stopped() {
             self.reload()?;
             if self.pending.is_empty() && !self.ended {
@@ -50,7 +64,6 @@ impl<'a> Hls<'a> {
         let Some(segment) = self.pending.pop_front().filter(|_| !stopped()) else {
             return Ok(None);
         };
-        let mut data = Vec::new();
         if let Some((url, range)) = &segment.init {
             if self
                 .init
@@ -60,12 +73,13 @@ impl<'a> Hls<'a> {
                 let bytes = self.fetch(url, range.as_ref(), 4 * 1024 * 1024)?;
                 self.init = Some((url.clone(), range.clone(), bytes));
             }
-            if let Some((_, _, bytes)) = &self.init {
-                data.extend_from_slice(bytes);
-            }
         }
-        data.extend(self.fetch(&segment.url, segment.range.as_ref(), 32 * 1024 * 1024)?);
-        Ok(Some((segment.init.is_some(), data)))
+        if stopped() {
+            return Ok(None);
+        }
+        let data = self.fetch(&segment.url, segment.range.as_ref(), 32 * 1024 * 1024)?;
+        let init = segment.init.and(self.init.as_ref().map(|(_, _, bytes)| bytes.as_slice()));
+        Ok(Some(MediaSegment { init, data }))
     }
 
     fn reload(&mut self) -> Result<()> {

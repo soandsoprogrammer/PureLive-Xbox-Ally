@@ -24,6 +24,7 @@ mod platform_icons;
 mod platform_picker;
 mod playback;
 mod plugins;
+mod stream_input;
 mod style;
 
 use std::{

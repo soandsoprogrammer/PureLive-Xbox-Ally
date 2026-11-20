@@ -18,7 +18,7 @@ pub(crate) struct Plugin {
 pub(crate) const PLUGINS: [Plugin; 2] = [
     Plugin {
         name: "直播录制",
-        description: "将直播音视频保存为 MKV，需要 FFmpeg。",
+        description: "直接保存 FLV 或 HLS 直播音视频。",
         executable: "purelive-recording.exe",
     },
     Plugin {

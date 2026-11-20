@@ -10,7 +10,9 @@
 
 录制包提供 `purelive-recording.exe`。安装后，播放控制栏会出现「录制」。录制只保存直播源的音视频，建议点「停止录制」并等保存提示后再退出。
 
-录制插件需要 FFmpeg。把 `ffmpeg.exe` 放在插件同目录、加入 PATH，或用 `PURELIVE_FFMPEG` 指定路径。录制默认保存到 `%LOCALAPPDATA%\PureLiveRust\recordings`，也可用 `PURELIVE_RECORDINGS_DIR` 指定目录。
+录制插件复用播放器的直播源读取能力，不需要 FFmpeg。HTTP FLV 输出为 `.flv`，未加密的 HLS 按源格式输出为 `.ts` 或分段 `.mp4`。录制不重新编码，也不会把不同格式统一转换成 MKV。当前不支持加密 HLS 或音视频分开的 HLS 线路。
+
+录制默认保存到 `%LOCALAPPDATA%\PureLiveRust\recordings`，也可用 `PURELIVE_RECORDINGS_DIR` 指定目录。直播源中断时，插件会尽可能保留已接收的完整数据。
 
 ## 本地翻译
 
