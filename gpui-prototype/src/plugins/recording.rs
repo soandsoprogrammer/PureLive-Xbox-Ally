@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::compat::Source;
+use crate::compat::{Source, configure_network};
 
 #[cfg(test)]
 mod tests {
@@ -27,7 +27,6 @@ mod tests {
 pub struct Recorder {
     url: String,
     headers: String,
-    proxy: String,
     job: Option<Job>,
 }
 
@@ -50,7 +49,6 @@ impl Recorder {
         Self {
             url: source.url.clone(),
             headers,
-            proxy: source.proxy.clone(),
             job: None,
         }
     }
@@ -100,6 +98,7 @@ impl Recorder {
             .as_millis();
         let output = directory.join(format!("live-{}-{timestamp}.mkv", std::process::id()));
         let mut command = Command::new(ffmpeg);
+        configure_network(&mut command);
         command.creation_flags(0x08000000).args([
             "-hide_banner",
             "-loglevel",
@@ -110,9 +109,6 @@ impl Recorder {
         ]);
         if !self.headers.is_empty() {
             command.args(["-headers", &self.headers]);
-        }
-        if !self.proxy.is_empty() {
-            command.args(["-http_proxy", &self.proxy]);
         }
         command
             .args([
