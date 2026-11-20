@@ -8,14 +8,14 @@ use async_channel::{Receiver, TryRecvError};
 use super::*;
 use compat::{ChatEvent, Choice, Playback, Selection, SuperChat};
 
-pub(super) const CONTROL_HEIGHT: f32 = 144.0;
-pub(super) const DIRECT_HEIGHT: f32 = 96.0;
+pub(super) const CONTROL_HEIGHT: f32 = 192.0;
+pub(super) const DIRECT_HEIGHT: f32 = 144.0;
 pub(super) const CHOICES_HEIGHT: f32 = 86.0;
 pub(super) const VOLUME_HEIGHT: f32 = 112.0;
 pub(super) const SUPER_CHAT_HEIGHT: f32 = 206.0;
 pub(super) const CHOICES_PER_PAGE: usize = 3;
-const ROOM_ACTIONS: [usize; 8] = [0, 1, 6, 2, 3, 4, 7, 5];
-const DIRECT_ACTIONS: [usize; 4] = [0, 1, 6, 2];
+const ROOM_ACTIONS: [usize; 9] = [0, 1, 6, 2, 3, 4, 7, 5, 8];
+const DIRECT_ACTIONS: [usize; 5] = [0, 1, 6, 2, 8];
 const HIDE_DELAY: Duration = Duration::from_secs(5);
 const CHAT_TICK: Duration = Duration::from_millis(16);
 const DANMAKU_SPEED: f32 = 210.0;
@@ -63,7 +63,7 @@ impl AudioSettings {
     }
 }
 
-fn save_preference(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
+pub(super) fn save_preference(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -124,6 +124,7 @@ pub(super) struct PlaybackUi {
 
 struct FlyingMessage {
     parts: Vec<emotes::Segment>,
+    translation: Option<crate::plugins::Text>,
     width: i32,
     time: Instant,
     duration: Duration,
@@ -369,6 +370,14 @@ impl Home {
             }
             6 => self.playback.menu = Some(ChoiceMenu::Volume),
             7 => self.open_super_chats(window, cx),
+            8 => {
+                self.status = if let Some(Content::Video { recorder, .. }) = &mut self.content {
+                    let data_dir = self.follows_path.parent().unwrap_or(&self.options.directory);
+                    recorder.toggle(&self.options.directory, data_dir).unwrap_or_else(|error| error)
+                } else {
+                    "等直播开始后再录制".into()
+                };
+            }
             _ => {}
         }
         self.show_controls(window, cx);
@@ -678,6 +687,27 @@ impl Home {
                 changed = true;
             }
         }
+        for message in self
+            .playback
+            .messages
+            .iter_mut()
+            .flatten()
+            .chain(self.playback.pending.iter_mut())
+        {
+            if let Some(input) = &message.translation
+                && let Some(translated) = self.plugins.output(input)
+            {
+                message.translation = None;
+                let part = emotes::Segment::Text(format!(" · {translated}"));
+                let extra_width = part.width();
+                message.duration += message
+                    .duration
+                    .mul_f32(extra_width as f32 / (1280.0 + message.width as f32));
+                message.width += extra_width;
+                message.parts.push(part);
+                changed = true;
+            }
+        }
         let mut closed = None;
         let mut super_chats = Vec::new();
         let mut pictures = Vec::new();
@@ -755,6 +785,11 @@ impl Home {
                             ((1280.0 + width as f32) / DANMAKU_SPEED).clamp(4.0, 14.0),
                         );
                         let message = FlyingMessage {
+                            translation: self.plugins.request(
+                                crate::plugins::Surface::Danmaku,
+                                platform,
+                                &text,
+                            ),
                             parts,
                             width,
                             time: now,
@@ -916,11 +951,12 @@ mod tests {
     #[test]
     fn super_chat_control_is_only_available_for_supported_rooms() {
         let mut ui = PlaybackUi::default();
-        assert_eq!(ui.actions(), [0, 1, 6, 2, 5]);
+        assert_eq!(ui.actions(), [0, 1, 6, 2, 5, 8]);
         assert!(!ui.actions().contains(&7));
         ui.options.super_chat = true;
         assert!(ui.actions().contains(&7));
         ui.direct = true;
+        assert!(ui.actions().contains(&8));
         assert!(!ui.actions().contains(&7));
     }
 
