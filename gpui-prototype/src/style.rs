@@ -1709,10 +1709,40 @@ impl Home {
             )
     }
 
-    fn multiview_view(&self, slots: &[multiview::Slot], cx: &mut Context<Self>) -> Div {
+    fn multiview_settings_panel(&self, panel: floating_panel::Bounds, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("multiview-settings")
+            .absolute().left(px(panel.x)).top(px(panel.y)).w(px(panel.width)).h(px(panel.height))
+            .occlude()
+            .overflow_y_scroll()
+            .rounded(px(panel.radius))
+            .border_1().border_color(rgb(DIVIDER))
+            .bg(rgb(BG))
+            .v_flex().gap_2().p_4()
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("同屏设置"))
+            .child(
+                div().h_flex().flex_wrap().items_center().gap_2()
+                    .child(div().text_sm().text_color(rgb(MUTED)).child("布局"))
+                    .children(plugins::multiview::Layout::OPTIONS.into_iter().enumerate().map(|(index, (layout, name))| {
+                        control(("multiview-layout", index), name, self.multiview.preferences.layout == layout)
+                            .on_click(cx.listener(move |this, _, window, cx| this.choose_multiview_layout(layout, window, cx)))
+                    })),
+            )
+            .child(
+                div().h_flex().items_center().gap_3()
+                    .child(control("multiview-titles", "显示标题", self.multiview.preferences.show_titles)
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_titles(cx))))
+                    .child(div().min_w_0().text_sm().text_ellipsis().text_color(rgb(MUTED)).child(
+                        if self.multiview.notice.is_empty() { "拖动上方房间换位".to_owned() } else { self.multiview.notice.clone() }
+                    )),
+            )
+    }
+
+
+    fn multiview_view(&self, slots: &[multiview::Slot], window: &Window, cx: &mut Context<Self>) -> Div {
         let settings = self.multiview.settings_open;
-        div().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT)).child(
-            div().h(px(self.multiview.toolbar_height())).flex_shrink_0().v_flex().gap_2().px_4().py_2()
+        div().relative().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT)).child(
+            div().h(px(multiview::TOOLBAR_HEIGHT)).flex_shrink_0().v_flex().gap_2().px_4().py_2()
                 .child(div().h_flex().items_center().gap_2()
                     .child(control("multiview-back", "返回", false).on_click(
                         cx.listener(|this, _, window, cx| this.close_multiview(window, cx)),
@@ -1722,21 +1752,6 @@ impl Home {
                     .child(control("multiview-all-audio", "全部声音", self.multiview.all_audio)
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_all_audio(cx))))
                 )
-                .when(settings, |toolbar| {
-                    toolbar.child(
-                        div().h_flex().items_center().gap_2()
-                            .child(div().text_sm().text_color(rgb(MUTED)).child("布局"))
-                            .children(plugins::multiview::Layout::OPTIONS.into_iter().enumerate().map(|(index, (layout, name))| {
-                                control(("multiview-layout", index), name, self.multiview.preferences.layout == layout)
-                                    .on_click(cx.listener(move |this, _, window, cx| this.choose_multiview_layout(layout, window, cx)))
-                            }))
-                            .child(control("multiview-titles", "显示标题", self.multiview.preferences.show_titles)
-                                .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_titles(cx))))
-                            .child(div().min_w_0().text_sm().text_ellipsis().text_color(rgb(MUTED)).child(
-                                if self.multiview.notice.is_empty() { "拖动下方房间换位".to_owned() } else { self.multiview.notice.clone() }
-                            )),
-                    )
-                })
                 .child(div().h_flex().gap_2().children(slots.iter().enumerate().map(|(index, slot)| {
                     let room = &slot.room;
                     let label = if self.multiview.preferences.show_titles {
@@ -1760,12 +1775,14 @@ impl Home {
                         })
                 }))),
         )
+        .when_some(self.multiview_panel(window), |view, panel| {
+            view.child(self.multiview_settings_panel(panel, cx))
+        })
     }
-
 
     pub(super) fn view(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         if let Some(slots) = &self.multiview.slots {
-            return self.multiview_view(slots, cx);
+            return self.multiview_view(slots, window, cx);
         }
         if self.in_playback() {
             return self.playback_view(window, cx);

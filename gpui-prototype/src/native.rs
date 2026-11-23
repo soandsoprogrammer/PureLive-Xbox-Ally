@@ -92,13 +92,13 @@ impl Surface {
         Ok(surface)
     }
 
-    pub fn video_tile(window: &Window, top: f32, tile: [u8; 4]) -> Result<Self, String> {
+    pub fn video_tile(window: &Window, top: f32, tile: [u8; 4], panel: Option<crate::floating_panel::Bounds>) -> Result<Self, String> {
         let surface = Self::create(window, top, 0.0, WS_DISABLED)?;
-        surface.resize_tile(window, top, tile);
+        surface.resize_tile(window, top, tile, panel);
         Ok(surface)
     }
 
-    pub fn resize_tile(&self, window: &Window, top: f32, [x, y, width, height]: [u8; 4]) {
+    pub fn resize_tile(&self, window: &Window, top: f32, [x, y, width, height]: [u8; 4], panel: Option<crate::floating_panel::Bounds>) {
         let mut client = RECT::default();
         let Ok(parent) = window_handle(window) else { return };
         unsafe { GetClientRect(parent, &mut client) };
@@ -112,11 +112,16 @@ impl Surface {
         let upper = total_height * i32::from(y) / grid;
         let lower = total_height * i32::from(y + height) / grid;
         let gap = (2.0 * scale).round() as i32;
+        let (left, top) = (left + gap, top + upper + gap);
+        let (width, height) = ((right - left - gap).max(1), (lower - upper - gap * 2).max(1));
         unsafe {
-            SetWindowPos(self.0, null_mut(), left + gap, top + upper + gap,
-                (right - left - gap * 2).max(1), (lower - upper - gap * 2).max(1),
-                SWP_NOACTIVATE | SWP_NOZORDER);
+            SetWindowPos(self.0, null_mut(), left, top, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
         }
+        self.set_video_mask(width, height, panel.and_then(|panel| {
+            let [x0, y0, x1, y1, diameter] = panel.pixels(scale);
+            (x0 < left + width && x1 > left && y0 < top + height && y1 > top)
+                .then_some([x0 - left, y0 - top, x1 - left, y1 - top, diameter])
+        }));
     }
 
 

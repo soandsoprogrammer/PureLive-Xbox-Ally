@@ -1,8 +1,7 @@
 use super::*;
 use plugins::multiview::{Layout, MAX_ROOMS, Tile};
 
-const TOOLBAR_HEIGHT: f32 = 96.0;
-const SETTINGS_HEIGHT: f32 = 52.0;
+pub(super) const TOOLBAR_HEIGHT: f32 = 96.0;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -41,12 +40,6 @@ struct Video {
     player: Player,
     surface: Surface,
     _lease: Option<compat::Bridge>,
-}
-
-impl MultiView {
-    pub fn toolbar_height(&self) -> f32 {
-        TOOLBAR_HEIGHT + if self.settings_open { SETTINGS_HEIGHT } else { 0.0 }
-    }
 }
 
 impl Slot {
@@ -150,13 +143,13 @@ impl Home {
                     }
                     let Some(index) = this.multiview.slots.as_ref()
                         .and_then(|slots| slots.iter().position(|slot| slot.room.key() == key)) else { return };
-                    let top = this.multiview.toolbar_height();
+                    let panel = this.multiview_panel(window);
                     let muted = this.audio.muted || (!this.multiview.all_audio && this.multiview.audible != index);
                     let audio = AudioSettings { muted, ..this.audio };
                     let Some(slot) = this.multiview.slots.as_mut().and_then(|slots| slots.get_mut(index)) else { return };
                     slot.status = match result.and_then(|mut source| {
                         let tile = slot.tile.ok_or("画面位置暂不可用")?;
-                        let surface = Surface::video_tile(window, top, tile)?;
+                        let surface = Surface::video_tile(window, TOOLBAR_HEIGHT, tile, panel)?;
                         let player = Player::start(surface.id(), hardware_player::Input::from_source(&source), false, audio)
                             .map_err(|error| error.to_string())?;
                         slot.video = Some(Video { player, surface, _lease: source.lease.take() });
@@ -268,11 +261,20 @@ impl Home {
     }
 
 
+    pub(super) fn multiview_panel(&self, window: &Window) -> Option<floating_panel::Bounds> {
+        if !self.multiview.settings_open {
+            return None;
+        }
+        let (width, height) = native::client_size(window);
+        Some(floating_panel::multiview_settings(width, height))
+    }
+
+
     pub(super) fn multiview_resize(&self, window: &Window) {
         if let Some(slots) = &self.multiview.slots {
             for slot in slots {
                 if let (Some(video), Some(tile)) = (&slot.video, slot.tile) {
-                    video.surface.resize_tile(window, self.multiview.toolbar_height(), tile);
+                    video.surface.resize_tile(window, TOOLBAR_HEIGHT, tile, self.multiview_panel(window));
                 }
             }
         }
