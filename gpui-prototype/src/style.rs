@@ -544,7 +544,7 @@ impl Home {
                                     }),
                             ),
                     )
-                    .when(self.multiview_plugin().is_some(), |row| {
+                    .when(self.pane != Pane::Popular && self.multiview_plugin().is_some(), |row| {
                         row.child(
                             control(("card-multiview", index), if queued { "已选" } else { "+ 同屏" }, queued)
                                 .flex_shrink_0()
@@ -627,7 +627,6 @@ impl Home {
                     .h_flex()
                     .items_center()
                     .gap_2()
-                    .when(self.multiview_plugin().is_some(), |row| row.child(self.multiview_button(cx)))
                     .child(self.platform_strip(cx))
                     .child(
                         control("refresh-popular", "刷新", false).on_click(cx.listener(
