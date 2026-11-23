@@ -330,13 +330,7 @@ impl Home {
                             }))
                     })),
             )
-            .child(div().h_flex().gap_2().min_w(px(120.0)).justify_end()
-              .when(self.pane != Pane::Settings && self.multiview_plugin().is_some(), |row| {
-                row.child(
-                    control("multiview-open", format!("同屏 {}/4", self.multiview.rooms.len()), false)
-                        .on_click(cx.listener(|this, _, window, cx| this.open_multiview(window, cx))),
-                )
-              }).child(
+            .child(div().h_flex().min_w(px(120.0)).justify_end().child(
                 control("settings-tab", "⚙  设置", self.pane == Pane::Settings)
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -614,6 +608,12 @@ impl Home {
         .min_h_0()
     }
 
+    fn multiview_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        control("multiview-open", format!("同屏 {}/4", self.multiview.rooms.len()), false)
+            .flex_shrink_0()
+            .on_click(cx.listener(|this, _, window, cx| this.open_multiview(window, cx)))
+    }
+
     fn popular_view(&self, cx: &mut Context<Self>) -> Div {
         div()
             .v_flex()
@@ -627,6 +627,7 @@ impl Home {
                     .h_flex()
                     .items_center()
                     .gap_2()
+                    .when(self.multiview_plugin().is_some(), |row| row.child(self.multiview_button(cx)))
                     .child(self.platform_strip(cx))
                     .child(
                         control("refresh-popular", "刷新", false).on_click(cx.listener(
@@ -741,6 +742,9 @@ impl Home {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(heading)
                     }))
+                    .when(self.pane == Pane::Follows && self.multiview_plugin().is_some(), |row| {
+                        row.child(div().absolute().left_0().top_0().child(self.multiview_button(cx)))
+                    })
                     .when(self.pane != Pane::Follows, |row| {
                         row.child(
                             control("site-select", format!("{site}  ▾"), false).on_click(
@@ -776,6 +780,7 @@ impl Home {
                     div()
                         .h_flex()
                         .gap_2()
+                        .when(self.multiview_plugin().is_some(), |row| row.child(self.multiview_button(cx)))
                         .child(
                             div().flex_1().child(
                                 Input::new(&self.query).bg(rgb(PANEL)).text_color(rgb(TEXT)),
