@@ -33,6 +33,7 @@ pub struct Choice {
 #[derive(Default, Deserialize)]
 #[serde(default)]
 pub struct Playback {
+    pub forward_buffer_seconds: Option<f64>,
     pub qualities: Vec<Choice>,
     pub quality: Option<String>,
     pub quality_label: Option<String>,

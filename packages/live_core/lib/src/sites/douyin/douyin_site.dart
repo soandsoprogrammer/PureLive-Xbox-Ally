@@ -756,6 +756,7 @@ final class DouyinSite extends LiveSite
   // Links ---------------------------------------------------------------------
 
   /// `live.douyin.com/{web_rid or custom alias}[/…]` and
+  /// `www.douyin.com/{follow|root}/live/{web_rid}`, and
   /// `www.douyin.com/{1–20 digits}` (one
   /// segment only: videos, search pages and the bare site are not rooms,
   /// REG-DOUYIN-010/011).
@@ -781,7 +782,9 @@ final class DouyinSite extends LiveSite
 
   static String? _webRoomId(Uri uri) {
     final segments = RoomPaths.segments(uri);
-    if (segments.length == 3 && segments[0] == 'follow' && segments[1] == 'live') {
+    if (segments.length == 3 &&
+        (segments[0] == 'follow' || segments[0] == 'root') &&
+        segments[1] == 'live') {
       return RegExp(r'^\d{1,20}$').hasMatch(segments[2]) ? segments[2] : null;
     }
     return segments.length == 1 && RegExp(r'^\d{1,20}$').hasMatch(segments.single) ? segments.single : null;

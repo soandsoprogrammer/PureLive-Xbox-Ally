@@ -32,6 +32,7 @@ const DANMAKU_GAP: f64 = 40.0;
 
 pub struct Input {
     pub url: String,
+    forward_buffer_seconds: Option<f64>,
     headers: std::collections::BTreeMap<String, String>,
 }
 
@@ -39,6 +40,7 @@ impl Input {
     pub fn from_source(source: &Source) -> Self {
         Self {
             url: source.url.clone(),
+            forward_buffer_seconds: source.playback.forward_buffer_seconds,
             headers: source.headers.clone(),
         }
     }
@@ -98,6 +100,7 @@ impl HardwarePlayer {
         let marker = MainThreadMarker::new().ok_or("无法在后台线程创建播放器")?;
         let view = unsafe { Retained::retain(window as *mut NSView) }.ok_or("缺少播放区域")?;
         let parsed = url::Url::parse(&input.url).map_err(|_| "无效的播放地址")?;
+        let forward_buffer_seconds = input.forward_buffer_seconds;
         let flv = parsed.path().to_ascii_lowercase().ends_with(".flv");
         let headers = if flv {
             None
@@ -139,6 +142,14 @@ impl HardwarePlayer {
                 AVPlayer::playerWithURL(&url, marker)
             }
         };
+        if let Some(seconds) = forward_buffer_seconds {
+            // Keep a small cushion for variable overseas HLS segment delivery.
+            unsafe {
+                if let Some(item) = player.currentItem() {
+                    item.setPreferredForwardBufferDuration(seconds.clamp(0.0, 30.0));
+                }
+            }
+        }
         let layer = view.layer().ok_or("无法创建 macOS 视频图层")?;
         let bounds = view.bounds();
         let video = unsafe { AVPlayerLayer::playerLayerWithPlayer(Some(&player)) };
