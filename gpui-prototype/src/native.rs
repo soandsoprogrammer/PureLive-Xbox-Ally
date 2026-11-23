@@ -92,6 +92,33 @@ impl Surface {
         Ok(surface)
     }
 
+    pub fn video_tile(window: &Window, top: f32, tile: [u8; 4]) -> Result<Self, String> {
+        let surface = Self::create(window, top, 0.0, WS_DISABLED)?;
+        surface.resize_tile(window, top, tile);
+        Ok(surface)
+    }
+
+    pub fn resize_tile(&self, window: &Window, top: f32, [x, y, width, height]: [u8; 4]) {
+        let mut client = RECT::default();
+        let Ok(parent) = window_handle(window) else { return };
+        unsafe { GetClientRect(parent, &mut client) };
+        let scale = window.scale_factor();
+        let top = (top * scale).round() as i32;
+        let total_width = client.right.max(1);
+        let total_height = (client.bottom - top).max(1);
+        let left = total_width * i32::from(x) / 2;
+        let right = total_width * i32::from(x + width) / 2;
+        let upper = total_height * i32::from(y) / 2;
+        let lower = total_height * i32::from(y + height) / 2;
+        let gap = (2.0 * scale).round() as i32;
+        unsafe {
+            SetWindowPos(self.0, null_mut(), left + gap, top + upper + gap,
+                (right - left - gap * 2).max(1), (lower - upper - gap * 2).max(1),
+                SWP_NOACTIVATE | SWP_NOZORDER);
+        }
+    }
+
+
     fn create(window: &Window, top: f32, bottom: f32, style: u32) -> Result<Self, String> {
         let parent = window_handle(window)?;
         let class = [83u16, 84, 65, 84, 73, 67, 0]; // STATIC

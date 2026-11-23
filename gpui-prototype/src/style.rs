@@ -330,7 +330,13 @@ impl Home {
                             }))
                     })),
             )
-            .child(div().h_flex().min_w(px(120.0)).justify_end().child(
+            .child(div().h_flex().gap_2().min_w(px(120.0)).justify_end()
+              .when(self.pane != Pane::Settings && self.multiview_plugin().is_some(), |row| {
+                row.child(
+                    control("multiview-open", format!("同屏 {}/4", self.multiview.rooms.len()), false)
+                        .on_click(cx.listener(|this, _, window, cx| this.open_multiview(window, cx))),
+                )
+              }).child(
                 control("settings-tab", "⚙  设置", self.pane == Pane::Settings)
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -429,6 +435,8 @@ impl Home {
         let covers = self.covers.clone();
         let play = room.clone();
         let save = room.clone();
+        let queued = self.multiview.rooms.iter().any(|item| item.same_channel(room));
+        let multiview_room = room.clone();
         div()
             .id(("card", index))
             .v_flex()
@@ -542,6 +550,18 @@ impl Home {
                                     }),
                             ),
                     )
+                    .when(self.multiview_plugin().is_some(), |row| {
+                        row.child(
+                            control(("card-multiview", index), if queued { "已选" } else { "+ 同屏" }, queued)
+                                .flex_shrink_0()
+                                .px_2()
+                                .text_xs()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.queue_multiview_room(multiview_room.clone(), cx);
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .id(("card-follow", index))
@@ -1040,7 +1060,7 @@ impl Home {
                                     .child(div().font_weight(FontWeight::SEMIBOLD).child(plugin.name))
                                     .child(div().text_sm().text_color(rgb(MUTED)).child(plugin.description)),
                             )
-                            .when(installed, |row| {
+                            .when(installed && !matches!(plugin.kind, plugins::catalog::PluginKind::MultiView), |row| {
                                 row.child(
                                     control(("plugin-settings", index), "设置", selected)
                                         .flex_shrink_0()
@@ -1673,7 +1693,33 @@ impl Home {
             )
     }
 
+    fn multiview_view(&self, slots: &[multiview::Slot], cx: &mut Context<Self>) -> Div {
+        div().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT)).child(
+            div().h(px(multiview::TOOLBAR_HEIGHT)).flex_shrink_0().v_flex().gap_2().px_4().py_2()
+                .child(div().h_flex().items_center().gap_2()
+                    .child(control("multiview-back", "返回", false).on_click(
+                        cx.listener(|this, _, window, cx| this.close_multiview(window, cx)),
+                    ))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("多直播同屏"))
+                    .child(div().text_sm().text_color(rgb(MUTED)).child("选择房间切换声音"))
+                )
+                .child(div().h_flex().gap_2().children(slots.iter().enumerate().map(|(index, slot)| {
+                    let room = &slot.room;
+                    let label = if room.nick.is_empty() { &room.title } else { &room.nick };
+                    let status = if slot.playing() { label.as_str() } else { slot.status.as_str() };
+                    control(("multiview-audio", index), "", self.multiview.audible == index)
+                        .flex_1().min_w_0()
+                        .child(div().min_w_0().text_ellipsis().child(format!("{}  {status}", index + 1)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.multiview_audio(index, cx)))
+                }))),
+        )
+    }
+
+
     pub(super) fn view(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+        if let Some(slots) = &self.multiview.slots {
+            return self.multiview_view(slots, cx);
+        }
         if self.in_playback() {
             return self.playback_view(window, cx);
         }
@@ -1701,7 +1747,9 @@ impl Home {
         } else {
             view.child(self.directory_view(cx))
         };
-        view.child(self.footer())
+        view.when(!self.multiview.notice.is_empty() && self.pane != Pane::Settings, |view| {
+            view.child(div().px_6().text_sm().text_color(rgb(MUTED)).child(self.multiview.notice.clone()))
+        }).child(self.footer())
             .when_some(self.plugin_dialog.as_ref(), |view, dialog| {
                 view.child(self.plugin_manager(dialog, cx))
             })

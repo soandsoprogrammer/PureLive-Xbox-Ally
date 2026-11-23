@@ -76,11 +76,11 @@ jobs:
         shell: pwsh
         run: |
           $manifest = 'gpui-prototype/Cargo.toml'
-          cargo test --manifest-path $manifest --release --locked --features plugin-tools --bin purelive-recording --bin purelive-translation
+          cargo test --manifest-path $manifest --release --locked --features plugin-tools --bin purelive-recording --bin purelive-translation --bin purelive-multiview
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --manifest-path $manifest --release --locked --features plugin-tools --bin purelive-recording --bin purelive-translation
+          cargo build --manifest-path $manifest --release --locked --features plugin-tools --bin purelive-recording --bin purelive-translation --bin purelive-multiview
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($plugin in @('recording', 'translation')) {
+          foreach ($plugin in @('recording', 'translation', 'multiview')) {
             $stage = New-Item -ItemType Directory -Force "plugin-dist/$plugin"
             $exe = "purelive-$plugin.exe"
             Copy-Item "gpui-prototype/target/release/$exe" $stage.FullName

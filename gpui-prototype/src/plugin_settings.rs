@@ -64,6 +64,7 @@ impl Home {
         }
         dialog.selected = index;
         let fields = match plugin.kind {
+            PluginKind::MultiView => return,
             PluginKind::Recording => {
                 let config: RecordingConfig = match plugin_config::load(&directory.join("recording.json")) {
                     Ok(config) => config,

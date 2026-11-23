@@ -14,6 +14,7 @@ mod hardware_player;
 mod hls;
 mod live;
 mod live_flv;
+mod multiview;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
@@ -52,7 +53,7 @@ use windows_sys::Win32::UI::Input::XboxController::{
     XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_BACK, XINPUT_GAMEPAD_DPAD_DOWN,
     XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_UP,
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_START,
-    XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
+    XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y, XINPUT_GAMEPAD_RIGHT_THUMB,
 };
 use wry::{NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows, dpi::PhysicalSize};
 
@@ -189,6 +190,7 @@ struct Home {
     follows_path: PathBuf,
     plugins: plugins::Plugins,
     plugin_dialog: Option<PluginDialog>,
+    multiview: multiview::MultiView,
     follows: Vec<Room>,
     follow_filter: FollowFilter,
     follow_rows: Vec<usize>,
@@ -283,6 +285,7 @@ impl Home {
         });
         cx.observe_window_bounds(window, |this, window, _| {
             if !native::minimized(window) {
+                this.multiview_resize(window);
                 if let Some(content) = &this.content {
                     content.resize(window, this.playback.height(this.plugins.recording_executable().is_some()), this.playback.floating_panel(window));
                 }
@@ -324,6 +327,7 @@ impl Home {
             follows_path,
             plugins,
             plugin_dialog: None,
+            multiview: multiview::MultiView::default(),
             follows,
             follow_filter,
             follow_rows,
@@ -1400,6 +1404,10 @@ impl Home {
             cx.notify();
         }
         self.sync_gamepad(window, cx);
+        if self.multiview.slots.is_some() {
+            self.multiview_tick(cx);
+            return;
+        }
         if self.pane == Pane::Popular
             && self.content.is_none()
             && window.is_window_active()
@@ -1633,6 +1641,27 @@ impl Home {
             }
             return;
         }
+        if let Some(slots) = &self.multiview.slots {
+            let count = slots.len();
+            if pressed & XINPUT_GAMEPAD_B != 0 {
+                self.close_multiview(window, cx);
+            } else if pressed & XINPUT_GAMEPAD_DPAD_LEFT != 0 {
+                self.multiview_audio((self.multiview.audible + count - 1) % count, cx);
+            } else if pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0 {
+                self.multiview_audio((self.multiview.audible + 1) % count, cx);
+            }
+            return;
+        }
+        if self.multiview_plugin().is_some() && self.content.is_none() && self.pane != Pane::Settings
+            && pressed & XINPUT_GAMEPAD_RIGHT_THUMB != 0
+        {
+            if held & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0 {
+                self.open_multiview(window, cx);
+            } else if let Some(room) = self.room_selection.and_then(|index| self.room_at(index)).cloned() {
+                self.queue_multiview_room(room, cx);
+            }
+            return;
+        }
         // Check the held state before either bumper's normal navigation action.
         // Real presses usually arrive in separate polls, even when used as a chord.
         if self.in_playback()
@@ -1778,6 +1807,32 @@ impl Render for Home {
                     }
                     cx.stop_propagation();
                     return;
+                }
+                if let Some(slots) = &this.multiview.slots {
+                    let count = slots.len();
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.close_multiview(window, cx),
+                        "left" => this.multiview_audio((this.multiview.audible + count - 1) % count, cx),
+                        "right" => this.multiview_audio((this.multiview.audible + 1) % count, cx),
+                        _ => {}
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.multiview_plugin().is_some() && this.pane != Pane::Settings && this.content.is_none() && !event.is_held {
+                    match event.keystroke.key.as_str() {
+                        "f3" => {
+                            if let Some(room) = this.room_selection.and_then(|index| this.room_at(index)).cloned() {
+                                this.queue_multiview_room(room, cx);
+                            }
+                            return;
+                        }
+                        "f4" => {
+                            this.open_multiview(window, cx);
+                            return;
+                        }
+                        _ => {}
+                    }
                 }
                 if this.in_playback() {
                     match event.keystroke.key.as_str() {

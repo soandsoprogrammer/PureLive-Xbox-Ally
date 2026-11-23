@@ -12,6 +12,7 @@ const MAX_PACKAGE_SIZE: u64 = 32 * 1024 * 1024;
 pub(crate) enum PluginKind {
     Recording,
     Translation,
+    MultiView,
 }
 
 #[derive(Clone, Copy)]
@@ -22,7 +23,7 @@ pub(crate) struct Plugin {
     pub(crate) executable: &'static str,
 }
 
-pub(crate) const PLUGINS: [Plugin; 2] = [
+pub(crate) const PLUGINS: [Plugin; 3] = [
     Plugin {
         kind: PluginKind::Recording,
         name: "直播录制",
@@ -34,6 +35,12 @@ pub(crate) const PLUGINS: [Plugin; 2] = [
         name: "本地翻译",
         description: "用 Ollama 翻译直播间标题和弹幕。",
         executable: "purelive-translation.exe",
+    },
+    Plugin {
+        kind: PluginKind::MultiView,
+        name: "多直播同屏",
+        description: "在一个窗口同时观看 2–4 个直播间。",
+        executable: "purelive-multiview.exe",
     },
 ];
 

@@ -1,3 +1,4 @@
+pub mod multiview;
 pub mod catalog;
 pub mod recording;
 mod text_rules;
