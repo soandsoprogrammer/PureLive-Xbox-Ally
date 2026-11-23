@@ -1654,7 +1654,7 @@ impl Home {
             }
             return;
         }
-        if self.multiview_plugin().is_some() && self.content.is_none() && matches!(self.pane, Pane::Follows | Pane::Search)
+        if self.multiview_plugin().is_some() && self.content.is_none() && self.pane == Pane::Follows
             && pressed & XINPUT_GAMEPAD_RIGHT_THUMB != 0
         {
             if held & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0 {
@@ -1822,7 +1822,7 @@ impl Render for Home {
                     cx.stop_propagation();
                     return;
                 }
-                if this.multiview_plugin().is_some() && matches!(this.pane, Pane::Follows | Pane::Search) && this.content.is_none() && !event.is_held {
+                if this.multiview_plugin().is_some() && this.pane == Pane::Follows && this.content.is_none() && !event.is_held {
                     match event.keystroke.key.as_str() {
                         "f3" => {
                             if let Some(room) = this.room_selection.and_then(|index| this.room_at(index)).cloned() {

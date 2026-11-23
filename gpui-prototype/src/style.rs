@@ -544,7 +544,7 @@ impl Home {
                                     }),
                             ),
                     )
-                    .when(self.pane != Pane::Popular && self.multiview_plugin().is_some(), |row| {
+                    .when(self.pane == Pane::Follows && self.multiview_plugin().is_some(), |row| {
                         row.child(
                             control(("card-multiview", index), if queued { "已选" } else { "+ 同屏" }, queued)
                                 .flex_shrink_0()
@@ -779,7 +779,6 @@ impl Home {
                     div()
                         .h_flex()
                         .gap_2()
-                        .when(self.multiview_plugin().is_some(), |row| row.child(self.multiview_button(cx)))
                         .child(
                             div().flex_1().child(
                                 Input::new(&self.query).bg(rgb(PANEL)).text_color(rgb(TEXT)),
@@ -1753,7 +1752,7 @@ impl Home {
         } else {
             view.child(self.directory_view(cx))
         };
-        view.when(!self.multiview.notice.is_empty() && self.pane != Pane::Settings, |view| {
+        view.when(!self.multiview.notice.is_empty() && self.pane == Pane::Follows, |view| {
             view.child(div().px_6().text_sm().text_color(rgb(MUTED)).child(self.multiview.notice.clone()))
         }).child(self.footer())
             .when_some(self.plugin_dialog.as_ref(), |view, dialog| {
