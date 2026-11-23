@@ -1643,7 +1643,17 @@ impl Home {
         }
         if let Some(slots) = &self.multiview.slots {
             let count = slots.len();
-            if pressed & XINPUT_GAMEPAD_B != 0 {
+            if pressed & XINPUT_GAMEPAD_START != 0 {
+                self.toggle_multiview_settings(window, cx);
+            } else if self.multiview.settings_open {
+                if pressed & XINPUT_GAMEPAD_B != 0 {
+                    self.toggle_multiview_settings(window, cx);
+                } else if pressed & XINPUT_GAMEPAD_A != 0 {
+                    self.toggle_multiview_titles(cx);
+                } else if pressed & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT) != 0 {
+                    self.step_multiview_layout(pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0, window, cx);
+                }
+            } else if pressed & XINPUT_GAMEPAD_B != 0 {
                 self.close_multiview(window, cx);
             } else if pressed & XINPUT_GAMEPAD_A != 0 {
                 self.toggle_multiview_all_audio(cx);
@@ -1813,6 +1823,11 @@ impl Render for Home {
                 if let Some(slots) = &this.multiview.slots {
                     let count = slots.len();
                     match event.keystroke.key.as_str() {
+                        "f10" | "menu" if !event.is_held => this.toggle_multiview_settings(window, cx),
+                        "escape" if this.multiview.settings_open => this.toggle_multiview_settings(window, cx),
+                        "left" if this.multiview.settings_open => this.step_multiview_layout(false, window, cx),
+                        "right" if this.multiview.settings_open => this.step_multiview_layout(true, window, cx),
+                        "enter" if this.multiview.settings_open && !event.is_held => this.toggle_multiview_titles(cx),
                         "escape" => this.close_multiview(window, cx),
                         "a" if !event.is_held => this.toggle_multiview_all_audio(cx),
                         "left" => this.multiview_audio((this.multiview.audible + count - 1) % count, cx),

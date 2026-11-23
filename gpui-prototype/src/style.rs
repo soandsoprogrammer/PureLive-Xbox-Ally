@@ -52,6 +52,19 @@ impl Pane {
     }
 }
 
+#[derive(Clone)]
+struct MultiViewDrag {
+    room: RoomKey,
+    label: String,
+}
+
+impl Render for MultiViewDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().px_3().py_2().rounded_md().bg(rgb(PANEL)).text_color(rgb(TEXT)).child(self.label.clone())
+    }
+}
+
+
 fn control(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -1697,25 +1710,54 @@ impl Home {
     }
 
     fn multiview_view(&self, slots: &[multiview::Slot], cx: &mut Context<Self>) -> Div {
+        let settings = self.multiview.settings_open;
         div().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT)).child(
-            div().h(px(multiview::TOOLBAR_HEIGHT)).flex_shrink_0().v_flex().gap_2().px_4().py_2()
+            div().h(px(self.multiview.toolbar_height())).flex_shrink_0().v_flex().gap_2().px_4().py_2()
                 .child(div().h_flex().items_center().gap_2()
                     .child(control("multiview-back", "返回", false).on_click(
                         cx.listener(|this, _, window, cx| this.close_multiview(window, cx)),
                     ))
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("多直播同屏"))
-                    .child(div().text_sm().flex_1().text_color(rgb(MUTED)).child("选择房间只听该路"))
+                    .child(div().text_sm().flex_1().text_color(rgb(MUTED)).child("菜单键 / F10 设置"))
                     .child(control("multiview-all-audio", "全部声音", self.multiview.all_audio)
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_all_audio(cx))))
                 )
+                .when(settings, |toolbar| {
+                    toolbar.child(
+                        div().h_flex().items_center().gap_2()
+                            .child(div().text_sm().text_color(rgb(MUTED)).child("布局"))
+                            .children(plugins::multiview::Layout::OPTIONS.into_iter().enumerate().map(|(index, (layout, name))| {
+                                control(("multiview-layout", index), name, self.multiview.preferences.layout == layout)
+                                    .on_click(cx.listener(move |this, _, window, cx| this.choose_multiview_layout(layout, window, cx)))
+                            }))
+                            .child(control("multiview-titles", "显示标题", self.multiview.preferences.show_titles)
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_titles(cx))))
+                            .child(div().min_w_0().text_sm().text_ellipsis().text_color(rgb(MUTED)).child(
+                                if self.multiview.notice.is_empty() { "拖动下方房间换位".to_owned() } else { self.multiview.notice.clone() }
+                            )),
+                    )
+                })
                 .child(div().h_flex().gap_2().children(slots.iter().enumerate().map(|(index, slot)| {
                     let room = &slot.room;
-                    let label = if room.nick.is_empty() { &room.title } else { &room.nick };
-                    let status = if slot.playing() { label.as_str() } else { slot.status.as_str() };
+                    let label = if self.multiview.preferences.show_titles {
+                        let title = if room.title.is_empty() { &room.nick } else { &room.title };
+                        format!("{}  {title}", index + 1)
+                    } else {
+                        format!("画面 {}", index + 1)
+                    };
+                    let status = if slot.playing() { label.clone() } else { format!("{label} · {}", slot.status) };
+                    let drag = MultiViewDrag { room: room.key(), label };
                     control(("multiview-audio", index), "", !self.multiview.all_audio && self.multiview.audible == index)
                         .flex_1().min_w_0()
-                        .child(div().min_w_0().text_ellipsis().child(format!("{}  {status}", index + 1)))
+                        .child(div().min_w_0().text_ellipsis().child(status))
                         .on_click(cx.listener(move |this, _, _, cx| this.multiview_audio(index, cx)))
+                        .when(settings, |tab| {
+                            tab.cursor_move()
+                                .on_drag(drag, |data: &MultiViewDrag, _, _, cx| cx.new(|_| data.clone()))
+                                .on_drop(cx.listener(move |this, data: &MultiViewDrag, window, cx| {
+                                    this.swap_multiview_rooms(&data.room, index, window, cx);
+                                }))
+                        })
                 }))),
         )
     }

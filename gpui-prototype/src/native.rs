@@ -106,10 +106,11 @@ impl Surface {
         let top = (top * scale).round() as i32;
         let total_width = client.right.max(1);
         let total_height = (client.bottom - top).max(1);
-        let left = total_width * i32::from(x) / 2;
-        let right = total_width * i32::from(x + width) / 2;
-        let upper = total_height * i32::from(y) / 2;
-        let lower = total_height * i32::from(y + height) / 2;
+        let grid = crate::plugins::multiview::GRID;
+        let left = total_width * i32::from(x) / grid;
+        let right = total_width * i32::from(x + width) / grid;
+        let upper = total_height * i32::from(y) / grid;
+        let lower = total_height * i32::from(y + height) / grid;
         let gap = (2.0 * scale).round() as i32;
         unsafe {
             SetWindowPos(self.0, null_mut(), left + gap, top + upper + gap,
