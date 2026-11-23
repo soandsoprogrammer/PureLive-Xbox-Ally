@@ -274,6 +274,32 @@ Map<String, Object?> _room(LiveSite site, LiveRoom room, {String? fallbackId}) =
       : site.name,
 };
 
+Iterable<LivePlayQuality> playbackQualityCandidates(
+  String platform, List<LivePlayQuality> qualities, String? selected,
+) {
+  if (selected != null) {
+    return qualities.where((quality) => '${quality.selectionId}' == selected).take(1);
+  }
+  if (platform != SiteIds.soop) return qualities.take(3);
+  // Overseas SOOP routes often cannot sustain the original 1080p60 bitrate.
+  // Prefer HD, then SD in the candidate order; explicit choices stay exact.
+  return [
+    for (final id in ['hd', 'sd'])
+      ...qualities.where((quality) => '${quality.selectionId}' == id),
+    ...qualities.where((quality) => !['hd', 'sd'].contains('${quality.selectionId}')),
+  ].take(3);
+}
+
+int initialLineIndex(String platform, List<LivePlayLine> lines) {
+  if (platform == SiteIds.soop) {
+    // Prefer the GS web route over the primary Google route. Manual
+    // selections bypass this preference entirely.
+    final index = lines.indexWhere((line) => line.lineId == 'gs_cdn_pc_web');
+    if (index >= 0) return index;
+  }
+  return 0;
+}
+
 Future<({MediaInput input, Map<String, Object?> options})> _open(
   LiveSite site,
   String id,
@@ -289,9 +315,7 @@ Future<({MediaInput input, Map<String, Object?> options})> _open(
   final menu = {
     for (final quality in qualities) '${quality.selectionId}': quality.quality,
   };
-  final candidates = qualityId == null
-      ? qualities.take(3)
-      : qualities.where((quality) => '${quality.selectionId}' == qualityId).take(1);
+  final candidates = playbackQualityCandidates(site.id, qualities, qualityId);
   for (final quality in candidates) {
     final result = await site.resolvePlayUrls(detail: room, quality: quality);
     final applied = result.appliedQuality;
@@ -324,7 +348,9 @@ Future<({MediaInput input, Map<String, Object?> options})> _open(
       ].join(' · ');
       return (id: '$key:$count', label: label, source: line);
     }).toList();
-    final selected = lineId == null ? lines.first : lines.where((entry) => entry.id == lineId).firstOrNull;
+    final selected = lineId == null
+        ? lines[initialLineIndex(site.id, [for (final entry in lines) entry.source])]
+        : lines.where((entry) => entry.id == lineId).firstOrNull;
     if (selected == null) throw const FormatException('该线路已不可用，请重新选择');
     options['lines'] = [for (final entry in lines) {'id': entry.id, 'label': entry.label}];
     options['line'] = selected.id;
@@ -332,6 +358,7 @@ Future<({MediaInput input, Map<String, Object?> options})> _open(
     final input = await media.open(
       LineSource(line),
       site: site.id,
+      forceHlsRelay: site.id == SiteIds.soop,
       queryPolicy: result.sourceQueryPolicies[line.url],
       variantSelector: result.sourceVariantSelectors[line.url],
       renew: line.lease?.cutsConnection == true

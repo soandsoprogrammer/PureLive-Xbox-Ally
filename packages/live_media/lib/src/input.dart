@@ -112,6 +112,8 @@ final class MediaOpener {
   /// [variantSelector] its selector ([PlaybackPlan.variantSelectorFor]): the
   /// relay serves every copy of the line's master restricted to that variant
   /// and its audio, and a copy without it fails (G01.4).
+  /// [forceHlsRelay] keeps HLS requests on this opener's network policy when
+  /// the native engine cannot apply that policy itself.
   Future<MediaInput> open(
     PlaybackSource source, {
     required String site,
@@ -123,17 +125,20 @@ final class MediaOpener {
     bool onDemand = false,
     Duration? start,
     CancelToken? cancel,
+    bool forceHlsRelay = false,
   }) async {
     if (cancel?.isCancelled ?? false) throw TransportFailure(site, TransportReason.cancelled);
     switch (source) {
       case LineSource(:final line):
-        final route = MediaRoute.of(
-          line,
-          engine: engine,
-          canRenew: renew != null,
-          queryPolicy: queryPolicy,
-          variantSelector: variantSelector,
-        );
+        final route = forceHlsRelay && line.format == StreamFormat.hls
+            ? MediaRoute.hlsRelay
+            : MediaRoute.of(
+                line,
+                engine: engine,
+                canRenew: renew != null,
+                queryPolicy: queryPolicy,
+                variantSelector: variantSelector,
+              );
         switch (route) {
           case MediaRoute.direct || MediaRoute.owned:
             final url = Uri.parse(line.url);
