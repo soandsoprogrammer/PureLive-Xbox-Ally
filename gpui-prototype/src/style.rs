@@ -1701,13 +1701,15 @@ impl Home {
                         cx.listener(|this, _, window, cx| this.close_multiview(window, cx)),
                     ))
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("多直播同屏"))
-                    .child(div().text_sm().text_color(rgb(MUTED)).child("选择房间切换声音"))
+                    .child(div().text_sm().flex_1().text_color(rgb(MUTED)).child("选择房间只听该路"))
+                    .child(control("multiview-all-audio", "全部声音", self.multiview.all_audio)
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_all_audio(cx))))
                 )
                 .child(div().h_flex().gap_2().children(slots.iter().enumerate().map(|(index, slot)| {
                     let room = &slot.room;
                     let label = if room.nick.is_empty() { &room.title } else { &room.nick };
                     let status = if slot.playing() { label.as_str() } else { slot.status.as_str() };
-                    control(("multiview-audio", index), "", self.multiview.audible == index)
+                    control(("multiview-audio", index), "", !self.multiview.all_audio && self.multiview.audible == index)
                         .flex_1().min_w_0()
                         .child(div().min_w_0().text_ellipsis().child(format!("{}  {status}", index + 1)))
                         .on_click(cx.listener(move |this, _, _, cx| this.multiview_audio(index, cx)))

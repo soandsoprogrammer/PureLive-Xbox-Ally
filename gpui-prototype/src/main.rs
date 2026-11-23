@@ -1645,6 +1645,8 @@ impl Home {
             let count = slots.len();
             if pressed & XINPUT_GAMEPAD_B != 0 {
                 self.close_multiview(window, cx);
+            } else if pressed & XINPUT_GAMEPAD_A != 0 {
+                self.toggle_multiview_all_audio(cx);
             } else if pressed & XINPUT_GAMEPAD_DPAD_LEFT != 0 {
                 self.multiview_audio((self.multiview.audible + count - 1) % count, cx);
             } else if pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0 {
@@ -1812,6 +1814,7 @@ impl Render for Home {
                     let count = slots.len();
                     match event.keystroke.key.as_str() {
                         "escape" => this.close_multiview(window, cx),
+                        "a" if !event.is_held => this.toggle_multiview_all_audio(cx),
                         "left" => this.multiview_audio((this.multiview.audible + count - 1) % count, cx),
                         "right" => this.multiview_audio((this.multiview.audible + 1) % count, cx),
                         _ => {}

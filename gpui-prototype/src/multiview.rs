@@ -8,6 +8,7 @@ pub(super) struct MultiView {
     pub rooms: Vec<Room>,
     pub slots: Option<Vec<Slot>>,
     pub audible: usize,
+    pub all_audio: bool,
     pub notice: String,
     generation: u64,
 }
@@ -69,6 +70,7 @@ impl Home {
         self.multiview.generation += 1;
         let generation = self.multiview.generation;
         self.multiview.audible = 0;
+        self.multiview.all_audio = false;
         self.multiview.notice.clear();
         self.multiview.slots = Some(self.multiview.rooms.iter().map(|room| Slot {
             room: room.clone(),
@@ -114,7 +116,7 @@ impl Home {
                     if this.multiview.generation != generation {
                         return;
                     }
-                    let muted = this.audio.muted || this.multiview.audible != index;
+                    let muted = this.audio.muted || (!this.multiview.all_audio && this.multiview.audible != index);
                     let audio = AudioSettings { muted, ..this.audio };
                     let Some(slot) = this.multiview.slots.as_mut().and_then(|slots| slots.get_mut(index)) else { return };
                     slot.status = match result.and_then(|mut source| {
@@ -146,9 +148,23 @@ impl Home {
             return;
         }
         self.multiview.audible = index;
-        for (slot_index, slot) in slots.iter().enumerate() {
-            if let Some(video) = &slot.video {
-                video.player.set_muted(self.audio.muted || slot_index != index);
+        self.multiview.all_audio = false;
+        self.apply_multiview_audio(cx);
+    }
+
+    pub(super) fn toggle_multiview_all_audio(&mut self, cx: &mut Context<Self>) {
+        self.multiview.all_audio = !self.multiview.all_audio;
+        self.apply_multiview_audio(cx);
+    }
+
+    fn apply_multiview_audio(&self, cx: &mut Context<Self>) {
+        if let Some(slots) = &self.multiview.slots {
+            for (index, slot) in slots.iter().enumerate() {
+                if let Some(video) = &slot.video {
+                    let muted = self.audio.muted
+                        || (!self.multiview.all_audio && self.multiview.audible != index);
+                    video.player.set_muted(muted);
+                }
             }
         }
         cx.notify();
