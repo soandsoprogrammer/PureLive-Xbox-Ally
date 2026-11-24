@@ -65,6 +65,9 @@ use wry::WebViewBuilderExtWindows;
 use wry::{NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder, dpi::PhysicalSize};
 
 const TOOLBAR: f32 = 88.0;
+const DOUYIN_CATEGORIES: [(&str, &str); 4] = [
+    ("游戏", "game"), ("舞蹈", "dance"), ("聊天", "chat"), ("推荐", ""),
+];
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -193,6 +196,7 @@ struct Home {
     next_follow_check: Option<Instant>,
     results: Vec<Room>,
     popular_pages: pagination::Pages,
+    douyin_category: usize,
     show_follows: bool,
     room_selection: Option<usize>,
     request_id: u64,
@@ -338,6 +342,7 @@ impl Home {
             next_follow_check: None,
             results: Vec::new(),
             popular_pages: pagination::Pages::default(),
+            douyin_category: 0,
             show_follows: true,
             room_selection,
             request_id: 0,
@@ -925,6 +930,8 @@ impl Home {
             Some(&self.platforms[self.platform])
         };
         let platform = site.map_or("all", |site| site.id.as_str()).to_owned();
+        let category = (self.pane == Pane::Popular && platform == "douyin")
+            .then(|| DOUYIN_CATEGORIES[self.douyin_category].1.to_owned());
         let directory = self.options.directory.clone();
         self.status = site.map_or_else(
             || "正在搜索全部直播平台…".into(),
@@ -944,7 +951,11 @@ impl Home {
             .get(&platform)
             .map(|account| account.cookie.clone());
         let pending = cx.background_spawn(async move {
-            live::find(&directory, &platform, &input, cookie.as_deref())
+            if let Some(category) = category {
+                compat::popular_page(&directory, &platform, 1, cookie.as_deref(), Some(&category))
+            } else {
+                live::find(&directory, &platform, &input, cookie.as_deref())
+            }
         });
         cx.spawn_in(window, async move |entity, cx| {
             let result = pending.await;
@@ -990,13 +1001,15 @@ impl Home {
             return;
         };
         let platform = self.platforms[self.platform].id.clone();
+        let category = (platform == "douyin")
+            .then(|| DOUYIN_CATEGORIES[self.douyin_category].1.to_owned());
         let directory = self.options.directory.clone();
         let cookie = self
             .accounts
             .get(&platform)
             .map(|account| account.cookie.clone());
         let pending = cx.background_spawn(async move {
-            compat::popular_page(&directory, &platform, page, cookie.as_deref())
+            compat::popular_page(&directory, &platform, page, cookie.as_deref(), category.as_deref())
         });
         cx.spawn_in(window, async move |entity, cx| {
             let result = pending.await;

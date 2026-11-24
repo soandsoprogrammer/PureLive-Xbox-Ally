@@ -269,12 +269,14 @@ pub fn popular_page(
     platform: &str,
     page: u32,
     cookie: Option<&str>,
+    category: Option<&str>,
 ) -> Result<Vec<Room>, String> {
     let (reply, _) = request(
         directory,
         serde_json::json!({
             "action": "find", "platform": platform, "query": "", "page": page,
             "account_cookie": cookie,
+            "category": category,
         }),
     )?;
     Ok(reply.rooms)

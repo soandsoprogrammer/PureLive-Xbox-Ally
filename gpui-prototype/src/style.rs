@@ -614,6 +614,22 @@ impl Home {
                         )),
                     ),
             )
+            .when(self.platforms[self.platform].id == "douyin", |view| {
+                view.child(
+                    div().h_flex().items_center().gap_2()
+                        .children(DOUYIN_CATEGORIES.iter().enumerate().map(|(index, (label, _))| {
+                            control(("douyin-category", index), *label, self.douyin_category == index)
+                                .h(px(32.0))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if this.douyin_category != index {
+                                        this.douyin_category = index;
+                                        this.request_rooms(String::new(), window, cx);
+                                    }
+                                }))
+                        }))
+                        .child(div().text_sm().text_color(rgb(MUTED)).child("按平台分区顺序")),
+                )
+            })
             .when(self.room_count() == 0 && !self.status.is_empty(), |view| {
                 view.child(
                     div()

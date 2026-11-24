@@ -48,7 +48,8 @@ Future<void> main() async {
       });
     } else if (action == 'find') {
       final page = request['page'] is int ? request['page'] as int : 1;
-      final rooms = await findRooms(registry, http, platform, query, page: page)
+      final rooms = await findRooms(registry, http, platform, query, page: page,
+          category: request['category'] as String?)
           .timeout(const Duration(seconds: 24));
       await _reply({'rooms': rooms});
     } else if (action == 'play') {
@@ -179,7 +180,7 @@ Future<void> _reply(Map<String, Object?> result) async {
 }
 
 Future<List<Map<String, Object?>>> findRooms(
-  SiteRegistry registry, LiveHttp http, String platform, String text, {int page = 1}
+  SiteRegistry registry, LiveHttp http, String platform, String text, {int page = 1, String? category}
 ) async {
   if (platform == 'iptv') return _iptv(http, text);
   final links = LinkParser(registry, http);
@@ -200,6 +201,18 @@ Future<List<Map<String, Object?>>> findRooms(
     return [_room(site, await site.getRoomDetail(roomId: id), fallbackId: id)];
   }
   final number = page < 1 ? 1 : page;
+  if (platform == SiteIds.douyin && text.isEmpty && category != null && category.isNotEmpty) {
+    final name = const {'game': '游戏', 'dance': '舞蹈', 'chat': '聊天'}[category];
+    if (name == null) throw const FormatException('无法识别抖音分区');
+    final categories = await site.getCategories(1, 100);
+    final matches = categories.where((item) => item.name == name);
+    final group = matches.firstOrNull;
+    if (group == null) throw FormatException('抖音$name分区暂不可用');
+    final area = group.children.where((area) => area.areaId == group.id).firstOrNull;
+    if (area == null) throw FormatException('抖音$name分区暂不可用');
+    final rooms = await site.getCategoryRooms(area, page: number, pageSize: 24);
+    return [for (final room in rooms) if (room.roomId.isNotEmpty) _room(site, room)];
+  }
   final rooms = text.isEmpty
       ? await site.getRecommendRooms(page: number, pageSize: 24)
       : await site.searchRooms(text, page: number, pageSize: 24);
