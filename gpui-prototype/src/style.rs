@@ -1778,7 +1778,7 @@ impl Home {
     fn multiview_view(&self, slots: &[multiview::Slot], window: &Window, cx: &mut Context<Self>) -> Div {
         div().relative().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT))
             .when(self.multiview.preferences.show_titles, |view| {
-                view.child(div().h(px(self.multiview_title_height())).flex_shrink_0().px_4().py_2()
+                view.child(div().h(px(self.multiview_title_height())).flex_shrink_0().px_4().py_1()
                     .child(self.multiview_room_tabs(slots, cx)))
             })
             .when_some(self.multiview_panel(window), |view, panel| {
