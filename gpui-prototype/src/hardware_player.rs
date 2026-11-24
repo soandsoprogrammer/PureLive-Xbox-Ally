@@ -2,7 +2,7 @@ use crate::{
     Result, compat::Source, dxva, dxva_render, hls::Hls, live_flv::LiveFlv, native_audio::Audio,
     native_danmaku::Lane, playback::AudioSettings,
 };
-pub use crate::stream_input::StreamInput as Input;
+use crate::{http_file::HttpFile, stream_input::StreamInput};
 use oxideav_core::{Error, MediaType, Packet, RuntimeContext, registry::container::Demuxer};
 use oxideav_h264::avcc::AvcDecoderConfigurationRecord;
 use std::{
@@ -61,11 +61,21 @@ impl Drop for Awake {
     }
 }
 
+pub struct Input {
+    stream: StreamInput,
+    replay_start_ms: Option<i64>,
+}
+
 impl Input {
     pub fn from_source(source: &Source) -> Self {
         Self {
-            url: source.url.clone(),
-            headers: source.headers.clone(),
+            stream: StreamInput {
+                url: source.url.clone(),
+                headers: source.headers.clone(),
+            },
+            replay_start_ms: source.playback.replay_start_ms.or_else(|| {
+                (source.playback.quality.as_deref() == Some("carousel")).then_some(0)
+            }),
         }
     }
 }
@@ -229,7 +239,7 @@ fn play(window: usize, source: Input, state: &State) -> Result<()> {
     let mut context = RuntimeContext::new();
     oxideav_flv::register(&mut context);
     oxideav_mp4::register(&mut context);
-    let url = url::Url::parse(&source.url).map_err(|_| "无效的播放地址")?;
+    let url = url::Url::parse(&source.stream.url).map_err(|_| "无效的播放地址")?;
     let is_hls = url.path().to_ascii_lowercase().ends_with(".m3u8");
     let device = dxva::Device::new()?;
     if state.stopped.load(Relaxed) {
@@ -281,7 +291,7 @@ fn play_source(
             let done = &done;
             scope.spawn(move || {
                 let run = || -> Result<()> {
-                    let mut hls = Hls::open(&source)?;
+                    let mut hls = Hls::open(&source.stream)?;
                     while let Some(segment) =
                         hls.next(|| done.load(Relaxed) || state.stopped.load(Relaxed))?
                     {
@@ -326,11 +336,21 @@ fn play_source(
             result
         })?;
     } else if matches!(url.scheme(), "http" | "https") {
-        let demux = context.containers.open_demuxer(
-            "flv",
-            Box::new(LiveFlv::open(&source)?),
-            &context.codecs,
-        )?;
+        let mp4 = source.replay_start_ms.is_some() || url.path().to_ascii_lowercase().ends_with(".mp4");
+        let start = source.replay_start_ms;
+        let mut demux = if mp4 {
+            context.containers.open_demuxer("mp4", Box::new(HttpFile::open(source.stream)?), &context.codecs)?
+        } else {
+            context.containers.open_demuxer("flv", Box::new(LiveFlv::open(&source.stream)?), &context.codecs)?
+        };
+        if mp4
+            && let Some(start) = start.filter(|time| *time > 0)
+            && let Some(video) = demux.streams().iter().find(|stream| stream.params.media_type == MediaType::Video)
+        {
+            let stream = video.index;
+            let pts = oxideav_core::TimeBase::new(1, 1000).rescale(start, video.time_base);
+            demux.seek_to(stream, pts)?;
+        }
         play_packets(
             demux,
             false,
@@ -341,10 +361,11 @@ fn play_source(
             state,
         )?;
     } else {
-        return Err("当前播放器支持 HTTP/HTTPS FLV 和 HLS 直播线路".into());
+        return Err("当前播放器支持 HTTP/HTTPS FLV、HLS 和 MP4 回放".into());
     }
     Ok(())
 }
+
 
 fn render_frames(
     window: usize,

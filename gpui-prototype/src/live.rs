@@ -520,6 +520,7 @@ fn bili_playback(
     Ok((
         chosen.1.clone(),
         compat::Playback {
+            replay_start_ms: None,
             qualities,
             quality: Some(quality_id),
             quality_label: Some(quality_label),

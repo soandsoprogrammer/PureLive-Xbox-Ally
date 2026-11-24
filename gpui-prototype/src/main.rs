@@ -12,6 +12,7 @@ mod floating_panel;
 mod hardware_player;
 #[cfg(windows)]
 mod hls;
+mod http_file;
 mod live;
 mod live_flv;
 mod multiview;

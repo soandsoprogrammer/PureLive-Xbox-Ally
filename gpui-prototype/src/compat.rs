@@ -34,6 +34,7 @@ pub struct Choice {
 #[derive(Default, Deserialize)]
 #[serde(default)]
 pub struct Playback {
+    pub replay_start_ms: Option<i64>,
     pub qualities: Vec<Choice>,
     pub quality: Option<String>,
     pub quality_label: Option<String>,
