@@ -1,7 +1,4 @@
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, TryRecvError};
 
@@ -19,9 +16,6 @@ const ROOM_ACTIONS: [usize; 9] = [0, 1, 6, 2, 3, 4, 7, 5, 8];
 const DIRECT_ACTIONS: [usize; 5] = [0, 1, 6, 2, 8];
 const HIDE_DELAY: Duration = Duration::from_secs(5);
 const CHAT_TICK: Duration = Duration::from_millis(16);
-const DANMAKU_SPEED: f32 = 210.0;
-const DANMAKU_PENDING_LIMIT: usize = 48;
-const DANMAKU_PENDING_MAX_WAIT: Duration = Duration::from_secs(5);
 const SUPER_CHAT_INTERVAL: Duration = Duration::from_secs(30);
 const SUPER_CHAT_LIMIT: usize = 100;
 
@@ -180,16 +174,7 @@ pub(super) struct PlaybackUi {
     hide_at: Option<Instant>,
     chat: Option<compat::Chat>,
     chat_updates: Option<Task<()>>,
-    messages: [Option<FlyingMessage>; 5],
-    pending: VecDeque<FlyingMessage>,
-}
-
-struct FlyingMessage {
-    parts: Vec<emotes::Segment>,
-    translation: Option<crate::plugins::Text>,
-    width: i32,
-    time: Instant,
-    duration: Duration,
+    danmaku: danmaku::Overlay,
 }
 
 impl PlaybackUi {
@@ -683,10 +668,6 @@ impl Home {
     fn toggle_chat(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.danmaku_enabled = !self.danmaku_enabled;
         self.playback.chat_enabled = self.danmaku_enabled && self.playback.options.chat;
-        mark(
-            &self.log,
-            format!("danmaku_enabled={}", self.danmaku_enabled),
-        );
         self.playback.update_chat_filter();
         if self.playback.chat_enabled {
             if self.playback.chat.is_some() {
@@ -705,14 +686,17 @@ impl Home {
                 "弹幕已关闭".into()
             };
         }
-        if save_preference(
+        if self.save_danmaku_preference().is_err() {
+            self.status = "弹幕已切换，无法保存到本地".into();
+        }
+    }
+
+    pub(super) fn save_danmaku_preference(&self) -> std::io::Result<()> {
+        mark(&self.log, format!("danmaku_enabled={}", self.danmaku_enabled));
+        save_preference(
             &self.follows_path.with_file_name("danmaku.json"),
             &self.danmaku_enabled,
         )
-        .is_err()
-        {
-            self.status = "弹幕已切换，无法保存到本地".into();
-        }
     }
 
     pub(super) fn stop_chat(&mut self) {
@@ -730,8 +714,7 @@ impl Home {
         if let Some(Content::Video { player, .. }) = &self.content {
             player.set_danmaku(Vec::new());
         }
-        self.playback.messages.fill_with(|| None);
-        self.playback.pending.clear();
+        self.playback.danmaku = danmaku::Overlay::default();
     }
 
     pub(super) fn connect_chat(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -804,61 +787,10 @@ impl Home {
         cx: &mut Context<Self>,
     ) -> Option<bool> {
         let now = Instant::now();
-        let mut changed = false;
-        for message in &mut self.playback.messages {
-            if message
-                .as_ref()
-                .is_some_and(|message| now.duration_since(message.time) >= message.duration)
-            {
-                *message = None;
-                changed = true;
-            }
-        }
-        for message in self
-            .playback
-            .messages
-            .iter_mut()
-            .flatten()
-            .chain(self.playback.pending.iter_mut())
-        {
-            if let Some(input) = &message.translation
-                && let Some(translated) = self.plugins.output(input)
-            {
-                message.translation = None;
-                let part = emotes::Segment::Text(format!(" · {translated}"));
-                let extra_width = part.width();
-                message.duration += message
-                    .duration
-                    .mul_f32(extra_width as f32 / (1280.0 + message.width as f32));
-                message.width += extra_width;
-                message.parts.push(part);
-                changed = true;
-            }
-        }
+        let mut changed = self.playback.danmaku.advance(now, &self.plugins);
         let mut closed = None;
         let mut super_chats = Vec::new();
         let mut pictures = Vec::new();
-        while self
-            .playback
-            .pending
-            .front()
-            .is_some_and(|message| now.duration_since(message.time) > DANMAKU_PENDING_MAX_WAIT)
-        {
-            self.playback.pending.pop_front();
-        }
-        for lane in self
-            .playback
-            .messages
-            .iter_mut()
-            .filter(|lane| lane.is_none())
-        {
-            let Some(mut message) = self.playback.pending.pop_front() else {
-                break;
-            };
-            message.time = now;
-            *lane = Some(message);
-            changed = true;
-        }
         let platform = self
             .active_room
             .as_ref()
@@ -898,41 +830,9 @@ impl Home {
                         && !self.playback.paused
                         && let Some(text) = event.text
                     {
-                        let parts = emotes::segments(platform, &text, &event.emotes);
-                        if parts.is_empty() {
-                            continue;
-                        }
-                        for part in &parts {
-                            if let emotes::Segment::Picture { source, .. } = part {
-                                pictures.push(source.clone());
-                            }
-                        }
-                        let width = parts.iter().map(emotes::Segment::width).sum::<i32>();
-                        let duration = Duration::from_secs_f32(
-                            ((1280.0 + width as f32) / DANMAKU_SPEED).clamp(4.0, 14.0),
+                        changed |= self.playback.danmaku.push(
+                            now, platform, &text, &event.emotes, &self.plugins, &mut pictures,
                         );
-                        let message = FlyingMessage {
-                            translation: self.plugins.request(
-                                crate::plugins::Surface::Danmaku,
-                                platform,
-                                &text,
-                            ),
-                            parts,
-                            width,
-                            time: now,
-                            duration,
-                        };
-                        if let Some(lane) = self
-                            .playback
-                            .messages
-                            .iter_mut()
-                            .find(|lane| lane.is_none())
-                        {
-                            *lane = Some(message);
-                            changed = true;
-                        } else if self.playback.pending.len() < DANMAKU_PENDING_LIMIT {
-                            self.playback.pending.push_back(message);
-                        }
                     }
                 }
                 Err(TryRecvError::Empty) => break,
@@ -967,6 +867,14 @@ impl Home {
             cx.notify();
             return None;
         }
+        self.load_danmaku_emotes(pictures, cx);
+        if changed {
+            self.draw_chat();
+        }
+        Some(self.playback.danmaku.active())
+    }
+
+    pub(super) fn load_danmaku_emotes(&mut self, pictures: Vec<emotes::Source>, cx: &mut Context<Self>) {
         for source in pictures {
             if self.emotes.begin(&source) {
                 let requested = source.clone();
@@ -975,62 +883,22 @@ impl Home {
                     let bitmap = task.await;
                     let _ = entity.update(cx, |this, _| {
                         this.emotes.finish(source, bitmap);
-                        this.draw_chat();
+                        if this.multiview.slots.is_some() {
+                            this.draw_multiview_chat();
+                        } else {
+                            this.draw_chat();
+                        }
                     });
                 })
                 .detach();
             }
         }
-        let animating = self.playback.messages.iter().any(Option::is_some);
-        if changed {
-            self.draw_chat();
-        }
-        Some(animating)
     }
 
     fn draw_chat(&self) {
-        let Some(Content::Video { player, .. }) = &self.content else {
-            return;
-        };
-        let lanes = self
-            .playback
-            .messages
-            .iter()
-            .enumerate()
-            .filter_map(|(lane, message)| {
-                let message = message.as_ref()?;
-                let mut offset = 0.0;
-                let parts = message
-                    .parts
-                    .iter()
-                    .map(|segment| {
-                        use crate::native_danmaku::Part;
-                        let part = match segment {
-                            emotes::Segment::Text(text) => {
-                                Part::Text(text.encode_utf16().collect())
-                            }
-                            emotes::Segment::Picture { source, alt } => {
-                                self.emotes.get(source).map_or_else(
-                                    || Part::Text(alt.encode_utf16().collect()),
-                                    |bitmap| Part::Image(bitmap.clone()),
-                                )
-                            }
-                        };
-                        let positioned = (offset, part);
-                        offset += segment.width() as f32;
-                        positioned
-                    })
-                    .collect();
-                Some(crate::native_danmaku::Lane {
-                    started: message.time,
-                    duration: message.duration,
-                    width: message.width as f32,
-                    y: 30.0 + 39.0 * lane as f32,
-                    parts,
-                })
-            })
-            .collect();
-        player.set_danmaku(lanes);
+        if let Some(Content::Video { player, .. }) = &self.content {
+            self.playback.danmaku.draw(player, &self.emotes);
+        }
     }
 }
 

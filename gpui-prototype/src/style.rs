@@ -1767,6 +1767,8 @@ impl Home {
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_multiview_titles(window, cx))))
                 .child(control("multiview-all-audio", "全部声音", self.multiview.all_audio)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_all_audio(cx))))
+                .child(control("multiview-danmaku", "弹幕", self.danmaku_enabled)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_chat(cx))))
                 .child(div().text_sm().text_color(rgb(MUTED)).child(
                     if self.multiview.notice.is_empty() { "拖动房间换位".to_owned() } else { self.multiview.notice.clone() },
                 )))

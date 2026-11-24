@@ -2,6 +2,7 @@
 
 mod account;
 mod compat;
+mod danmaku;
 #[cfg(windows)]
 mod dxva;
 #[cfg(windows)]
@@ -1855,6 +1856,7 @@ impl Render for Home {
                         "right" if this.multiview.settings_open => this.step_multiview_layout(true, window, cx),
                         "enter" if this.multiview.settings_open && !event.is_held => this.toggle_multiview_titles(window, cx),
                         "escape" => this.close_multiview(window, cx),
+                        "d" if !event.is_held => this.toggle_multiview_chat(cx),
                         "a" if !event.is_held => this.toggle_multiview_all_audio(cx),
                         "left" => this.multiview_audio((this.multiview.audible + count - 1) % count, cx),
                         "right" => this.multiview_audio((this.multiview.audible + 1) % count, cx),

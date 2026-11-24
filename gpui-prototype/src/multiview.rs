@@ -38,7 +38,25 @@ struct Video {
     player: Player,
     surface: Surface,
     playback: compat::Playback,
+    chat: Option<compat::Chat>,
+    danmaku: danmaku::Overlay,
+    danmaku_reported: bool,
     _lease: Option<compat::Bridge>,
+}
+
+impl Video {
+    fn open_chat(&mut self, directory: &Path, room: &Room, cookie: Option<&str>) -> Result<(), String> {
+        if self.playback.chat && self.chat.is_none() {
+            self.chat = Some(compat::chat(directory, room, cookie, true)?);
+        }
+        Ok(())
+    }
+
+    fn close_chat(&mut self) {
+        self.chat = None;
+        self.danmaku = danmaku::Overlay::default();
+        self.player.set_danmaku(Vec::new());
+    }
 }
 
 impl Slot {
@@ -174,7 +192,17 @@ impl Home {
                     let surface = Surface::video_tile(window, title_height, tile, panel)?;
                     let player = Player::start(surface.id(), hardware_player::Input::from_source(&source), false, audio)
                         .map_err(|error| error.to_string())?;
-                    slot.video = Some(Video { player, surface, playback: source.playback, _lease: source.lease });
+                    let mut video = Video {
+                        player, surface, playback: source.playback, _lease: source.lease,
+                        chat: None, danmaku: danmaku::Overlay::default(), danmaku_reported: false,
+                    };
+                    if this.danmaku_enabled {
+                        let cookie = this.accounts.get(&slot.room.platform).map(|account| account.cookie.as_str());
+                        if let Err(error) = video.open_chat(&this.options.directory, &slot.room, cookie) {
+                            mark(&this.log, error);
+                        }
+                    }
+                    slot.video = Some(video);
                     Ok(())
                 }) {
                     Ok(()) => String::new(),
@@ -207,6 +235,76 @@ impl Home {
     pub(super) fn toggle_multiview_all_audio(&mut self, cx: &mut Context<Self>) {
         self.multiview.all_audio = !self.multiview.all_audio;
         self.apply_multiview_audio(cx);
+    }
+
+    pub(super) fn toggle_multiview_chat(&mut self, cx: &mut Context<Self>) {
+        self.danmaku_enabled = !self.danmaku_enabled;
+        if self.save_danmaku_preference().is_err() {
+            self.multiview.notice = "弹幕已切换，无法保存到本地".into();
+        }
+        if let Some(slots) = &mut self.multiview.slots {
+            for slot in slots {
+                let Some(video) = &mut slot.video else { continue };
+                if self.danmaku_enabled {
+                    let cookie = self.accounts.get(&slot.room.platform).map(|account| account.cookie.as_str());
+                    if let Err(error) = video.open_chat(&self.options.directory, &slot.room, cookie) {
+                        mark(&self.log, error);
+                    }
+                } else {
+                    video.close_chat();
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn draw_multiview_chat(&self) {
+        if let Some(slots) = &self.multiview.slots {
+            for video in slots.iter().filter_map(|slot| slot.video.as_ref()) {
+                if video.danmaku.active() {
+                    video.danmaku.draw(&video.player, &self.emotes);
+                }
+            }
+        }
+    }
+
+    fn update_multiview_chat(&mut self, cx: &mut Context<Self>) {
+        let Some(slots) = &mut self.multiview.slots else { return };
+        let now = Instant::now();
+        let mut pictures = Vec::new();
+        for slot in slots {
+            let Some(video) = &mut slot.video else { continue };
+            let Some(chat) = &video.chat else { continue };
+            let mut changed = video.danmaku.advance(now, &self.plugins);
+            let mut disconnected = false;
+            for _ in 0..32 {
+                let event = match chat.events.try_recv() {
+                    Ok(event) if event.error.is_none() && event.state.as_deref() != Some("closed") => event,
+                    Err(async_channel::TryRecvError::Empty) => break,
+                    _ => {
+                        disconnected = true;
+                        break;
+                    }
+                };
+                if let Some(text) = event.text {
+                    changed |= video.danmaku.push(
+                        now, &slot.room.platform, &text, &event.emotes, &self.plugins, &mut pictures,
+                    );
+                }
+            }
+            if disconnected {
+                video.close_chat();
+                continue;
+            }
+            if changed {
+                video.danmaku.draw(&video.player, &self.emotes);
+            }
+            if self.log.is_some() && !video.danmaku_reported && video.player.danmaku_rendered().0 {
+                video.danmaku_reported = true;
+                mark(&self.log, format!("multiview_danmaku_rendered={}/{}", slot.room.platform, slot.room.id));
+            }
+        }
+        self.load_danmaku_emotes(pictures, cx);
     }
 
     fn apply_multiview_audio(&self, cx: &mut Context<Self>) {
@@ -324,6 +422,9 @@ impl Home {
         }
         for (room, finished) in continuations {
             self.load_multiview_source(room, self.multiview.generation, Some(finished), window, cx);
+        }
+        if self.danmaku_enabled {
+            self.update_multiview_chat(cx);
         }
     }
 }
