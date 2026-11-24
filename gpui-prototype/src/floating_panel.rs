@@ -36,15 +36,16 @@ pub fn room_list(width: f32, height: f32) -> Bounds {
     }
 }
 
-pub fn multiview_settings(width: f32, height: f32) -> Bounds {
+pub fn multiview_settings(width: f32, height: f32, title_height: f32) -> Bounds {
     let width = width.max(1.0);
     let height = height.max(1.0);
     let margin = 12.0_f32.min(width / 4.0).min(height / 4.0);
     let panel_width = 500.0_f32.min(width - margin * 2.0);
-    let panel_height = 174.0_f32.min(height - margin * 2.0);
+    let preferred_height: f32 = if title_height > 0.0 { 188.0 } else { 236.0 };
+    let panel_height = preferred_height.min(height - margin * 2.0);
     Bounds {
         x: (width - panel_width) / 2.0,
-        y: 110.0_f32.min(height - panel_height - margin).max(margin),
+        y: (title_height + margin).min(height - panel_height - margin).max(margin),
         width: panel_width,
         height: panel_height,
         radius: 12.0_f32.min(panel_width / 2.0).min(panel_height / 2.0),

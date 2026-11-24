@@ -1675,7 +1675,7 @@ impl Home {
                 if pressed & XINPUT_GAMEPAD_B != 0 {
                     self.toggle_multiview_settings(window, cx);
                 } else if pressed & XINPUT_GAMEPAD_A != 0 {
-                    self.toggle_multiview_titles(cx);
+                    self.toggle_multiview_titles(window, cx);
                 } else if pressed & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT) != 0 {
                     self.step_multiview_layout(pressed & XINPUT_GAMEPAD_DPAD_RIGHT != 0, window, cx);
                 }
@@ -1853,7 +1853,7 @@ impl Render for Home {
                         "escape" if this.multiview.settings_open => this.toggle_multiview_settings(window, cx),
                         "left" if this.multiview.settings_open => this.step_multiview_layout(false, window, cx),
                         "right" if this.multiview.settings_open => this.step_multiview_layout(true, window, cx),
-                        "enter" if this.multiview.settings_open && !event.is_held => this.toggle_multiview_titles(cx),
+                        "enter" if this.multiview.settings_open && !event.is_held => this.toggle_multiview_titles(window, cx),
                         "escape" => this.close_multiview(window, cx),
                         "a" if !event.is_held => this.toggle_multiview_all_audio(cx),
                         "left" => this.multiview_audio((this.multiview.audible + count - 1) % count, cx),

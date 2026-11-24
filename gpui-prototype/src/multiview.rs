@@ -1,8 +1,6 @@
 use super::*;
 use plugins::multiview::{Layout, MAX_ROOMS, Tile};
 
-pub(super) const TOOLBAR_HEIGHT: f32 = 96.0;
-
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub(super) struct Preferences {
@@ -50,6 +48,10 @@ impl Slot {
 }
 
 impl Home {
+    pub(super) fn multiview_title_height(&self) -> f32 {
+        if self.multiview.preferences.show_titles { 48.0 } else { 0.0 }
+    }
+
     pub(super) fn multiview_plugin(&self) -> Option<PathBuf> {
         let path = self.follows_path.with_file_name("plugins").join("purelive-multiview.exe");
         path.is_file().then_some(path)
@@ -163,12 +165,13 @@ impl Home {
                 let Some(index) = this.multiview.slots.as_ref()
                     .and_then(|slots| slots.iter().position(|slot| slot.room.key() == key)) else { return };
                 let panel = this.multiview_panel(window);
+                let title_height = this.multiview_title_height();
                 let muted = this.audio.muted || (!this.multiview.all_audio && this.multiview.audible != index);
                 let audio = AudioSettings { muted, ..this.audio };
                 let Some(slot) = this.multiview.slots.as_mut().and_then(|slots| slots.get_mut(index)) else { return };
                 slot.status = match result.and_then(|source| {
                     let tile = slot.tile.ok_or("画面位置暂不可用")?;
-                    let surface = Surface::video_tile(window, TOOLBAR_HEIGHT, tile, panel)?;
+                    let surface = Surface::video_tile(window, title_height, tile, panel)?;
                     let player = Player::start(surface.id(), hardware_player::Input::from_source(&source), false, audio)
                         .map_err(|error| error.to_string())?;
                     slot.video = Some(Video { player, surface, playback: source.playback, _lease: source.lease });
@@ -225,9 +228,10 @@ impl Home {
         cx.notify();
     }
 
-    pub(super) fn toggle_multiview_titles(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn toggle_multiview_titles(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.multiview.preferences.show_titles = !self.multiview.preferences.show_titles;
         self.save_multiview_preferences();
+        self.multiview_resize(window);
         cx.notify();
     }
 
@@ -284,15 +288,17 @@ impl Home {
             return None;
         }
         let (width, height) = native::client_size(window);
-        Some(floating_panel::multiview_settings(width, height))
+        Some(floating_panel::multiview_settings(width, height, self.multiview_title_height()))
     }
 
 
     pub(super) fn multiview_resize(&self, window: &Window) {
         if let Some(slots) = &self.multiview.slots {
+            let title_height = self.multiview_title_height();
+            let panel = self.multiview_panel(window);
             for slot in slots {
                 if let (Some(video), Some(tile)) = (&slot.video, slot.tile) {
-                    video.surface.resize_tile(window, TOOLBAR_HEIGHT, tile, self.multiview_panel(window));
+                    video.surface.resize_tile(window, title_height, tile, panel);
                 }
             }
         }
