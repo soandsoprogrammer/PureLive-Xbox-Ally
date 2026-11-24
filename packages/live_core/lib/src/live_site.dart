@@ -120,6 +120,7 @@ final class LivePlayUrlResolution {
     this.appliedQuality,
     this.start,
   }) : lines = List.unmodifiable([for (final url in urls) LivePlayLine(url)]),
+       replayId = null,
        sourceQueryPolicies = const {},
        sourceVariantSelectors = const {},
        inputRecipe = null;
@@ -134,6 +135,7 @@ final class LivePlayUrlResolution {
     this.qualityUnconfirmed = false,
     this.appliedQuality,
     this.start,
+    this.replayId,
     Map<String, HlsVariantSelector> sourceVariantSelectors = const {},
   }) : lines = List.unmodifiable(lines),
        sourceQueryPolicies = const {},
@@ -148,6 +150,7 @@ final class LivePlayUrlResolution {
     this.appliedQuality,
     this.start,
   }) : inputRecipe = input,
+       replayId = null,
        lines = const [],
        sourceQueryPolicies = const {},
        sourceVariantSelectors = const {};
@@ -160,6 +163,7 @@ final class LivePlayUrlResolution {
     this.qualityUnconfirmed = false,
     this.appliedQuality,
     this.start,
+    this.replayId,
   }) : inputRecipe = null;
 
   /// URLs with HLS query policies, validated together: each key must be one
@@ -188,6 +192,7 @@ final class LivePlayUrlResolution {
     bool qualityUnconfirmed = false,
     LivePlayQuality? appliedQuality,
     Duration? start,
+    String? replayId,
   }) {
     final normalized = normalizePlayLines(lines);
     final urls = {for (final line in normalized) line.url};
@@ -207,6 +212,7 @@ final class LivePlayUrlResolution {
       qualityUnconfirmed: qualityUnconfirmed,
       appliedQuality: appliedQuality,
       start: start,
+      replayId: replayId,
     );
   }
 
@@ -256,6 +262,9 @@ final class LivePlayUrlResolution {
   /// for a live stream. `PlaybackPlan.of(start:)` takes it.
   final Duration? start;
 
+  /// Stable identifier of the current replay video, independent of its CDN URL.
+  final String? replayId;
+
   /// Stream URLs, one per line.
   List<String> get urls => [for (final line in lines) line.url];
 
@@ -276,6 +285,7 @@ final class LivePlayUrlResolution {
           qualityUnconfirmed: qualityUnconfirmed,
           appliedQuality: appliedQuality,
           start: start,
+          replayId: replayId,
         );
 }
 

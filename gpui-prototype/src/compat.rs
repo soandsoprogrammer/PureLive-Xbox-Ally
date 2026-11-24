@@ -34,6 +34,8 @@ pub struct Choice {
 #[derive(Default, Deserialize)]
 #[serde(default)]
 pub struct Playback {
+    pub carousel: bool,
+    pub replay_id: Option<String>,
     pub replay_start_ms: Option<i64>,
     pub qualities: Vec<Choice>,
     pub quality: Option<String>,
@@ -43,6 +45,18 @@ pub struct Playback {
     pub chat: bool,
     pub super_chat: bool,
     pub super_chat_board: bool,
+}
+
+impl Playback {
+    pub fn is_carousel(&self) -> bool {
+        self.carousel || self.mp4_start().is_some()
+    }
+
+    pub fn mp4_start(&self) -> Option<i64> {
+        self.replay_start_ms.or_else(|| {
+            (self.quality.as_deref() == Some("carousel")).then_some(0)
+        })
+    }
 }
 
 #[derive(Clone, Default)]

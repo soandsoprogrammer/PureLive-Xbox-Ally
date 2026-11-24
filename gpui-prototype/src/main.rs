@@ -1175,6 +1175,16 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.load_room_source(selection, None, window, cx);
+    }
+
+    fn load_room_source(
+        &mut self,
+        selection: compat::Selection,
+        finished: Option<live::FinishedReplay>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(room) = self.active_room.clone() else {
             return;
         };
@@ -1182,7 +1192,10 @@ impl Home {
         let request = self.request_id;
         self.reopen_video = false;
         self.playback.busy = true;
-        self.status = if self.content.is_some() {
+        let continuing = finished.is_some();
+        self.status = if continuing {
+            "正在接续回放…"
+        } else if self.content.is_some() {
             "正在切换播放源…"
         } else {
             "正在连接直播…"
@@ -1199,7 +1212,11 @@ impl Home {
         let selected = selection.clone();
         let room_key = room.key();
         let pending = cx.background_spawn(async move {
-            live::resolve(&directory, &room, cookie.as_deref(), &selected)
+            if let Some(finished) = finished {
+                live::continue_carousel(&directory, &room, cookie.as_deref(), &finished)
+            } else {
+                live::resolve(&directory, &room, cookie.as_deref(), &selected)
+            }
         });
         cx.spawn_in(window, async move |entity, cx| {
             let result = pending.await;
@@ -1227,6 +1244,7 @@ impl Home {
                             this.status = format!("平台当前提供 {label}");
                         } else if this.status.starts_with("正在切换")
                             || this.status.starts_with("正在连接直播")
+                            || continuing
                         {
                             this.status.clear();
                         }
@@ -1240,7 +1258,7 @@ impl Home {
                         this.status = error;
                         this.show_controls(window, cx);
                         mark(&this.log, &this.status);
-                        if this.content.is_none() {
+                        if this.content.is_none() && !continuing {
                             this.check_room_statuses(vec![room_key], true, window, cx);
                         }
                     }
@@ -1406,7 +1424,7 @@ impl Home {
         }
         self.sync_gamepad(window, cx);
         if self.multiview.slots.is_some() {
-            self.multiview_tick(cx);
+            self.multiview_tick(window, cx);
             return;
         }
         if self.pane == Pane::Popular
@@ -1485,12 +1503,19 @@ impl Home {
             }
         }
         let end = match &self.content {
-            Some(Content::Video { player, .. }) => player.take_end(),
+            Some(Content::Video { player, .. }) => player.take_end().map(|end| (end, player.media_position_ms())),
             _ => None,
         };
-        if let Some(end) = end {
+        if let Some((end, position)) = end {
             self.release_chat();
             self.content = None;
+            if self.playback.options.is_carousel() && matches!(end, PlaybackEnd::Eof) {
+                if !self.playback.busy {
+                    let finished = live::FinishedReplay::new(&self.playback.options, position);
+                    self.load_room_source(compat::Selection::default(), Some(finished), window, cx);
+                }
+                return;
+            }
             self.status = match end {
                 PlaybackEnd::Eof => "播放已结束，可刷新或更换线路".into(),
                 PlaybackEnd::Failed(error) => {

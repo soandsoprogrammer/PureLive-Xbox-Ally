@@ -328,7 +328,9 @@ Future<({MediaInput input, Map<String, Object?> options})> _open(
       'chat': danmakuFactories.containsKey(site.id),
       'super_chat': site.hasSuperChats,
       'super_chat_board': _hasSuperChatBoard(site),
+      if (site.id == SiteIds.bilibili && broadcastStatus(room) == 'replay') 'carousel': true,
       if (site.id == SiteIds.bilibili && result.start != null) 'replay_start_ms': result.start!.inMilliseconds,
+      if (result.replayId case final id?) 'replay_id': id,
     };
     if (result.inputRecipe case final recipe?) {
       if (lineId != null && lineId != 'recipe') throw const FormatException('该线路已不可用');

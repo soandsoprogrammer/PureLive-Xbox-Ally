@@ -39,6 +39,7 @@ pub(super) struct Slot {
 struct Video {
     player: Player,
     surface: Surface,
+    playback: compat::Playback,
     _lease: Option<compat::Bridge>,
 }
 
@@ -126,42 +127,59 @@ impl Home {
 
     fn start_multiview_tiles(&mut self, tiles: Vec<Tile>, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(slots) = &mut self.multiview.slots else { return };
-        for (slot, tile) in slots.iter_mut().zip(tiles) {
+        let rooms: Vec<_> = slots.iter_mut().zip(tiles).map(|(slot, tile)| {
             slot.tile = Some(tile);
-            let room = slot.room.clone();
-            let key = room.key();
-            let directory = self.options.directory.clone();
-            let cookie = self.accounts.get(&room.platform).map(|account| account.cookie.clone());
-            let pending = cx.background_spawn(async move {
-                live::resolve(&directory, &room, cookie.as_deref(), &compat::Selection::default())
-            });
-            cx.spawn_in(window, async move |entity, cx| {
-                let result = pending.await;
-                let _ = entity.update_in(cx, |this, window, cx| {
-                    if this.multiview.generation != generation {
-                        return;
-                    }
-                    let Some(index) = this.multiview.slots.as_ref()
-                        .and_then(|slots| slots.iter().position(|slot| slot.room.key() == key)) else { return };
-                    let panel = this.multiview_panel(window);
-                    let muted = this.audio.muted || (!this.multiview.all_audio && this.multiview.audible != index);
-                    let audio = AudioSettings { muted, ..this.audio };
-                    let Some(slot) = this.multiview.slots.as_mut().and_then(|slots| slots.get_mut(index)) else { return };
-                    slot.status = match result.and_then(|mut source| {
-                        let tile = slot.tile.ok_or("画面位置暂不可用")?;
-                        let surface = Surface::video_tile(window, TOOLBAR_HEIGHT, tile, panel)?;
-                        let player = Player::start(surface.id(), hardware_player::Input::from_source(&source), false, audio)
-                            .map_err(|error| error.to_string())?;
-                        slot.video = Some(Video { player, surface, _lease: source.lease.take() });
-                        Ok(())
-                    }) {
-                        Ok(()) => String::new(),
-                        Err(error) => error,
-                    };
-                    cx.notify();
-                });
-            }).detach();
+            slot.room.clone()
+        }).collect();
+        for room in rooms {
+            self.load_multiview_source(room, generation, None, window, cx);
         }
+    }
+
+    fn load_multiview_source(
+        &self,
+        room: Room,
+        generation: u64,
+        finished: Option<live::FinishedReplay>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = room.key();
+        let directory = self.options.directory.clone();
+        let cookie = self.accounts.get(&room.platform).map(|account| account.cookie.clone());
+        let pending = cx.background_spawn(async move {
+            if let Some(finished) = finished {
+                live::continue_carousel(&directory, &room, cookie.as_deref(), &finished)
+            } else {
+                live::resolve(&directory, &room, cookie.as_deref(), &compat::Selection::default())
+            }
+        });
+        cx.spawn_in(window, async move |entity, cx| {
+            let result = pending.await;
+            let _ = entity.update_in(cx, |this, window, cx| {
+                if this.multiview.generation != generation {
+                    return;
+                }
+                let Some(index) = this.multiview.slots.as_ref()
+                    .and_then(|slots| slots.iter().position(|slot| slot.room.key() == key)) else { return };
+                let panel = this.multiview_panel(window);
+                let muted = this.audio.muted || (!this.multiview.all_audio && this.multiview.audible != index);
+                let audio = AudioSettings { muted, ..this.audio };
+                let Some(slot) = this.multiview.slots.as_mut().and_then(|slots| slots.get_mut(index)) else { return };
+                slot.status = match result.and_then(|source| {
+                    let tile = slot.tile.ok_or("画面位置暂不可用")?;
+                    let surface = Surface::video_tile(window, TOOLBAR_HEIGHT, tile, panel)?;
+                    let player = Player::start(surface.id(), hardware_player::Input::from_source(&source), false, audio)
+                        .map_err(|error| error.to_string())?;
+                    slot.video = Some(Video { player, surface, playback: source.playback, _lease: source.lease });
+                    Ok(())
+                }) {
+                    Ok(()) => String::new(),
+                    Err(error) => error,
+                };
+                cx.notify();
+            });
+        }).detach();
     }
 
     pub(super) fn close_multiview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -280,17 +298,26 @@ impl Home {
         }
     }
 
-    pub(super) fn multiview_tick(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn multiview_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(slots) = &mut self.multiview.slots else { return };
+        let mut continuations = Vec::new();
         for slot in slots {
-            if let Some(end) = slot.video.as_ref().and_then(|video| video.player.take_end()) {
-                slot.video = None;
-                slot.status = match end {
-                    PlaybackEnd::Eof => "直播已结束".into(),
-                    PlaybackEnd::Failed(error) => error,
-                };
-                cx.notify();
-            }
+            let Some(video) = &slot.video else { continue };
+            let Some(end) = video.player.take_end() else { continue };
+            slot.status = match end {
+                PlaybackEnd::Eof if video.playback.is_carousel() => {
+                    let finished = live::FinishedReplay::new(&video.playback, video.player.media_position_ms());
+                    continuations.push((slot.room.clone(), finished));
+                    "正在接续回放…".into()
+                }
+                PlaybackEnd::Eof => "直播已结束".into(),
+                PlaybackEnd::Failed(error) => error,
+            };
+            slot.video = None;
+            cx.notify();
+        }
+        for (room, finished) in continuations {
+            self.load_multiview_source(room, self.multiview.generation, Some(finished), window, cx);
         }
     }
 }

@@ -577,6 +577,7 @@ abstract final class BilibiliApi {
     String body, {
     required String bvid,
     required Duration start,
+    int? cid,
     int status = 200,
     String? cookie,
   }) {
@@ -603,6 +604,7 @@ abstract final class BilibiliApi {
       ],
       appliedQualityData: carouselQualityId,
       start: start,
+      replayId: cid == null ? null : '$bvid/$cid',
     );
   }
 

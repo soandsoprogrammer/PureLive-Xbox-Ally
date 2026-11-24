@@ -73,9 +73,7 @@ impl Input {
                 url: source.url.clone(),
                 headers: source.headers.clone(),
             },
-            replay_start_ms: source.playback.replay_start_ms.or_else(|| {
-                (source.playback.quality.as_deref() == Some("carousel")).then_some(0)
-            }),
+            replay_start_ms: source.playback.mp4_start(),
         }
     }
 }
@@ -94,6 +92,7 @@ struct State {
     audio_frames: AtomicU64,
     dropped: AtomicU64,
     position_ms: AtomicU64,
+    media_position_ms: AtomicU64,
     danmaku: Mutex<Arc<Vec<Lane>>>,
     text_drawn: AtomicBool,
     emote_drawn: AtomicBool,
@@ -142,6 +141,10 @@ impl HardwarePlayer {
     }
     pub fn take_end(&self) -> Option<End> {
         self.state.end.lock().unwrap().take()
+    }
+
+    pub fn media_position_ms(&self) -> u64 {
+        self.state.media_position_ms.load(Relaxed)
     }
 
     pub fn set_danmaku(&self, lanes: Vec<Lane>) {
@@ -282,7 +285,8 @@ fn play_source(
     frames: &SyncSender<dxva::RenderFrame>,
     state: &State,
 ) -> Result<()> {
-    let mut clock = Clock::default();
+    let mp4 = source.replay_start_ms.is_some() || url.path().to_ascii_lowercase().ends_with(".mp4");
+    let mut clock = Clock { buffered: mp4, ..Clock::default() };
     let mut output = Audio::default();
     if is_hls {
         let done = AtomicBool::new(false);
@@ -336,7 +340,6 @@ fn play_source(
             result
         })?;
     } else if matches!(url.scheme(), "http" | "https") {
-        let mp4 = source.replay_start_ms.is_some() || url.path().to_ascii_lowercase().ends_with(".mp4");
         let start = source.replay_start_ms;
         let mut demux = if mp4 {
             context.containers.open_demuxer("mp4", Box::new(HttpFile::open(source.stream)?), &context.codecs)?
@@ -565,6 +568,7 @@ fn strip_adts(packet: &mut Packet) -> Result<Vec<u8>> {
 struct Clock {
     anchor: Option<(i64, Instant)>,
     first_pts: Option<i64>,
+    buffered: bool,
 }
 
 impl Clock {
@@ -592,6 +596,7 @@ impl Clock {
         self.wait_while_paused(state, audio);
         if let Some(pts) = frame.pts {
             let first = *self.first_pts.get_or_insert(pts);
+            state.media_position_ms.store(pts.max(0) as u64 / 10_000, Relaxed);
             state
                 .position_ms
                 .store(pts.saturating_sub(first).max(0) as u64 / 10_000, Relaxed);
@@ -608,6 +613,9 @@ impl Clock {
                 self.anchor = Some((pts, now));
             } else if let Some(wait) = deadline.checked_duration_since(now) {
                 sleep_until(deadline, wait.min(Duration::from_millis(200)));
+            } else if self.buffered && distance > Duration::from_millis(80) {
+                // Resume on the next frame after an MP4 download stalls.
+                self.anchor = Some((pts, now));
             } else if now.duration_since(deadline) > Duration::from_millis(600) {
                 // Far behind the live edge (network burst or stall): jump to the
                 // newest frame instead of grinding through stale ones one by one.

@@ -1,22 +1,55 @@
 use crate::stream_input::StreamInput;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::{sync::Arc, thread::{self, JoinHandle}};
 
 const BLOCK: u64 = 1024 * 1024;
 
 pub(super) struct HttpFile {
-    source: StreamInput,
+    source: Arc<StreamInput>,
     agent: ureq::Agent,
     size: u64,
     position: u64,
     start: u64,
     bytes: Vec<u8>,
+    next: Option<(u64, JoinHandle<io::Result<Vec<u8>>>)>,
 }
 
 impl HttpFile {
     pub(super) fn open(source: StreamInput) -> io::Result<Self> {
         let agent = source.agent();
         let (size, bytes) = fetch(&source, &agent, 0, BLOCK - 1, None)?;
-        Ok(Self { source, agent, size, position: 0, start: 0, bytes })
+        Ok(Self { source: Arc::new(source), agent, size, position: 0, start: 0, bytes, next: None })
+    }
+
+    fn read_block(&mut self, start: u64, end: u64) -> io::Result<Vec<u8>> {
+        if self.next.as_ref().is_some_and(|(offset, _)| *offset == start)
+            && let Some((_, worker)) = self.next.take()
+            && let Ok(Ok(bytes)) = worker.join()
+        {
+            return Ok(bytes);
+        }
+        fetch(&self.source, &self.agent, start, end, Some(self.size)).map(|(_, bytes)| bytes)
+    }
+
+    fn prefetch(&mut self) {
+        let next = self.start + self.bytes.len() as u64;
+        if self.position - self.start < BLOCK / 4 || next >= self.size || next % BLOCK != 0 {
+            return;
+        }
+        if let Some((offset, worker)) = &self.next {
+            if *offset == next || !worker.is_finished() {
+                return;
+            }
+        }
+        let source = self.source.clone();
+        let agent = self.agent.clone();
+        let size = self.size;
+        let end = next.saturating_add(BLOCK - 1).min(size - 1);
+        self.next = thread::Builder::new()
+            .name("purelive-replay-buffer".into())
+            .spawn(move || fetch(&source, &agent, next, end, Some(size)).map(|(_, bytes)| bytes))
+            .ok()
+            .map(|worker| (next, worker));
     }
 }
 
@@ -66,7 +99,7 @@ impl Read for HttpFile {
         if self.position < self.start || self.position - self.start >= self.bytes.len() as u64 {
             let start = self.position / BLOCK * BLOCK;
             let end = start.saturating_add(BLOCK - 1).min(self.size - 1);
-            let (_, bytes) = fetch(&self.source, &self.agent, start, end, Some(self.size))?;
+            let bytes = self.read_block(start, end)?;
             self.start = start;
             self.bytes = bytes;
             if self.position - self.start >= self.bytes.len() as u64 {
@@ -79,6 +112,7 @@ impl Read for HttpFile {
         let count = out.len().min(self.bytes.len() - offset);
         out[..count].copy_from_slice(&self.bytes[offset..offset + count]);
         self.position += count as u64;
+        self.prefetch();
         Ok(count)
     }
 }
@@ -104,6 +138,7 @@ mod tests {
     fn supports_seeking_between_http_ranges() {
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = server.local_addr().unwrap();
+        let (prefetched, ready) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             for (start, end, byte) in [(0, BLOCK - 1, b'a'), (BLOCK, BLOCK + 3, b'z')] {
                 let (mut stream, _) = server.accept().unwrap();
@@ -122,12 +157,18 @@ mod tests {
                 let length = end - start + 1;
                 write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n", BLOCK + 4).unwrap();
                 stream.write_all(&vec![byte; length as usize]).unwrap();
+                if start == BLOCK {
+                    prefetched.send(()).unwrap();
+                }
             }
         });
         let mut file = HttpFile::open(StreamInput { url: format!("http://{address}/replay.mp4"), headers: Default::default() }).unwrap();
         let mut buffer = [0; 4];
         file.read_exact(&mut buffer).unwrap();
         assert_eq!(&buffer, b"aaaa");
+        file.read_exact(&mut vec![0; BLOCK as usize / 4]).unwrap();
+        // The next response must arrive while the consumer is still in block one.
+        ready.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
         assert_eq!(file.seek(SeekFrom::End(-4)).unwrap(), BLOCK);
         file.read_exact(&mut buffer).unwrap();
         assert_eq!(&buffer, b"zzzz");

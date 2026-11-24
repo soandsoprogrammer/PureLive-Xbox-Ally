@@ -399,6 +399,69 @@ pub fn resolve(
     compat::resolve(directory, room, cookie, selection)
 }
 
+pub struct FinishedReplay {
+    id: Option<String>,
+    end_ms: u64,
+}
+
+impl FinishedReplay {
+    pub fn new(playback: &compat::Playback, end_ms: u64) -> Self {
+        Self { id: playback.replay_id.clone(), end_ms }
+    }
+
+    fn can_play(&self, playback: &compat::Playback) -> bool {
+        if self.id.is_none() || self.id != playback.replay_id {
+            return true;
+        }
+        // One-video carousels can loop. Accept that video once the platform
+        // reports a position back before its end (play_time is in whole seconds).
+        playback.replay_start_ms.is_some_and(|start| {
+            let tolerance = (self.end_ms / 3).min(1_000);
+            (start.max(0) as u64).saturating_add(tolerance) < self.end_ms
+        })
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn carousel_waits_for_a_new_video_or_a_loop() {
+    let previous = compat::Playback { replay_id: Some("video/1".into()), ..Default::default() };
+    let finished = FinishedReplay::new(&previous, 30_500);
+    let mut source = compat::Playback {
+        replay_id: previous.replay_id,
+        replay_start_ms: Some(30_000),
+        ..Default::default()
+    };
+    assert!(!finished.can_play(&source));
+    source.replay_start_ms = Some(0);
+    assert!(finished.can_play(&source));
+    source.replay_start_ms = Some(30_000);
+    source.replay_id = Some("video/2".into());
+    assert!(finished.can_play(&source));
+    assert!(finished.can_play(&compat::Playback::default()));
+}
+
+pub fn continue_carousel(
+    directory: &Path,
+    room: &Room,
+    cookie: Option<&str>,
+    finished: &FinishedReplay,
+) -> Result<Source, String> {
+    for delay in [0, 1, 2, 3] {
+        if delay > 0 {
+            std::thread::sleep(Duration::from_secs(delay));
+        }
+        // Discover the current video and its available lines again. The room
+        // may also have gone live while the previous replay was playing.
+        if let Ok(source) = resolve(directory, room, cookie, &compat::Selection::default())
+            && finished.can_play(&source.playback)
+        {
+            return Ok(source);
+        }
+    }
+    Err("暂未接到下一段回放，可刷新重试".into())
+}
+
 /// Resolve a Bilibili room ourselves so the player can offer every quality and
 /// CDN line the room exposes, instead of a single hard-coded URL.
 fn resolve_bili(
@@ -520,6 +583,8 @@ fn bili_playback(
     Ok((
         chosen.1.clone(),
         compat::Playback {
+            carousel: result["data"]["live_status"] == 2 || result["data"]["live_status"] == "2",
+            replay_id: None,
             replay_start_ms: None,
             qualities,
             quality: Some(quality_id),

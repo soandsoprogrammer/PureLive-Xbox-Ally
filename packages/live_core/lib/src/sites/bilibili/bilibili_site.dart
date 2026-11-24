@@ -520,6 +520,7 @@ final class BilibiliSite extends LiveSite
       file.text,
       bvid: video.bvid,
       start: video.start,
+      cid: video.cid,
       status: file.status,
       cookie: cookie,
     );
