@@ -3,7 +3,7 @@ use std::{cell::Cell, num::NonZeroIsize, ptr::null_mut};
 use gpui_kit::Window;
 use windows_sys::Win32::{
     Foundation::{HWND, RECT},
-    Graphics::Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, RGN_DIFF, SetWindowRgn},
+    Graphics::Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, RGN_DIFF, RGN_OR, SetWindowRgn},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Input::XboxController::{XINPUT_STATE, XInputGetState},
@@ -79,7 +79,7 @@ pub fn pad() -> Option<PadState> {
 
 type VideoMask = (i32, i32, [i32; 5]);
 
-pub struct Surface(HWND, Cell<Option<(i32, i32, i32)>>, Cell<Option<VideoMask>>);
+pub struct Surface(HWND, Cell<Option<(i32, i32, i32)>>, Cell<Option<VideoMask>>, Cell<bool>);
 
 impl Surface {
     pub fn new(window: &Window, top: f32) -> Result<Self, String> {
@@ -125,6 +125,47 @@ impl Surface {
     }
 
 
+    pub fn resize_tile_rect(&self, window: &Window, rect: [f32; 4], panel: Option<crate::floating_panel::Bounds>, overlay: Option<[f32; 4]>) {
+        let scale = window.scale_factor();
+        let [x, y, w, h] = rect;
+        let (left, top) = ((x * scale).round() as i32, (y * scale).round() as i32);
+        let (width, height) = (((x + w) * scale).round() as i32 - left, ((y + h) * scale).round() as i32 - top);
+        let (width, height) = (width.max(1), height.max(1));
+        unsafe { SetWindowPos(self.0, null_mut(), left, top, width, height, SWP_NOACTIVATE | SWP_NOZORDER); }
+        let panel = panel.map(|panel| panel.pixels(scale));
+        let overlay = overlay.map(|[x, y, w, h]| [(x * scale).round() as i32, (y * scale).round() as i32, ((x+w) * scale).round() as i32, ((y+h) * scale).round() as i32, 0]);
+        unsafe {
+            if panel.is_none() && overlay.is_none() {
+                if SetWindowRgn(self.0, null_mut(), 1) != 0 { self.2.set(None); self.3.set(false); }
+                return;
+            }
+            let region = CreateRectRgn(0, 0, width, height);
+            if region.is_null() { return; }
+            for [x0, y0, x1, y1, diameter] in panel.into_iter().chain(overlay) {
+                let hole = if diameter > 0 { CreateRoundRectRgn(x0-left, y0-top, x1-left, y1-top, diameter, diameter) }
+                    else { CreateRectRgn(x0-left, y0-top, x1-left, y1-top) };
+                if !hole.is_null() { CombineRgn(region, region, hole, RGN_DIFF); DeleteObject(hole); }
+            }
+            if SetWindowRgn(self.0, region, 1) != 0 { self.3.set(true); }
+            else { DeleteObject(region); }
+        }
+    }
+
+    pub fn set_canvas_rect(&self, window:&Window, rect:[f32;4], regions:&[[f32;4]]) {
+        let scale=window.scale_factor(); let [x,y,w,h]=rect;
+        let left=(x*scale).round() as i32; let top=(y*scale).round() as i32;
+        let width=(((x+w)*scale).round() as i32-left).max(1); let height=(((y+h)*scale).round() as i32-top).max(1);
+        unsafe {
+            SetWindowPos(self.0,null_mut(),left,top,width,height,SWP_NOACTIVATE|SWP_NOZORDER);
+            let region=CreateRectRgn(0,0,0,0); if region.is_null() { return; }
+            for &[x,y,w,h] in regions {
+                let part=CreateRectRgn((x*scale).round() as i32-left,(y*scale).round() as i32-top,((x+w)*scale).round() as i32-left,((y+h)*scale).round() as i32-top);
+                if !part.is_null() { CombineRgn(region,region,part,RGN_OR); DeleteObject(part); }
+            }
+            if SetWindowRgn(self.0,region,1)!=0 { self.3.set(true); } else { DeleteObject(region); }
+        }
+    }
+
     fn create(window: &Window, top: f32, bottom: f32, style: u32) -> Result<Self, String> {
         let parent = window_handle(window)?;
         let class = [83u16, 84, 65, 84, 73, 67, 0]; // STATIC
@@ -150,7 +191,7 @@ impl Surface {
                 std::io::Error::last_os_error()
             ));
         }
-        let surface = Self(hwnd, Cell::new(None), Cell::new(None));
+        let surface = Self(hwnd, Cell::new(None), Cell::new(None), Cell::new(false));
         surface.resize_insets(window, top, bottom);
         Ok(surface)
     }
@@ -170,7 +211,7 @@ impl Surface {
 
     fn set_video_mask(&self, width: i32, height: i32, panel: Option<[i32; 5]>) {
         let next = panel.map(|panel| (width, height, panel));
-        if self.2.get() == next {
+        if !self.3.replace(false) && self.2.get() == next {
             return;
         }
         unsafe {
@@ -258,7 +299,7 @@ mod tests {
                 null_mut(), null_mut(), GetModuleHandleW(null_mut()), null_mut(),
             );
             assert!(!hwnd.is_null());
-            let surface = Surface(hwnd, Cell::new(None), Cell::new(None));
+            let surface = Surface(hwnd, Cell::new(None), Cell::new(None), Cell::new(false));
             let mut before = RECT::default();
             GetClientRect(hwnd, &mut before);
             let panel = crate::floating_panel::room_list(1280.0, 720.0).pixels(1.0);

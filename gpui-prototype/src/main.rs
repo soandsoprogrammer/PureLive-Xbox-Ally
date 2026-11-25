@@ -17,6 +17,7 @@ mod http_file;
 mod live;
 mod live_flv;
 mod multiview;
+mod multiview_canvas;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
@@ -280,6 +281,7 @@ impl Home {
         let entity = cx.weak_entity();
         window.on_window_should_close(cx, move |_, app| {
             let _ = entity.update(app, |this, _| {
+                this.save_canvas();
                 this.stop_chat();
                 this.content = None;
             });
@@ -294,7 +296,15 @@ impl Home {
             }
         })
         .detach();
-        cx.observe_window_activation(window, Self::sync_gamepad)
+        cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                this.multiview.canvas.drag = None;
+                this.multiview.resize.dragging = None;
+                this.multiview.resize.hovered = None;
+                this.multiview_resize(window);
+            }
+            this.sync_gamepad(window, cx);
+        })
             .detach();
         cx.spawn_in(window, async move |entity, cx| {
             let mut delay = Duration::from_millis(120);
@@ -1100,6 +1110,10 @@ impl Home {
     }
 
     fn play_room(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pane == Pane::Follows && self.multiview.selection.active {
+            self.queue_multiview_room(room, cx);
+            return;
+        }
         self.room_selection = (0..self.room_count())
             .find(|&index| self.room_at(index).is_some_and(|listed| listed.same_channel(&room)));
         if let Some(selected) = self.room_selection {
@@ -1382,6 +1396,7 @@ impl Home {
     }
 
     fn toggle_follow(&mut self, room: Room, cx: &mut Context<Self>) {
+        if self.multiview.selection.active { self.queue_multiview_room(room, cx); return; }
         let mut updated = self.follows.clone();
         let followed =
             if let Some(index) = updated.iter().position(|saved| saved.same_channel(&room)) {
@@ -1668,6 +1683,20 @@ impl Home {
             }
             return;
         }
+        if self.multiview.canvas.enabled && self.multiview.slots.is_some() {
+            if pressed & XINPUT_GAMEPAD_B != 0 { self.toggle_canvas(window,cx); }
+            else if pressed & XINPUT_GAMEPAD_A != 0 { self.canvas_fit(false,window,cx); }
+            else if pressed & XINPUT_GAMEPAD_X != 0 { self.canvas_fit(true,window,cx); }
+            else if pressed & XINPUT_GAMEPAD_Y != 0 { self.canvas_mix(cx); }
+            else if pressed & XINPUT_GAMEPAD_LEFT_SHOULDER != 0 { self.canvas_zoom(1.0/1.2,window,cx); }
+            else if pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0 { self.canvas_zoom(1.2,window,cx); }
+            else {
+                for (button,key) in [(XINPUT_GAMEPAD_DPAD_LEFT,"left"),(XINPUT_GAMEPAD_DPAD_RIGHT,"right"),(XINPUT_GAMEPAD_DPAD_UP,"up"),(XINPUT_GAMEPAD_DPAD_DOWN,"down")] {
+                    if pressed & button != 0 { self.canvas_key_down(key,window,cx); }
+                }
+            }
+            return;
+        }
         if let Some(slots) = &self.multiview.slots {
             let count = slots.len();
             if pressed & XINPUT_GAMEPAD_START != 0 {
@@ -1696,8 +1725,8 @@ impl Home {
         {
             if held & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0 {
                 self.open_multiview(window, cx);
-            } else if let Some(room) = self.room_selection.and_then(|index| self.room_at(index)).cloned() {
-                self.queue_multiview_room(room, cx);
+            } else {
+                self.toggle_multiview_selection(cx);
             }
             return;
         }
@@ -1819,6 +1848,11 @@ impl Render for Home {
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.multiview.canvas.enabled && this.multiview.slots.is_some() {
+                    this.canvas_key_down(event.keystroke.key.as_str(),window,cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if let Some(dialog) = &this.plugin_dialog {
                     if let Some(editor) = &dialog.editor {
                         let cursor = editor.cursor;
@@ -1868,9 +1902,7 @@ impl Render for Home {
                 if this.multiview_plugin().is_some() && this.pane == Pane::Follows && this.content.is_none() && !event.is_held {
                     match event.keystroke.key.as_str() {
                         "f3" => {
-                            if let Some(room) = this.room_selection.and_then(|index| this.room_at(index)).cloned() {
-                                this.queue_multiview_room(room, cx);
-                            }
+                            this.toggle_multiview_selection(cx);
                             return;
                         }
                         "f4" => {

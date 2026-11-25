@@ -230,6 +230,7 @@ impl Home {
         if self.content.is_some() {
             return;
         }
+        if pane != Pane::Follows { self.cancel_multiview_selection(cx); }
         let previous = self.pane;
         self.pane = pane;
         self.platform_cursor = None;
@@ -277,6 +278,7 @@ impl Home {
     }
 
     pub(super) fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.multiview.selection.active { self.cancel_multiview_selection(cx); return; }
         if self.content.is_some() || self.active_room.is_some() {
             self.choose(Action::Back, window, cx);
         } else if self.platform_cursor.is_some() && self.pane != Pane::Popular {
@@ -429,7 +431,8 @@ impl Home {
     }
 
     fn room_card(&self, index: usize, room: &Room, cx: &mut Context<Self>) -> Stateful<Div> {
-        let selected = self.room_selection == Some(index);
+        let choosing = self.pane == Pane::Follows && self.multiview.selection.active;
+        let selected = if choosing { self.multiview.selection.items.iter().any(|item| item.same_channel(room)) } else { self.room_selection == Some(index) };
         let status = room.broadcast_status();
         let followed = self.follows.iter().any(|saved| saved.same_channel(room));
         let platform = self
@@ -442,7 +445,7 @@ impl Home {
         let covers = self.covers.clone();
         let play = room.clone();
         let save = room.clone();
-        let queued = self.multiview.rooms.iter().any(|item| item.same_channel(room));
+        let queued = self.multiview.selection.items.iter().any(|item| item.same_channel(room));
         let multiview_room = room.clone();
         div()
             .id(("card", index))
@@ -557,9 +560,9 @@ impl Home {
                                     }),
                             ),
                     )
-                    .when(self.pane == Pane::Follows && self.multiview_plugin().is_some(), |row| {
+                    .when(choosing, |row| {
                         row.child(
-                            control(("card-multiview", index), if queued { "已选" } else { "+ 同屏" }, queued)
+                            control(("card-multiview", index), if queued { "✓ 已选" } else { "＋ 选择" }, queued)
                                 .flex_shrink_0()
                                 .px_2()
                                 .text_xs()
@@ -622,9 +625,9 @@ impl Home {
     }
 
     fn multiview_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        control("multiview-open", format!("同屏 {}/4", self.multiview.rooms.len()), false)
+        control("multiview-open", if self.multiview.selection.active { "同屏 · 选择中" } else { "同屏" }, self.multiview.selection.active)
             .flex_shrink_0()
-            .on_click(cx.listener(|this, _, window, cx| this.open_multiview(window, cx)))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_selection(cx)))
     }
 
     fn popular_view(&self, cx: &mut Context<Self>) -> Div {
@@ -787,6 +790,12 @@ impl Home {
                         )))
                     }),
             )
+            .when(self.pane == Pane::Follows && self.multiview.selection.active, |view| {
+                view.child(div().h_flex().items_center().gap_2()
+                    .child(div().flex_1().text_sm().text_color(rgb(MUTED)).child(format!("点击卡片选择直播间，已选 {}/4", self.multiview.selection.items.len())))
+                    .child(control("multiview-start", "开始同屏", self.multiview.selection.can_start()).on_click(cx.listener(|this, _, window, cx| this.open_multiview(window, cx))))
+                    .child(control("multiview-cancel", "取消", false).on_click(cx.listener(|this, _, _, cx| this.cancel_multiview_selection(cx)))))
+            })
             .when(self.pane == Pane::Search, |view| {
                 view.child(
                     div()
@@ -1763,6 +1772,7 @@ impl Home {
                     })),
             )
             .child(div().h_flex().flex_wrap().items_center().gap_2()
+                .child(control("multiview-canvas","无限画布",false).on_click(cx.listener(|this,_,window,cx|this.toggle_canvas(window,cx))))
                 .child(control("multiview-titles", "显示标题", self.multiview.preferences.show_titles)
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_multiview_titles(window, cx))))
                 .child(control("multiview-all-audio", "全部声音", self.multiview.all_audio)
@@ -1770,19 +1780,109 @@ impl Home {
                 .child(control("multiview-danmaku", "弹幕", self.danmaku_enabled)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_chat(cx))))
                 .child(div().text_sm().text_color(rgb(MUTED)).child(
-                    if self.multiview.notice.is_empty() { "拖动房间换位".to_owned() } else { self.multiview.notice.clone() },
+                    if self.multiview.selection.notice.is_empty() { "拖动房间换位".to_owned() } else { self.multiview.selection.notice.clone() },
                 )))
             .when(!self.multiview.preferences.show_titles, |menu| {
                 menu.child(self.multiview_room_tabs(slots, cx))
             })
     }
 
+    fn multiview_canvas_view(&self, window:&Window, cx:&mut Context<Self>)->Div {
+        use plugins::multiview_canvas::{Gesture, HEADER, TOOLS, FOOTER, TITLE, GRIP};
+        let viewport=self.canvas_viewport(window);
+        let canvas=&self.multiview.canvas;
+        let slots=self.multiview.slots.as_ref().unwrap();
+        let mut body=div().absolute().left(px(viewport[0])).top(px(viewport[1])).w(px(viewport[2])).h(px(viewport[3])).overflow_hidden().bg(rgb(0x0e171f))
+            .on_mouse_down(MouseButton::Left,cx.listener(|this,event,window,cx|this.canvas_begin(Gesture::Pan,event,window,cx)))
+            .on_mouse_down(MouseButton::Middle,cx.listener(|this,event,window,cx|this.canvas_begin(Gesture::Pan,event,window,cx)));
+        let step=(64.0*canvas.zoom).max(24.0);
+        for i in 0..(viewport[2]/step).ceil() as usize+1 {
+            body=body.child(div().absolute().left(px(canvas.pan[0].rem_euclid(step)+i as f32*step)).top_0().h_full().w(px(1.0)).bg(rgb(0x17242e)));
+        }
+        for i in 0..(viewport[3]/step).ceil() as usize+1 {
+            body=body.child(div().absolute().top(px(canvas.pan[1].rem_euclid(step)+i as f32*step)).left_0().w_full().h(px(1.0)).bg(rgb(0x17242e)));
+        }
+        for (index,pane) in canvas.panes.iter().enumerate() {
+            let Some((slot_index,slot))=slots.iter().enumerate().find(|(_,slot)|Home::canvas_key(&slot.room)==pane.key) else {continue;};
+            let [x,y,w,h]=canvas.screen(index,viewport);
+            let audible=self.multiview.all_audio || self.multiview.audible==slot_index;
+            let label=if slot.room.nick.is_empty(){slot.room.title.clone()}else{slot.room.nick.clone()};
+            body=body.child(div().id(("canvas-pane",index)).absolute().left(px(x-viewport[0])).top(px(y-viewport[1])).w(px(w)).h(px(h)).bg(rgb(PANEL)).border_1().border_color(rgb(if audible{MINT}else{DIVIDER})).overflow_hidden()
+                .on_mouse_down(MouseButton::Left,cx.listener(move |this,_,window,cx|this.canvas_focus(index,window,cx)))
+                .child(div().absolute().left_0().top_0().w_full().h(px(TITLE-1.0)).h_flex().items_center().px_2().gap_2().bg(rgb(SURFACE)).cursor_move()
+                    .on_mouse_down(MouseButton::Left,cx.listener(move |this,event,window,cx|this.canvas_begin(Gesture::Move(index),event,window,cx)))
+                    .child(div().flex_1().min_w_0().text_xs().text_ellipsis().child(label))
+                    .child(div().id(("canvas-pane-audio",index)).cursor_pointer().text_color(rgb(if audible{MINT}else{MUTED})).child(if audible{"♫"}else{"○"}).on_click(cx.listener(move |this,_,_,cx| {this.canvas_audio(slot_index,cx);cx.stop_propagation();}))))
+                .when(!slot.status.is_empty(),|pane|pane.child(div().absolute().left_2().top(px(TITLE+12.0)).right_2().text_sm().text_color(rgb(MUTED)).child(slot.status.clone())))
+                .child(div().id(("canvas-grip",index)).absolute().right_0().bottom_0().size(px(GRIP)).bg(rgb(SURFACE)).text_xs().text_color(rgb(MUTED)).cursor(CursorStyle::ResizeUpLeftDownRight).child("◢")
+                    .on_mouse_down(MouseButton::Left,cx.listener(move |this,event,window,cx|this.canvas_begin(Gesture::Resize(index),event,window,cx)))));
+        }
+        div().relative().size_full().bg(rgb(BG)).text_color(rgb(TEXT))
+            .on_mouse_move(cx.listener(|this,event:&MouseMoveEvent,window,cx|this.canvas_move(event,window,cx)))
+            .on_mouse_up(MouseButton::Left,cx.listener(|this,_,_,cx|this.canvas_end(cx)))
+            .on_mouse_up_out(MouseButton::Left,cx.listener(|this,_,_,cx|this.canvas_end(cx)))
+            .on_mouse_up(MouseButton::Middle,cx.listener(|this,_,_,cx|this.canvas_end(cx)))
+            .on_mouse_up_out(MouseButton::Middle,cx.listener(|this,_,_,cx|this.canvas_end(cx)))
+            .on_scroll(cx.listener(|this,event:&ScrollEvent,window,cx|this.canvas_scroll(event,window,cx)))
+            .on_pinch(cx.listener(|this,event:&PinchEvent,window,cx|this.canvas_pinch(event,window,cx)))
+            .child(body)
+            .child(div().absolute().left_0().top_0().w_full().h(px(HEADER)).h_flex().items_center().px_3().gap_3().bg(rgb(BG))
+                .child(control("canvas-back","返回",false).on_click(cx.listener(|this,_,window,cx|this.close_multiview(window,cx))))
+                .child(div().flex_1().child(format!("无限画布 · {} 个直播间",slots.len())))
+                .child(control("canvas-mode-off","普通布局",false).on_click(cx.listener(|this,_,window,cx|this.toggle_canvas(window,cx))))
+                .child(control("canvas-mix","全部声音",self.multiview.all_audio).on_click(cx.listener(|this,_,_,cx|this.canvas_mix(cx)))))
+            .child(div().absolute().left_0().top(px(HEADER)).w_full().h(px(TOOLS)).h_flex().items_center().px_3().gap_2().bg(rgb(PANEL))
+                .child(control("canvas-zoom-out","−",false).h(px(32.0)).on_click(cx.listener(|this,_,window,cx|this.canvas_zoom(1.0/1.2,window,cx))))
+                .child(div().w(px(46.0)).text_sm().child(format!("{:.0}%",canvas.zoom*100.0)))
+                .child(control("canvas-zoom-in","＋",false).h(px(32.0)).on_click(cx.listener(|this,_,window,cx|this.canvas_zoom(1.2,window,cx))))
+                .child(control("canvas-fit","适应全部",false).h(px(32.0)).on_click(cx.listener(|this,_,window,cx|this.canvas_fit(false,window,cx))))
+                .child(control("canvas-reset","重置布局",false).h(px(32.0)).on_click(cx.listener(|this,_,window,cx|this.canvas_fit(true,window,cx))))
+                .child(div().flex_1())
+                .child(control("canvas-save","保存布局",false).h(px(32.0)).on_click(cx.listener(|this,_,_,cx|{this.multiview.selection.notice.clear();this.save_canvas();if this.multiview.selection.notice.is_empty(){this.multiview.selection.notice="画布布局已保存".into();}cx.notify();}))))
+            .child(div().absolute().bottom_0().left_0().w_full().h(px(FOOTER)).h_flex().items_center().justify_center().px_3().bg(rgb(BG)).text_xs().text_color(rgb(MUTED))
+                .child(if self.multiview.selection.notice.is_empty(){"拖动标题移动 · 右下角调整大小 · 拖动空白平移 · 滚轮缩放 / 双指平移".to_owned()}else{self.multiview.selection.notice.clone()}))
+    }
+
+    fn multiview_splitter(&self, index: usize, divider: plugins::multiview_resize::Divider, cx: &mut Context<Self>) -> Stateful<Div> {
+        let [x, y, width, height] = divider.rect;
+        let axis = divider.axis;
+        let active = self.multiview.resize.dragging == Some(axis) || self.multiview.resize.hovered == Some(axis);
+        div().id(("multiview-divider", index)).absolute().left(px(x)).top(px(y)).w(px(width)).h(px(height))
+            .bg(if active { rgb(MINT) } else { rgba(0x00000000) })
+            .cursor(match axis {
+                plugins::multiview_resize::Axis::Vertical => CursorStyle::ResizeLeftRight,
+                plugins::multiview_resize::Axis::Horizontal => CursorStyle::ResizeUpDown,
+            })
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                this.multiview.resize.dragging = Some(axis);
+                this.multiview_resize(window);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+    }
+
     fn multiview_view(&self, slots: &[multiview::Slot], window: &Window, cx: &mut Context<Self>) -> Div {
+        if self.multiview.canvas.enabled { return self.multiview_canvas_view(window,cx); }
         div().relative().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                if this.multiview.resize.dragging.take().is_some() || this.multiview.resize.hovered.take().is_some() {
+                    this.multiview.resize.hovered = None;
+                    this.multiview_resize(window);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| this.drag_multiview_divider(event, window, cx)))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                if this.multiview.resize.dragging.take().is_some() { this.multiview_resize(window); cx.notify(); }
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                if this.multiview.resize.dragging.take().is_some() { this.multiview_resize(window); cx.notify(); }
+            }))
             .when(self.multiview.preferences.show_titles, |view| {
                 view.child(div().h(px(self.multiview_title_height())).flex_shrink_0().px_4().py_1()
                     .child(self.multiview_room_tabs(slots, cx)))
             })
+            .children(self.multiview_dividers(window).into_iter().enumerate().map(|(index, divider)| self.multiview_splitter(index, divider, cx)))
             .when_some(self.multiview_panel(window), |view, panel| {
                 view.child(self.multiview_settings_panel(panel, slots, cx))
             })
@@ -1819,8 +1919,8 @@ impl Home {
         } else {
             view.child(self.directory_view(cx))
         };
-        view.when(!self.multiview.notice.is_empty() && self.pane == Pane::Follows, |view| {
-            view.child(div().px_6().text_sm().text_color(rgb(MUTED)).child(self.multiview.notice.clone()))
+        view.when(!self.multiview.selection.notice.is_empty() && self.pane == Pane::Follows, |view| {
+            view.child(div().px_6().text_sm().text_color(rgb(MUTED)).child(self.multiview.selection.notice.clone()))
         }).child(self.footer())
             .when_some(self.plugin_dialog.as_ref(), |view, dialog| {
                 view.child(self.plugin_manager(dialog, cx))

@@ -1,5 +1,5 @@
 use super::*;
-use plugins::multiview::{Layout, MAX_ROOMS, Tile};
+use plugins::multiview::{Layout, Tile};
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -16,14 +16,15 @@ impl Default for Preferences {
 
 #[derive(Default)]
 pub(super) struct MultiView {
-    pub rooms: Vec<Room>,
+    pub canvas: plugins::multiview_canvas::Canvas,
+    pub resize: plugins::multiview_resize::Resize,
+    pub selection: plugins::multiview::Selection<Room>,
     pub slots: Option<Vec<Slot>>,
     pub audible: usize,
     pub all_audio: bool,
     pub settings_open: bool,
     pub preferences: Preferences,
     layouts: Option<[Vec<Tile>; 4]>,
-    pub notice: String,
     generation: u64,
 }
 
@@ -75,32 +76,35 @@ impl Home {
         path.is_file().then_some(path)
     }
 
+    pub(super) fn cancel_multiview_selection(&mut self, cx: &mut Context<Self>) {
+        self.multiview.selection.cancel();
+        cx.notify();
+    }
+
+    pub(super) fn toggle_multiview_selection(&mut self, cx: &mut Context<Self>) {
+        self.multiview.selection.toggle();
+        cx.notify();
+    }
+
     pub(super) fn queue_multiview_room(&mut self, room: Room, cx: &mut Context<Self>) {
-        let rooms = &mut self.multiview.rooms;
-        if let Some(index) = rooms.iter().position(|item| item.key() == room.key()) {
-            rooms.remove(index);
-            self.multiview.notice.clear();
-        } else if rooms.len() == MAX_ROOMS {
-            self.multiview.notice = "最多选择 4 个直播间。".into();
-        } else {
-            rooms.push(room);
-            self.multiview.notice.clear();
-        }
+        if self.multiview.slots.is_some() { return; }
+        self.multiview.selection.toggle_item(room, Room::same_channel);
         cx.notify();
     }
 
     pub(super) fn open_multiview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(executable) = self.multiview_plugin() else { return };
-        if self.multiview.slots.is_some() || self.content.is_some() {
+        if !self.multiview.selection.active || self.multiview.slots.is_some() || self.content.is_some() {
             return;
         }
-        let count = self.multiview.rooms.len();
-        if count < 2 {
-            self.multiview.notice = "先在房间卡片上选择至少 2 个直播间。".into();
+        let count = self.multiview.selection.items.len();
+        if !self.multiview.selection.can_start() {
+            self.multiview.selection.notice = "先在房间卡片上选择至少 2 个直播间。".into();
             cx.notify();
             return;
         }
 
+        self.multiview.selection.active = false;
         self.request_id += 1;
         self.active_room = None;
         self.reopen_video = false;
@@ -112,8 +116,8 @@ impl Home {
         self.multiview.layouts = None;
         let settings = self.follows_path.with_file_name("plugins").join("multiview.json");
         self.multiview.preferences = plugin_config::load(&settings).unwrap_or_default();
-        self.multiview.notice.clear();
-        self.multiview.slots = Some(self.multiview.rooms.iter().map(|room| Slot {
+        self.multiview.selection.notice.clear();
+        self.multiview.slots = Some(self.multiview.selection.items.iter().map(|room| Slot {
             room: room.clone(),
             status: "正在连接…".into(),
             tile: None,
@@ -137,7 +141,8 @@ impl Home {
                     }
                     Err(error) => {
                         this.multiview.slots = None;
-                        this.multiview.notice = format!("无法打开同屏：{error}");
+                        this.multiview.selection.active = true;
+                        this.multiview.selection.notice = format!("无法打开同屏：{error}");
                         cx.notify();
                     }
                 }
@@ -208,16 +213,23 @@ impl Home {
                     Ok(()) => String::new(),
                     Err(error) => error,
                 };
+                this.multiview_resize(window);
                 cx.notify();
             });
         }).detach();
     }
 
     pub(super) fn close_multiview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_canvas();
+        self.multiview.canvas.enabled = false;
+        self.multiview.canvas.drag = None;
+        self.multiview.resize.dragging = None;
+        self.multiview.resize.hovered = None;
         self.multiview.generation += 1;
         self.multiview.slots = None;
         self.multiview.settings_open = false;
         self.multiview.layouts = None;
+        self.cancel_multiview_selection(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -240,7 +252,7 @@ impl Home {
     pub(super) fn toggle_multiview_chat(&mut self, cx: &mut Context<Self>) {
         self.danmaku_enabled = !self.danmaku_enabled;
         if self.save_danmaku_preference().is_err() {
-            self.multiview.notice = "弹幕已切换，无法保存到本地".into();
+            self.multiview.selection.notice = "弹幕已切换，无法保存到本地".into();
         }
         if let Some(slots) = &mut self.multiview.slots {
             for slot in slots {
@@ -334,6 +346,8 @@ impl Home {
     }
 
     pub(super) fn choose_multiview_layout(&mut self, layout: Layout, window: &Window, cx: &mut Context<Self>) {
+        self.multiview.resize.dragging = None;
+        self.multiview.resize.hovered = None;
         self.multiview.preferences.layout = layout;
         if let (Some(slots), Some(layouts)) = (&mut self.multiview.slots, &self.multiview.layouts) {
             for (slot, tile) in slots.iter_mut().zip(&layouts[layout.index()]) {
@@ -354,7 +368,7 @@ impl Home {
 
     fn save_multiview_preferences(&mut self) {
         let path = self.follows_path.with_file_name("plugins").join("multiview.json");
-        self.multiview.notice = match playback::save_preference(&path, &self.multiview.preferences) {
+        self.multiview.selection.notice = match playback::save_preference(&path, &self.multiview.preferences) {
             Ok(()) => String::new(),
             Err(error) => format!("无法保存同屏设置：{error}"),
         };
@@ -370,7 +384,7 @@ impl Home {
         slots.swap(source, target);
         slots[source].tile = tiles.0;
         slots[target].tile = tiles.1;
-        self.multiview.rooms.swap(source, target);
+        self.multiview.selection.items.swap(source, target);
         if self.multiview.audible == source {
             self.multiview.audible = target;
         } else if self.multiview.audible == target {
@@ -390,13 +404,59 @@ impl Home {
     }
 
 
+    pub(super) fn multiview_dividers(&self, window: &Window) -> Vec<plugins::multiview_resize::Divider> {
+        let (width, height) = native::client_size(window);
+        self.multiview.resize.dividers(self.multiview.preferences.layout, self.multiview.slots.as_ref().map_or(0, Vec::len), [0.0, self.multiview_title_height(), width, (height - self.multiview_title_height()).max(1.0)])
+    }
+
+    pub(super) fn drag_multiview_divider(&mut self, event: &MouseMoveEvent, window: &Window, cx: &mut Context<Self>) {
+        let point = [f32::from(event.position.x), f32::from(event.position.y)];
+        let hovered = self.multiview_dividers(window).into_iter().find(|divider| {
+            let [x, y, w, h] = divider.rect;
+            point[0] >= x && point[0] <= x+w && point[1] >= y && point[1] <= y+h
+        }).map(|divider| divider.axis);
+        let mut changed = self.multiview.resize.hovered != hovered;
+        self.multiview.resize.hovered = hovered;
+        if !event.dragging() {
+            changed |= self.multiview.resize.dragging.take().is_some();
+            if changed { self.multiview_resize(window); cx.notify(); }
+            return;
+        }
+        let (width, height) = native::client_size(window);
+        if self.multiview.resize.update(point, [0.0, self.multiview_title_height(), width, (height - self.multiview_title_height()).max(1.0)]) {
+            changed = true;
+        }
+        if changed { self.multiview_resize(window); cx.notify(); }
+    }
+
+    fn multiview_divider_overlay(&self, window: &Window) -> Option<[f32; 4]> {
+        let axis = self.multiview.resize.dragging.or(self.multiview.resize.hovered)?;
+        self.multiview_dividers(window).into_iter().find(|divider| divider.axis == axis).map(|divider| divider.rect)
+    }
+
+    pub(super) fn canvas_place_player(&self, slot: &Slot, _index: usize, rect: [f32;4], viewport: [f32;4], occluders: &[[f32;4]], window:&Window) {
+        if let Some(video) = &slot.video {
+            let regions=plugins::multiview_canvas::visible_regions(rect,viewport,occluders);
+            video.surface.set_canvas_rect(window,rect,&regions);
+        }
+    }
+
     pub(super) fn multiview_resize(&self, window: &Window) {
+        if native::minimized(window) { return; }
+        if self.multiview.canvas.enabled { self.resize_canvas_players(window); return; }
+        let overlay = self.multiview_divider_overlay(window);
         if let Some(slots) = &self.multiview.slots {
             let title_height = self.multiview_title_height();
             let panel = self.multiview_panel(window);
             for slot in slots {
                 if let (Some(video), Some(tile)) = (&slot.video, slot.tile) {
-                    video.surface.resize_tile(window, title_height, tile, panel);
+                    if self.multiview.preferences.layout == Layout::Auto {
+                        let (width, height) = native::client_size(window);
+                        let rect = self.multiview.resize.tile(Layout::Auto, tile, [0.0, title_height, width, (height - title_height).max(1.0)]);
+                        video.surface.resize_tile_rect(window, rect, panel, overlay);
+                    } else {
+                        video.surface.resize_tile(window, title_height, tile, panel);
+                    }
                 }
             }
         }
