@@ -144,7 +144,7 @@ struct Reply {
     super_chats: Vec<SuperChat>,
 }
 
-fn configure_network(command: &mut Command) {
+pub(crate) fn configure_network(command: &mut Command) {
     // Keep all helper connections direct without changing the parent's environment.
     for key in [
         "HTTP_PROXY",

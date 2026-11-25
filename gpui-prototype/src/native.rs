@@ -134,6 +134,11 @@ impl Surface {
         self.resize_insets(window, top, 0.0)
     }
 
+    pub fn set_tile_rect(&self, window: &Window, rect: [f32; 4]) {
+        let [x, y, width, height] = rect.map(|v| (v * window.scale_factor()).round() as i32);
+        unsafe { SetWindowPos(self.0, null_mut(), x, y, width.max(1), height.max(1), SWP_NOACTIVATE | SWP_NOZORDER); }
+    }
+
     pub fn resize_video(&self, window: &Window, bottom: f32, panel: Option<crate::floating_panel::Bounds>) {
         let (width, height) = self.resize_insets(window, 0.0, bottom);
         self.set_video_mask(width, height, panel.map(|panel| panel.pixels(window.scale_factor())));

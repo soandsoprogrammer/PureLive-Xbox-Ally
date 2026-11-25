@@ -31,6 +31,9 @@ mod pagination;
 mod platform_icons;
 mod platform_picker;
 mod playback;
+mod multiview;
+mod multiview_canvas;
+mod plugins;
 mod style;
 
 use std::{
@@ -176,6 +179,7 @@ struct Home {
     status: String,
     reopen_video: bool,
     playback: PlaybackUi,
+    multiview: multiview::MultiView,
     #[cfg(target_os = "macos")]
     danmaku_frame_pending: bool,
     emotes: emotes::Cache,
@@ -283,12 +287,15 @@ impl Home {
         let entity = cx.weak_entity();
         window.on_window_should_close(cx, move |_, app| {
             let _ = entity.update(app, |this, _| {
+                this.save_canvas();
                 this.stop_chat();
                 this.content = None;
+                this.multiview.slots = None;
             });
             true
         });
         cx.observe_window_bounds(window, |this, window, _| {
+            this.multiview_resize(window);
             if !native::minimized(window) {
                 if let Some(content) = &this.content {
                     content.resize(
@@ -300,7 +307,15 @@ impl Home {
             }
         })
         .detach();
-        cx.observe_window_activation(window, Self::sync_gamepad)
+        cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                this.multiview.canvas.drag = None;
+                this.multiview.resize.dragging = None;
+                this.multiview.resize.hovered = None;
+                this.multiview_resize(window);
+            }
+            this.sync_gamepad(window, cx);
+        })
             .detach();
         cx.spawn_in(window, async move |entity, cx| {
             let mut delay = Duration::from_millis(120);
@@ -322,6 +337,7 @@ impl Home {
             status: String::new(),
             reopen_video: false,
             playback: PlaybackUi::default(),
+            multiview: multiview::MultiView::default(),
             #[cfg(target_os = "macos")]
             danmaku_frame_pending: false,
             emotes: emotes::Cache::default(),
@@ -1040,6 +1056,11 @@ impl Home {
     }
 
     fn play_room(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+        if self.multiview.selection.active && self.pane == Pane::Follows {
+            self.multiview.toggle_room(room);
+            cx.notify();
+            return;
+        }
         self.room_selection = (0..self.room_count()).find(|&index| {
             self.room_at(index)
                 .is_some_and(|listed| listed.same_channel(&room))
@@ -1307,6 +1328,11 @@ impl Home {
     }
 
     fn toggle_follow(&mut self, room: Room, cx: &mut Context<Self>) {
+        if self.multiview.selection.active {
+            self.multiview.toggle_room(room);
+            cx.notify();
+            return;
+        }
         let mut updated = self.follows.clone();
         let followed =
             if let Some(index) = updated.iter().position(|saved| saved.same_channel(&room)) {
@@ -1340,6 +1366,7 @@ impl Home {
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_gamepad(window, cx);
+        if self.multiview.slots.is_some() { return; }
         if self.pane == Pane::Popular
             && self.content.is_none()
             && window.is_window_active()
@@ -1546,6 +1573,10 @@ impl Home {
     }
 
     fn on_gamepad(&mut self, pressed: u16, held: u16, window: &mut Window, cx: &mut Context<Self>) {
+        if self.multiview.slots.is_some() {
+            if pressed & XINPUT_GAMEPAD_B != 0 { self.close_multiview(window, cx); }
+            return;
+        }
         // Check the held state before either bumper's normal navigation action.
         // Real presses usually arrive in separate polls, even when used as a chord.
         if self.in_playback()
@@ -1664,6 +1695,15 @@ impl Render for Home {
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.multiview.canvas.enabled && this.multiview.slots.is_some() {
+                    this.canvas_key_down(event.keystroke.key.as_str(),window,cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.multiview.slots.is_some() {
+                    if event.keystroke.key == "escape" { this.close_multiview(window, cx); }
+                    return;
+                }
                 if this.in_playback() {
                     match event.keystroke.key.as_str() {
                         "f10" | "menu" if !event.is_held => this.toggle_room_menu(window, cx),

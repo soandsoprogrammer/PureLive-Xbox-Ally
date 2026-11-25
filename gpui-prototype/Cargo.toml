@@ -3,6 +3,14 @@ name = "purelive-gpui"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+plugin-tools = []
+
+[[bin]]
+name = "purelive-multiview"
+path = "plugin-tools/multiview.rs"
+required-features = ["plugin-tools"]
+
 [dependencies]
 async-channel = "2.5"
 async-lock = "3.5"

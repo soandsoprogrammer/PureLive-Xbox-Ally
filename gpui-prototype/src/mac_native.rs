@@ -5,7 +5,7 @@ use objc2_app_kit::NSView;
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::{CAShapeLayer, CATransaction, kCAFillRuleEvenOdd};
-use std::{cell::Cell, path::PathBuf, ptr::NonNull};
+use std::{cell::{Cell, RefCell}, path::PathBuf, ptr::NonNull};
 use wry::raw_window_handle::{
     AppKitWindowHandle, HandleError, HasWindowHandle, RawWindowHandle, WindowHandle,
 };
@@ -91,6 +91,8 @@ pub struct Surface {
     view: Retained<NSView>,
     frame: Cell<Option<NSRect>>,
     panel: Cell<Option<Bounds>>,
+    tile_mask: Cell<Option<(NSRect, Option<NSRect>)>>,
+    canvas_mask: RefCell<Option<(NSRect, Vec<NSRect>)>>,
 }
 
 impl Surface {
@@ -113,6 +115,8 @@ impl Surface {
             view,
             frame: Cell::new(None),
             panel: Cell::new(None),
+            tile_mask: Cell::new(None),
+            canvas_mask: RefCell::new(None),
         };
         surface.resize_insets(window, top, bottom);
         Ok(surface)
@@ -165,6 +169,64 @@ impl Surface {
         CATransaction::setDisableActions(true);
         unsafe { layer.setMask(mask.as_deref()) };
         CATransaction::commit();
+    }
+
+    pub fn set_tile_rect(&self, window: &Window, rect: [f32; 4]) {
+        let Ok(parent) = parent_view(window) else { return; };
+        let [x, y, width, height] = rect;
+        let scale = window.scale_factor();
+        let snap = |value: f32| (value * scale).round() / scale;
+        let (right, bottom) = (snap(x + width), snap(y + height));
+        let (x, y) = (snap(x), snap(y));
+        let (width, height) = (right - x, bottom - y);
+        let bounds = parent.bounds();
+        let y = if parent.isFlipped() { f64::from(y) } else { bounds.size.height - f64::from(y + height) };
+        let frame = NSRect::new(NSPoint::new(bounds.origin.x + f64::from(x), bounds.origin.y + y), NSSize::new(f64::from(width.max(1.0)), f64::from(height.max(1.0))));
+        if self.frame.replace(Some(frame)) != Some(frame) { self.view.setFrame(frame); }
+    }
+
+    pub fn set_tile_overlay(&self, tile: [f32; 4], overlay: Option<[f32; 4]>) {
+        if self.canvas_mask.borrow_mut().take().is_some() { self.tile_mask.set(None); }
+        let Some(layer) = self.view.layer() else { return; };
+        let bounds = self.view.bounds();
+        let cutout = overlay.filter(|&[x, y, w, h]| x < tile[0] + tile[2] && x + w > tile[0] && y < tile[1] + tile[3] && y + h > tile[1]).map(|[x, y, w, h]| {
+            NSRect::new(NSPoint::new(f64::from(x - tile[0]), bounds.size.height - f64::from(y - tile[1] + h)), NSSize::new(f64::from(w), f64::from(h)))
+        });
+        let state = (bounds, cutout);
+        if self.tile_mask.replace(Some(state)) == Some(state) { return; }
+        // Expose the host's hover line without resizing or separating the videos.
+        let mask = cutout.map(|cutout| {
+            let path = CGMutablePath::new();
+            let mask = CAShapeLayer::layer();
+            unsafe {
+                CGMutablePath::add_rect(Some(&path), std::ptr::null(), bounds);
+                CGMutablePath::add_rect(Some(&path), std::ptr::null(), cutout);
+                mask.setFillRule(kCAFillRuleEvenOdd);
+            }
+            mask.setFrame(bounds);
+            mask.setPath(Some(&path));
+            Retained::into_super(mask)
+        });
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        unsafe { layer.setMask(mask.as_deref()) };
+        CATransaction::commit();
+    }
+
+    pub fn set_canvas_rect(&self, window:&Window, rect:[f32;4], regions:&[[f32;4]]) {
+        self.set_tile_rect(window,rect);
+        let Some(layer)=self.view.layer() else { return; };
+        let bounds=self.view.bounds();
+        let regions:Vec<_>=regions.iter().map(|&[x,y,w,h]| NSRect::new(NSPoint::new(f64::from(x-rect[0]),bounds.size.height-f64::from(y-rect[1]+h)),NSSize::new(f64::from(w),f64::from(h)))).collect();
+        let state=(bounds,regions);
+        if self.canvas_mask.borrow().as_ref()==Some(&state) { return; }
+        let path=CGMutablePath::new();
+        for &region in &state.1 { unsafe { CGMutablePath::add_rect(Some(&path),std::ptr::null(),region); } }
+        let mask=CAShapeLayer::layer(); mask.setFrame(bounds); mask.setPath(Some(&path));
+        CATransaction::begin(); CATransaction::setDisableActions(true);
+        unsafe { layer.setMask(Some(&mask)); }
+        CATransaction::commit();
+        *self.canvas_mask.borrow_mut()=Some(state);
     }
 
     fn resize_insets(&self, window: &Window, top: f32, bottom: f32) -> (i32, i32) {

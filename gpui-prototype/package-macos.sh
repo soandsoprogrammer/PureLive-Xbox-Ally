@@ -4,13 +4,15 @@ set -euo pipefail
 arch=$1
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-cargo build --manifest-path gpui-prototype/Cargo.toml --release --locked
+cargo build --manifest-path gpui-prototype/Cargo.toml --release --locked --features plugin-tools --bin purelive-gpui --bin purelive-multiview
 
 app='dist/PureLive.app'
 bin="$app/Contents/MacOS"
 resources="$app/Contents/Resources"
 mkdir -p "$bin" "$resources"
 install -m 755 gpui-prototype/target/release/purelive-gpui "$bin/purelive-gpui"
+mkdir -p "$bin/plugin-catalog"
+install -m 755 gpui-prototype/target/release/purelive-multiview "$bin/plugin-catalog/purelive-multiview"
 dart compile exe tools/live_cli/bin/handheld_platforms.dart -o "$bin/purelive-platforms"
 cp LICENSE "$resources/"
 cp gpui-prototype/Cargo.lock pubspec.lock "$resources/"
@@ -61,9 +63,10 @@ PLIST
 
 plutil -lint "$app/Contents/Info.plist"
 codesign --force --sign - "$bin/purelive-platforms"
+codesign --force --sign - "$bin/plugin-catalog/purelive-multiview"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
-file "$bin/purelive-gpui" "$bin/purelive-platforms"
+file "$bin/purelive-gpui" "$bin/purelive-platforms" "$bin/plugin-catalog/purelive-multiview"
 catalog=$(printf '%s\n' '{"action":"catalog","platform":"bilibili","query":""}' | "$bin/purelive-platforms")
 grep -q 'bilibili' <<< "$catalog"
 if find "$app" -type f \( -iname '*.mp4' -o -iname '*.flv' -o -iname '*.m4s' -o -iname '*.ts' -o -iname '*.m3u8' -o -iname '*libmpv*' \) | grep .; then
