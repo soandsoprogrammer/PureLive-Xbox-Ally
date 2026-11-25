@@ -56,6 +56,8 @@ pub struct RoomStatus {
     pub status: BroadcastStatus,
     #[serde(default)]
     pub cover: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,12 +142,24 @@ impl Room {
     }
 
     pub fn update_room_status(&mut self, status: &RoomStatus) -> bool {
+        if status.status == BroadcastStatus::Unknown {
+            return false;
+        }
         let mut changed = self.update_broadcast_status(status.status);
-        if status.status != BroadcastStatus::Unknown
-            && let Some(cover) = status.cover.as_ref().filter(|cover| !cover.is_empty())
+        if let Some(cover) = status.cover.as_ref().filter(|cover| !cover.is_empty())
             && self.cover != *cover
         {
             self.cover = cover.clone();
+            changed = true;
+        }
+        if let Some(title) = status
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            && self.title != title
+        {
+            self.title = title.to_owned();
             changed = true;
         }
         changed
@@ -773,24 +787,37 @@ mod tests {
     }
 
     #[test]
-    fn room_refresh_updates_saved_covers_and_accepts_old_status_replies() {
+    fn room_refresh_updates_metadata_and_accepts_old_status_replies() {
         let mut followed = room(42, BroadcastStatus::Live);
         followed.cover = "https://liveimg.sooplive.com/m/123".into();
         let updated: RoomStatus = serde_json::from_value(serde_json::json!({
             "platform": "bilibili", "id": "42", "status": "live",
+            "title": "  新直播间标题  ",
             "cover": "https://res.sooplive.com/images/thumb/live/0004_480x270_dark.png"
         })).unwrap();
         assert!(followed.update_room_status(&updated));
         assert_eq!(followed.cover, updated.cover.as_deref().unwrap());
+        assert_eq!(followed.title, "新直播间标题");
+        let title_only: RoomStatus = serde_json::from_value(serde_json::json!({
+            "platform": "bilibili", "id": "42", "status": "live", "title": "正在直播"
+        })).unwrap();
+        assert!(followed.update_room_status(&title_only));
+        assert!(!followed.update_room_status(&title_only));
         let old_reply: RoomStatus = serde_json::from_value(serde_json::json!({
             "platform": "bilibili", "id": "42", "status": "live"
         })).unwrap();
         assert!(!followed.update_room_status(&old_reply));
+        let blank: RoomStatus = serde_json::from_value(serde_json::json!({
+            "platform": "bilibili", "id": "42", "status": "live", "title": "  "
+        })).unwrap();
+        assert!(!followed.update_room_status(&blank));
         let failed: RoomStatus = serde_json::from_value(serde_json::json!({
-            "platform": "bilibili", "id": "42", "status": "unknown", "cover": "unconfirmed"
+            "platform": "bilibili", "id": "42", "status": "unknown",
+            "title": "unconfirmed", "cover": "unconfirmed"
         })).unwrap();
         assert!(!followed.update_room_status(&failed));
         assert_eq!(followed.cover, updated.cover.as_deref().unwrap());
+        assert_eq!(followed.title, "正在直播");
     }
 
     #[test]

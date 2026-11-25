@@ -1,3 +1,5 @@
+pub(super) mod divider_touch;
+
 use std::{cell::Cell, num::NonZeroIsize, ptr::null_mut};
 
 use gpui_kit::Window;

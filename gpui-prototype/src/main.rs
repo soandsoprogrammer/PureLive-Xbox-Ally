@@ -194,6 +194,7 @@ struct Home {
     plugins: plugins::Plugins,
     plugin_dialog: Option<PluginDialog>,
     multiview: multiview::MultiView,
+    divider_touch: Option<native::divider_touch::TouchDividers>,
     follows: Vec<Room>,
     follow_filter: FollowFilter,
     follow_rows: Vec<usize>,
@@ -299,13 +300,24 @@ impl Home {
         cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
                 this.multiview.canvas.drag = None;
-                this.multiview.resize.dragging = None;
+                this.multiview.resize.end_drag();
                 this.multiview.resize.hovered = None;
                 this.multiview_resize(window);
             }
             this.sync_gamepad(window, cx);
         })
             .detach();
+        let (divider_events, touches) = async_channel::unbounded();
+        let divider_touch = native::divider_touch::TouchDividers::attach(window, divider_events);
+        if divider_touch.is_some() {
+            cx.spawn_in(window, async move |entity, cx| {
+                while let Ok(touch) = touches.recv().await {
+                    if entity.update_in(cx, |this, window, cx| this.touch_multiview_divider(touch, window, cx)).is_err() {
+                        break;
+                    }
+                }
+            }).detach();
+        }
         cx.spawn_in(window, async move |entity, cx| {
             let mut delay = Duration::from_millis(120);
             loop {
@@ -340,6 +352,7 @@ impl Home {
             plugins,
             plugin_dialog: None,
             multiview: multiview::MultiView::default(),
+            divider_touch,
             follows,
             follow_filter,
             follow_rows,
@@ -1022,7 +1035,7 @@ impl Home {
             |site| format!("正在查询 {}…", site.name),
         );
         self.show_follows = false;
-        self.covers.retry_failed(cx);
+        self.covers.clear(window, cx);
         self.results.clear();
         self.room_selection = None;
         self.rooms_scroll = UniformListScrollHandle::new();
@@ -1285,6 +1298,12 @@ impl Home {
         cx.notify();
     }
 
+    fn refresh_follows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.covers.clear(window, cx);
+        self.refresh_follow_statuses(window, cx);
+        cx.notify();
+    }
+
     fn refresh_follow_statuses(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.room_status_task.is_some() {
             return;
@@ -1333,6 +1352,7 @@ impl Home {
                             key,
                             status: BroadcastStatus::Unknown,
                             cover: None,
+                            title: None,
                         },
                     )
                 })
@@ -1720,14 +1740,18 @@ impl Home {
             }
             return;
         }
-        if self.multiview_plugin().is_some() && self.content.is_none() && self.pane == Pane::Follows
-            && pressed & XINPUT_GAMEPAD_RIGHT_THUMB != 0
-        {
+        let on_follows = self.pane == Pane::Follows && self.content.is_none();
+        let choosing_multiview = on_follows && self.multiview.selection.active;
+        if on_follows && pressed & XINPUT_GAMEPAD_RIGHT_THUMB != 0 && self.multiview_plugin().is_some() {
             if held & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0 {
                 self.open_multiview(window, cx);
             } else {
-                self.toggle_multiview_selection(cx);
+                self.toggle_multiview_selection(window, cx);
             }
+            return;
+        }
+        if choosing_multiview && pressed & XINPUT_GAMEPAD_START != 0 {
+            self.open_multiview(window, cx);
             return;
         }
         // Check the held state before either bumper's normal navigation action.
@@ -1784,7 +1808,8 @@ impl Home {
         if pressed & XINPUT_GAMEPAD_LEFT_SHOULDER != 0 {
             self.page_bar(false, window, cx);
         }
-        if pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0 {
+        // While choosing rooms, RB is the modifier for RB + right stick.
+        if !choosing_multiview && pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER != 0 {
             self.page_bar(true, window, cx);
         }
         if pressed & TRIGGER_LEFT != 0 {
@@ -1822,7 +1847,7 @@ impl Home {
             && (self.platform_cursor.is_none() || self.pane == Pane::Popular)
         {
             if self.pane == Pane::Follows {
-                self.refresh_follow_statuses(window, cx);
+                self.refresh_follows(window, cx);
             } else {
                 self.select_pane(Pane::Search, window, cx);
                 self.query.read(cx).focus_handle(cx).focus(window, cx);
@@ -1902,7 +1927,7 @@ impl Render for Home {
                 if this.multiview_plugin().is_some() && this.pane == Pane::Follows && this.content.is_none() && !event.is_held {
                     match event.keystroke.key.as_str() {
                         "f3" => {
-                            this.toggle_multiview_selection(cx);
+                            this.toggle_multiview_selection(window, cx);
                             return;
                         }
                         "f4" => {
@@ -1960,7 +1985,7 @@ impl Render for Home {
                         && this.pane == Pane::Follows
                         && this.content.is_none() =>
                     {
-                        this.refresh_follow_statuses(window, cx);
+                        this.refresh_follows(window, cx);
                     }
                     "y" if !event.is_held && this.platform_cursor.is_none() => {
                         if let Some(room) = this
@@ -2094,5 +2119,79 @@ mod gamepad_tests {
         for pressed in [0, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_DPAD_DOWN] {
             assert!(!exit_chord_pressed(pressed, shoulders | pressed));
         }
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn multiview_gamepad_can_select_rooms_from_an_empty_live_filter() {
+        use gpui_kit::AppContext;
+        use super::{
+            BroadcastStatus, FollowFilter, Home, Options, Pane, Room, WindowOptions,
+            XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_RIGHT_THUMB,
+            XINPUT_GAMEPAD_START, fs,
+        };
+
+        let directory = std::env::temp_dir().join(format!("purelive-gamepad-{}", std::process::id()));
+        let plugins = directory.join("plugins");
+        let plugin = plugins.join("purelive-multiview.exe");
+        fs::create_dir_all(&plugins).unwrap();
+        fs::write(&plugin, []).unwrap();
+        let follows = directory.join("follows.json");
+
+        gpui_kit::application().run(move |cx| {
+            gpui_kit::init(cx);
+            super::style::init_theme(cx);
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut home = Home::new(Options::read(), window, cx);
+                    home.follows_path = follows;
+                    home.pane = Pane::Follows;
+                    home.show_follows = true;
+                    home.follow_filter = FollowFilter::Live;
+                    home.follows = (1..=2)
+                        .map(|id| {
+                            let mut room = Room::bili(id, format!("Room {id}"));
+                            room.broadcast = Some(BroadcastStatus::Unknown);
+                            room
+                        })
+                        .collect();
+                    home.rebuild_follow_rows(None);
+                    assert_eq!(home.room_selection, None);
+
+                    let right_stick = XINPUT_GAMEPAD_RIGHT_THUMB;
+                    let rb = XINPUT_GAMEPAD_RIGHT_SHOULDER;
+                    home.on_gamepad(right_stick, right_stick, window, cx);
+                    assert!(home.multiview.selection.active);
+                    assert_eq!(home.follow_filter, FollowFilter::All);
+                    assert_eq!(home.room_selection, Some(0));
+                    home.on_gamepad(XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_A, window, cx);
+                    home.on_gamepad(XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_RIGHT, window, cx);
+                    home.on_gamepad(XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_A, window, cx);
+                    assert_eq!(home.multiview.selection.items.iter().map(|room| room.id.as_str()).collect::<Vec<_>>(), ["1", "2"]);
+                    home.on_gamepad(rb, rb, window, cx);
+                    assert_eq!(home.follow_filter, FollowFilter::All);
+                    assert_eq!(home.room_selection, Some(1));
+                    home.on_gamepad(right_stick, right_stick | rb, window, cx);
+                    assert_eq!(home.multiview.slots.as_ref().map(Vec::len), Some(2));
+
+                    home.close_multiview(window, cx);
+                    home.on_gamepad(right_stick, right_stick, window, cx);
+                    home.on_gamepad(XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_B, window, cx);
+                    assert!(!home.multiview.selection.active);
+                    home.on_gamepad(right_stick, right_stick, window, cx);
+                    home.on_gamepad(XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_A, window, cx);
+                    home.on_gamepad(XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_RIGHT, window, cx);
+                    home.on_gamepad(XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_A, window, cx);
+                    home.on_gamepad(XINPUT_GAMEPAD_START, XINPUT_GAMEPAD_START, window, cx);
+                    assert_eq!(home.multiview.slots.as_ref().map(Vec::len), Some(2));
+                    home
+                })
+            })
+            .unwrap();
+            cx.quit();
+        });
+        fs::remove_file(plugin).unwrap();
+        fs::remove_dir(plugins).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 }

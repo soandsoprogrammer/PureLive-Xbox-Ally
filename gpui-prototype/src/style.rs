@@ -122,16 +122,6 @@ impl CoverCache {
             cache_evict(entry, window, cx);
         }
     }
-
-    pub(super) fn retry_failed(&self, cx: &mut App) {
-        self.0.borrow_mut().retain(|(url, _)| {
-            let failed = matches!(cx.fetch_asset::<Cover>(url), Some(None));
-            if failed {
-                cx.remove_asset::<Cover>(url);
-            }
-            !failed
-        });
-    }
 }
 
 fn cache_evict((url, image): CoverEntry, window: &mut Window, cx: &mut App) {
@@ -432,7 +422,8 @@ impl Home {
 
     fn room_card(&self, index: usize, room: &Room, cx: &mut Context<Self>) -> Stateful<Div> {
         let choosing = self.pane == Pane::Follows && self.multiview.selection.active;
-        let selected = if choosing { self.multiview.selection.items.iter().any(|item| item.same_channel(room)) } else { self.room_selection == Some(index) };
+        let focused = self.room_selection == Some(index);
+        let queued = choosing && self.multiview.selection.items.iter().any(|item| item.same_channel(room));
         let status = room.broadcast_status();
         let followed = self.follows.iter().any(|saved| saved.same_channel(room));
         let platform = self
@@ -445,7 +436,6 @@ impl Home {
         let covers = self.covers.clone();
         let play = room.clone();
         let save = room.clone();
-        let queued = self.multiview.selection.items.iter().any(|item| item.same_channel(room));
         let multiview_room = room.clone();
         div()
             .id(("card", index))
@@ -455,11 +445,11 @@ impl Home {
             .rounded_lg()
             .overflow_hidden()
             .border_2()
-            .border_color(rgb(if selected { MINT } else { DIVIDER }))
-            .bg(rgb(if selected { SURFACE } else { PANEL }))
+            .border_color(rgb(if focused { MINT } else { DIVIDER }))
+            .bg(rgb(if focused || queued { SURFACE } else { PANEL }))
             .cursor_pointer()
             // Hover must not look like the selection ring: only a dim edge.
-            .when(!selected, |card| {
+            .when(!focused, |card| {
                 card.hover(|style| style.border_color(rgb(0x3d5866)))
             })
             .on_click(
@@ -627,7 +617,7 @@ impl Home {
     fn multiview_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         control("multiview-open", if self.multiview.selection.active { "同屏 · 选择中" } else { "同屏" }, self.multiview.selection.active)
             .flex_shrink_0()
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_multiview_selection(cx)))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_multiview_selection(window, cx)))
     }
 
     fn popular_view(&self, cx: &mut Context<Self>) -> Div {
@@ -779,7 +769,7 @@ impl Home {
                             };
                             row.child(div().absolute().right_0().top_0().child(
                                 control("refresh-follows", label, false).on_click(cx.listener(
-                                    |this, _, window, cx| this.refresh_follow_statuses(window, cx),
+                                    |this, _, window, cx| this.refresh_follows(window, cx),
                                 )),
                             ))
                         },
@@ -792,7 +782,10 @@ impl Home {
             )
             .when(self.pane == Pane::Follows && self.multiview.selection.active, |view| {
                 view.child(div().h_flex().items_center().gap_2()
-                    .child(div().flex_1().text_sm().text_color(rgb(MUTED)).child(format!("点击卡片选择直播间，已选 {}/4", self.multiview.selection.items.len())))
+                    .child(div().flex_1().text_sm().text_color(rgb(MUTED)).child(format!(
+                        "已选 {}/4 · 方向键移动 · A 勾选 · 菜单键开始",
+                        self.multiview.selection.items.len()
+                    )))
                     .child(control("multiview-start", "开始同屏", self.multiview.selection.can_start()).on_click(cx.listener(|this, _, window, cx| this.open_multiview(window, cx))))
                     .child(control("multiview-cancel", "取消", false).on_click(cx.listener(|this, _, _, cx| this.cancel_multiview_selection(cx)))))
             })
@@ -1854,6 +1847,7 @@ impl Home {
                 plugins::multiview_resize::Axis::Horizontal => CursorStyle::ResizeUpDown,
             })
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                if this.multiview.resize.touch_dragging { return; }
                 this.multiview.resize.dragging = Some(axis);
                 this.multiview_resize(window);
                 cx.stop_propagation();
@@ -1865,7 +1859,8 @@ impl Home {
         if self.multiview.canvas.enabled { return self.multiview_canvas_view(window,cx); }
         div().relative().size_full().v_flex().bg(rgb(BG)).text_color(rgb(TEXT))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
-                if this.multiview.resize.dragging.take().is_some() || this.multiview.resize.hovered.take().is_some() {
+                if this.multiview.resize.touch_dragging { return; }
+                if this.multiview.resize.end_drag() || this.multiview.resize.hovered.take().is_some() {
                     this.multiview.resize.hovered = None;
                     this.multiview_resize(window);
                     cx.notify();
@@ -1873,10 +1868,10 @@ impl Home {
             }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| this.drag_multiview_divider(event, window, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| {
-                if this.multiview.resize.dragging.take().is_some() { this.multiview_resize(window); cx.notify(); }
+                if !this.multiview.resize.touch_dragging && this.multiview.resize.end_drag() { this.multiview_resize(window); cx.notify(); }
             }))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, window, cx| {
-                if this.multiview.resize.dragging.take().is_some() { this.multiview_resize(window); cx.notify(); }
+                if !this.multiview.resize.touch_dragging && this.multiview.resize.end_drag() { this.multiview_resize(window); cx.notify(); }
             }))
             .when(self.multiview.preferences.show_titles, |view| {
                 view.child(div().h(px(self.multiview_title_height())).flex_shrink_0().px_4().py_1()

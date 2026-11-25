@@ -20,6 +20,7 @@ pub(crate) struct Resize {
     x: f32,
     y: f32,
     pub dragging: Option<Axis>,
+    pub touch_dragging: bool,
     pub hovered: Option<Axis>,
 }
 
@@ -29,12 +30,18 @@ impl Default for Resize {
             x: 0.5,
             y: 0.5,
             dragging: None,
+            touch_dragging: false,
             hovered: None,
         }
     }
 }
 
 impl Resize {
+    pub fn end_drag(&mut self) -> bool {
+        self.touch_dragging = false;
+        self.dragging.take().is_some()
+    }
+
     // Viewport coordinates are logical window pixels, including any toolbar offset.
     pub fn update(&mut self, point: [f32; 2], viewport: [f32; 4]) -> bool {
         let Some(axis) = self.dragging else {
@@ -166,6 +173,7 @@ mod tests {
                     x,
                     y,
                     dragging: None,
+                    touch_dragging: false,
                     hovered: None,
                 };
                 let rects =

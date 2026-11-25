@@ -81,8 +81,18 @@ impl Home {
         cx.notify();
     }
 
-    pub(super) fn toggle_multiview_selection(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn toggle_multiview_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.multiview.selection.toggle();
+        if self.multiview.selection.active {
+            if self.follow_filter == FollowFilter::Live && self.room_count() == 0 && !self.follows.is_empty() {
+                self.select_follow_filter(FollowFilter::All, cx);
+            }
+            if self.room_selection.and_then(|index| self.room_at(index)).is_none() {
+                self.room_selection = None;
+                self.move_card(0, cx);
+            }
+            self.focus.focus(window, cx);
+        }
         cx.notify();
     }
 
@@ -123,6 +133,7 @@ impl Home {
             tile: None,
             video: None,
         }).collect());
+        self.multiview_resize(window);
         self.focus.focus(window, cx);
         cx.notify();
 
@@ -141,6 +152,9 @@ impl Home {
                     }
                     Err(error) => {
                         this.multiview.slots = None;
+                        this.multiview.resize.end_drag();
+                        this.multiview.resize.hovered = None;
+                        this.multiview_resize(window);
                         this.multiview.selection.active = true;
                         this.multiview.selection.notice = format!("无法打开同屏：{error}");
                         cx.notify();
@@ -223,12 +237,13 @@ impl Home {
         self.save_canvas();
         self.multiview.canvas.enabled = false;
         self.multiview.canvas.drag = None;
-        self.multiview.resize.dragging = None;
+        self.multiview.resize.end_drag();
         self.multiview.resize.hovered = None;
         self.multiview.generation += 1;
         self.multiview.slots = None;
         self.multiview.settings_open = false;
         self.multiview.layouts = None;
+        self.multiview_resize(window);
         self.cancel_multiview_selection(cx);
         self.focus.focus(window, cx);
         cx.notify();
@@ -346,7 +361,7 @@ impl Home {
     }
 
     pub(super) fn choose_multiview_layout(&mut self, layout: Layout, window: &Window, cx: &mut Context<Self>) {
-        self.multiview.resize.dragging = None;
+        self.multiview.resize.end_drag();
         self.multiview.resize.hovered = None;
         self.multiview.preferences.layout = layout;
         if let (Some(slots), Some(layouts)) = (&mut self.multiview.slots, &self.multiview.layouts) {
@@ -404,12 +419,59 @@ impl Home {
     }
 
 
-    pub(super) fn multiview_dividers(&self, window: &Window) -> Vec<plugins::multiview_resize::Divider> {
+    fn multiview_viewport(&self, window: &Window) -> [f32; 4] {
         let (width, height) = native::client_size(window);
-        self.multiview.resize.dividers(self.multiview.preferences.layout, self.multiview.slots.as_ref().map_or(0, Vec::len), [0.0, self.multiview_title_height(), width, (height - self.multiview_title_height()).max(1.0)])
+        let top = self.multiview_title_height();
+        [0.0, top, width, (height - top).max(1.0)]
+    }
+
+    pub(super) fn multiview_dividers(&self, window: &Window) -> Vec<plugins::multiview_resize::Divider> {
+        self.multiview.resize.dividers(
+            self.multiview.preferences.layout,
+            self.multiview.slots.as_ref().map_or(0, Vec::len),
+            self.multiview_viewport(window),
+        )
+    }
+
+    pub(super) fn touch_multiview_divider(
+        &mut self,
+        event: native::divider_touch::Event,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        use native::divider_touch::Event;
+
+        let viewport = self.multiview_viewport(window);
+        let resize = &mut self.multiview.resize;
+        let changed = match event {
+            Event::Start(axis) if self.multiview.slots.is_some()
+                && !self.multiview.canvas.enabled
+                && self.multiview.preferences.layout == Layout::Auto =>
+            {
+                resize.dragging = Some(axis);
+                resize.touch_dragging = true;
+                resize.hovered = None;
+                true
+            }
+            Event::Move(point) if resize.touch_dragging => resize.update(point, viewport),
+            Event::End(point) if resize.touch_dragging => {
+                if let Some(point) = point {
+                    resize.update(point, viewport);
+                }
+                resize.end_drag()
+            }
+            _ => false,
+        };
+        if changed {
+            self.multiview_resize(window);
+            cx.notify();
+        }
     }
 
     pub(super) fn drag_multiview_divider(&mut self, event: &MouseMoveEvent, window: &Window, cx: &mut Context<Self>) {
+        if self.multiview.resize.touch_dragging {
+            return;
+        }
         let point = [f32::from(event.position.x), f32::from(event.position.y)];
         let hovered = self.multiview_dividers(window).into_iter().find(|divider| {
             let [x, y, w, h] = divider.rect;
@@ -418,12 +480,12 @@ impl Home {
         let mut changed = self.multiview.resize.hovered != hovered;
         self.multiview.resize.hovered = hovered;
         if !event.dragging() {
-            changed |= self.multiview.resize.dragging.take().is_some();
+            changed |= self.multiview.resize.end_drag();
             if changed { self.multiview_resize(window); cx.notify(); }
             return;
         }
-        let (width, height) = native::client_size(window);
-        if self.multiview.resize.update(point, [0.0, self.multiview_title_height(), width, (height - self.multiview_title_height()).max(1.0)]) {
+        let viewport = self.multiview_viewport(window);
+        if self.multiview.resize.update(point, viewport) {
             changed = true;
         }
         if changed { self.multiview_resize(window); cx.notify(); }
@@ -442,17 +504,26 @@ impl Home {
     }
 
     pub(super) fn multiview_resize(&self, window: &Window) {
-        if native::minimized(window) { return; }
+        let minimized = native::minimized(window);
+        let panel = self.multiview_panel(window);
+        if let Some(touch) = &self.divider_touch {
+            let dividers = if minimized || self.multiview.canvas.enabled {
+                Vec::new()
+            } else {
+                self.multiview_dividers(window)
+            };
+            touch.set_targets(window.scale_factor(), dividers, panel);
+        }
+        if minimized { return; }
         if self.multiview.canvas.enabled { self.resize_canvas_players(window); return; }
         let overlay = self.multiview_divider_overlay(window);
         if let Some(slots) = &self.multiview.slots {
-            let title_height = self.multiview_title_height();
-            let panel = self.multiview_panel(window);
+            let viewport = self.multiview_viewport(window);
+            let title_height = viewport[1];
             for slot in slots {
                 if let (Some(video), Some(tile)) = (&slot.video, slot.tile) {
                     if self.multiview.preferences.layout == Layout::Auto {
-                        let (width, height) = native::client_size(window);
-                        let rect = self.multiview.resize.tile(Layout::Auto, tile, [0.0, title_height, width, (height - title_height).max(1.0)]);
+                        let rect = self.multiview.resize.tile(Layout::Auto, tile, viewport);
                         video.surface.resize_tile_rect(window, rect, panel, overlay);
                     } else {
                         video.surface.resize_tile(window, title_height, tile, panel);

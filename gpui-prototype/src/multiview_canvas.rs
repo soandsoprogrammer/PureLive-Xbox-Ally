@@ -46,7 +46,7 @@ impl Home {
             }
         }
         self.multiview.canvas.drag = None;
-        self.multiview.resize.dragging = None;
+        self.multiview.resize.end_drag();
         self.multiview.resize.hovered = None;
         self.multiview_resize(window);
         cx.notify();
